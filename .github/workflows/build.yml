@@ -1,0 +1,97 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: short
+
+jobs:
+  build:
+    # macos-latest is Apple Silicon (arm64) — the only target for now.
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "apps/desktop/src-tauri -> target"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build web frontend
+        run: npm run build:web
+
+      - name: Bundle the Node server (node + node-pty + server.cjs)
+        run: npm run bundle:server
+
+      - name: Sign bundled server binaries
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          RES="apps/desktop/src-tauri/resources/server"
+          ENTITLEMENTS="$GITHUB_WORKSPACE/apps/desktop/src-tauri/entitlements.plist"
+
+          # Import the signing certificate into a temporary keychain.
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/server-signing.keychain-db"
+          KEYCHAIN_PW=$(openssl rand -base64 24)
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+
+          # The Node runtime needs JIT entitlements; the native addons just need
+          # a hardened-runtime signature.
+          codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+            --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$RES/node"
+          find "$RES" \( -name "*.node" -o -name "spawn-helper" \) -type f | while read -r f; do
+            codesign --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$f"
+          done
+
+          security delete-keychain "$KEYCHAIN"
+          rm -f "$CERT_PATH"
+
+      - name: Build, sign, notarize & release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: npm run tauri --
+          args: --target aarch64-apple-darwin --config src-tauri/tauri.release.conf.json
+          tagName: v__VERSION__
+          releaseName: "Termany v__VERSION__"
+          releaseBody: "Download the .dmg below, open it, and drag Termany to Applications."
+          releaseDraft: true
+          prerelease: false

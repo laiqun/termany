@@ -1,0 +1,24 @@
+{
+  "name": "termany",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI terminal — local-first, cloud-ready. Workspaces > vertical tabs > horizontal tabs.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/fix-pty-perms.mjs",
+    "dev": "concurrently -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "desktop": "concurrently -k -n server,web,app -c green,cyan,magenta \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:app\"",
+    "dev:server": "npm -w @termany/server run dev",
+    "dev:web": "npm -w @termany/web run dev",
+    "dev:app": "npm -w @termany/desktop run dev",
+    "build:web": "npm -w @termany/web run build",
+    "bundle:server": "node scripts/bundle-server.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.24.2"
+  }
+}

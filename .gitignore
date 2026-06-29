@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.vite/
+apps/web/dist/
+apps/server/dist/
+
+# Rust / Tauri
+target/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/schemas/
+
+# Bundled server (assembled in CI by scripts/bundle-server.mjs)
+apps/desktop/src-tauri/resources/
+
+# Logs & OS cruft
+*.log
+.DS_Store
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
