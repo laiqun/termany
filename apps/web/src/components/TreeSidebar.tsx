@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { activeWorkspace, useStore, type TreeNode } from "../state/store";
-import { ChevronIcon, CloseIcon, CollapseAllIcon, GearIcon, PageIcon, PlusIcon } from "./icons";
+import { ChevronIcon, CloseIcon, CollapseAllIcon, PageIcon, PlusIcon } from "./icons";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 const DRAG_MIME = "application/x-termany-node";
@@ -68,6 +68,7 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
               setEditing(false);
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               else if (e.key === "Escape") setEditing(false);
             }}
@@ -84,9 +85,6 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
           </span>
         )}
 
-        <span className="tree-count" title={`${node.htabs.length} terminal(s)`}>
-          {node.htabs.length}
-        </span>
         <button
           className="tree-act"
           title="Add nested page"
@@ -107,6 +105,11 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
         >
           <CloseIcon />
         </button>
+        {node.htabs.length > 1 && (
+          <span className="tree-count" title={`${node.htabs.length} terminals`}>
+            {node.htabs.length}
+          </span>
+        )}
       </div>
 
       {node.expanded &&
@@ -126,7 +129,7 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
 
   return (
     <div className="sidebar">
-      <WorkspaceSwitcher />
+      <WorkspaceSwitcher onOpenSettings={onOpenSettings} />
       {/* VS Code-style section header: collapse toggle + title + actions. */}
       <div className="section-head">
         <button className="section-toggle" onClick={() => setCollapsed((c) => !c)}>
@@ -175,12 +178,6 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
       >
         {!collapsed && ws.roots.map((n) => <TreeItem key={n.id} node={n} depth={0} />)}
       </div>
-      <button className="sidebar-foot" title="Settings" onClick={onOpenSettings}>
-        <span className="sidebar-foot-icon">
-          <GearIcon />
-        </span>
-        <span>Settings</span>
-      </button>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { isTauri } from "../env";
 import { useStore, activeNode } from "../state/store";
 import { ChevronIcon, CloseIcon, PanelIcon, PlusIcon } from "./icons";
@@ -5,17 +6,21 @@ import { ChevronIcon, CloseIcon, PanelIcon, PlusIcon } from "./icons";
 /**
  * Top tab strip. Notion-style, the workspace controls sit at the very left,
  * before the first tab: collapse the sidebar, then step prev/next workspace.
+ * Tabs are double-click-to-rename.
  */
 export function HTabBar() {
   const node = useStore(activeNode);
   const setActiveHTab = useStore((s) => s.setActiveHTab);
   const addHTab = useStore((s) => s.addHTab);
   const closeHTab = useStore((s) => s.closeHTab);
+  const renameHTab = useStore((s) => s.renameHTab);
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const prevWorkspace = useStore((s) => s.prevWorkspace);
   const nextWorkspace = useStore((s) => s.nextWorkspace);
   const solo = useStore((s) => s.workspaces.length < 2);
+
+  const [editing, setEditing] = useState<string | null>(null);
 
   // The controls clear the macOS traffic lights only when the sidebar is hidden
   // (collapsed, desktop) — otherwise the lights live over the sidebar header.
@@ -25,7 +30,7 @@ export function HTabBar() {
     <div className="htab-controls">
       <button
         className="bar-btn"
-        title={collapsed ? "Show sidebar" : "Hide sidebar"}
+        title={collapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
         onClick={toggleSidebar}
       >
         <PanelIcon />
@@ -49,18 +54,39 @@ export function HTabBar() {
           key={h.id}
           className={`htab ${h.id === node.activeHTab ? "active" : ""}`}
           onClick={() => setActiveHTab(h.id)}
+          onDoubleClick={() => setEditing(h.id)}
         >
-          <span>{h.title}</span>
-          <button
-            className="htab-close"
-            title="Close (⌘W)"
-            onClick={(e) => {
-              e.stopPropagation();
-              closeHTab(h.id);
-            }}
-          >
-            <CloseIcon />
-          </button>
+          {editing === h.id ? (
+            <input
+              className="htab-rename"
+              autoFocus
+              defaultValue={h.title}
+              onClick={(e) => e.stopPropagation()}
+              onBlur={(e) => {
+                renameHTab(h.id, e.target.value.trim() || h.title);
+                setEditing(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                else if (e.key === "Escape") setEditing(null);
+              }}
+            />
+          ) : (
+            <>
+              <span className="htab-title">{h.title}</span>
+              <button
+                className="htab-close"
+                title="Close (⌘W)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeHTab(h.id);
+                }}
+              >
+                <CloseIcon />
+              </button>
+            </>
+          )}
         </div>
       ))}
       {node && (

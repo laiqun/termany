@@ -1,5 +1,6 @@
 import { WebSocketBackend } from "@termany/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
@@ -16,6 +17,7 @@ import "@xterm/xterm/css/xterm.css";
  */
 
 const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
 
 export interface Session {
   el: HTMLDivElement;
@@ -26,6 +28,7 @@ export interface Session {
 }
 
 const sessions = new Map<string, Session>();
+const pendingCwdFrom = new Map<string, string>();
 
 /**
  * The terminal palette in effect. New sessions are created with it, and
@@ -38,6 +41,42 @@ let currentTermTheme: ITheme = {
   cursor: "#5ccfe6",
   selectionBackground: "#2a3441",
 };
+
+const IMAGE_MIMES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function uploadClipboardImage(file: File): Promise<string> {
+  const data = arrayBufferToBase64(await file.arrayBuffer());
+  const res = await fetch(`${API_URL}/api/paste-image`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: file.type, data }),
+  });
+  const payload = await res.json();
+  if (!res.ok) throw new Error(payload.error ?? `upload failed (${res.status})`);
+  return String(payload.path);
+}
+
+function pastedImages(e: ClipboardEvent): File[] {
+  const items = Array.from(e.clipboardData?.items ?? []);
+  return items
+    .filter((item) => IMAGE_MIMES.has(item.type))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+}
 
 /** Switch the terminal palette: future sessions + all currently open ones. */
 export function applyTermTheme(theme: ITheme) {
@@ -63,7 +102,11 @@ function getSession(id: string): Session {
   const fit = new FitAddon();
   term.loadAddon(fit);
 
-  const backend = new WebSocketBackend(WS_URL);
+  const backend = new WebSocketBackend(WS_URL, {
+    session: id,
+    cwdFrom: pendingCwdFrom.get(id),
+  });
+  pendingCwdFrom.delete(id);
   backend.onData((data) => term.write(data));
   backend.onExit(() => term.write("\r\n\x1b[2m[session ended]\x1b[0m\r\n"));
   term.onData((data) => backend.write(data));
@@ -74,6 +117,27 @@ function getSession(id: string): Session {
     const sel = term.getSelection();
     if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
   });
+
+  // Paste image blobs as local file paths, which keeps terminal input plain text
+  // while still making screenshots available to CLI tools that accept images.
+  el.addEventListener(
+    "paste",
+    (e) => {
+      const images = pastedImages(e);
+      if (!images.length) return;
+      e.preventDefault();
+      void (async () => {
+        try {
+          const paths = await Promise.all(images.map(uploadClipboardImage));
+          backend.write(`${paths.map(shellQuote).join(" ")} `);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          term.write(`\r\n\x1b[31m[termany] failed to paste image: ${msg}\x1b[0m\r\n`);
+        }
+      })();
+    },
+    true
+  );
 
   const session: Session = { el, term, fit, backend, opened: false };
   sessions.set(id, session);
@@ -86,6 +150,16 @@ export function attachSession(id: string, host: HTMLElement) {
   host.appendChild(s.el);
   if (!s.opened) {
     s.term.open(s.el); // el is now in the document — renderer initialises correctly
+    // GPU renderer: the default DOM renderer repaints character-by-character and
+    // makes echo feel laggy. WebGL must be loaded AFTER open(). If the GPU context
+    // is lost (driver reset / tab backgrounded), dispose so xterm falls back to DOM.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      s.term.loadAddon(webgl);
+    } catch {
+      /* no WebGL available — DOM renderer still works */
+    }
     s.opened = true;
   }
   fitSession(id);
@@ -112,6 +186,11 @@ export function fitSession(id: string) {
 
 export function focusSession(id: string) {
   sessions.get(id)?.term.focus();
+}
+
+/** Ask the server to start a not-yet-created session in another session's cwd. */
+export function inheritSessionCwd(id: string, fromId: string) {
+  if (!sessions.has(id)) pendingCwdFrom.set(id, fromId);
 }
 
 /** Permanently destroy a session — only when the user closes the pane/tab. */

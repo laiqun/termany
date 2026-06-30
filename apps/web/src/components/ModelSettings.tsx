@@ -3,6 +3,8 @@ import { CloseIcon, EditIcon, PlusIcon } from "./icons";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
 
+type Kind = "anthropic" | "openai";
+
 /** A provider as held in local edit state (apiKey starts as the masked value). */
 interface Provider {
   id: string;
@@ -10,8 +12,7 @@ interface Provider {
   apiBase: string;
   apiKey: string;
   models: string[];
-  builtin: boolean;
-  managed: boolean;
+  kind: Kind;
   hasKey: boolean;
 }
 
@@ -21,11 +22,13 @@ interface Draft {
   apiBase: string;
   apiKey: string;
   modelsText: string;
+  kind: Kind;
 }
 
 const newId = () => crypto.randomUUID();
 
-/** Model-provider settings — built-in managed Anthropic + custom OpenAI-compatible. */
+/** Model-provider settings — BYOK: the user adds their own Anthropic or
+ *  OpenAI-compatible providers with their own API key. No managed built-in. */
 export function ModelSettings() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -44,8 +47,7 @@ export function ModelSettings() {
             apiBase: p.apiBase,
             apiKey: p.keyMask ?? "", // masked; server treats unchanged-masked as "keep"
             models: p.models,
-            builtin: p.builtin,
-            managed: p.managed,
+            kind: p.kind === "anthropic" ? "anthropic" : "openai",
             hasKey: p.hasKey,
           }))
         );
@@ -59,10 +61,25 @@ export function ModelSettings() {
   );
 
   function openEdit(p: Provider) {
-    setDraft({ id: p.id, name: p.name, apiBase: p.apiBase, apiKey: "", modelsText: p.models.join("\n") });
+    setDraft({
+      id: p.id,
+      name: p.name,
+      apiBase: p.apiBase,
+      apiKey: "",
+      modelsText: p.models.join("\n"),
+      kind: p.kind,
+    });
   }
   function openAdd() {
-    setDraft({ id: newId(), name: "", apiBase: "", apiKey: "", modelsText: "" });
+    // Default to Anthropic — the AI features are Claude-first; prefill the model.
+    setDraft({
+      id: newId(),
+      name: "",
+      apiBase: "",
+      apiKey: "",
+      modelsText: "claude-opus-4-8",
+      kind: "anthropic",
+    });
   }
 
   function commitDraft() {
@@ -73,18 +90,17 @@ export function ModelSettings() {
       .filter(Boolean);
     const next: Provider = {
       id: draft.id,
-      name: draft.name.trim() || "Provider",
+      name: draft.name.trim() || (draft.kind === "anthropic" ? "Anthropic" : "Provider"),
       apiBase: draft.apiBase.trim(),
       apiKey: draft.apiKey, // typed key, or "" to keep existing on save
       models,
-      builtin: false,
-      managed: false,
+      kind: draft.kind,
       hasKey: true,
     };
     setProviders((ps) => {
       const i = ps.findIndex((p) => p.id === next.id);
-      // Editing keeps the masked apiKey if the user left it blank.
       if (i >= 0) {
+        // Editing keeps the masked apiKey if the user left it blank.
         const keptKey = draft.apiKey ? draft.apiKey : ps[i].apiKey;
         const copy = [...ps];
         copy[i] = { ...next, apiKey: keptKey };
@@ -105,15 +121,14 @@ export function ModelSettings() {
     try {
       const payload = {
         defaultModel,
-        providers: providers
-          .filter((p) => !p.builtin)
-          .map((p) => ({
-            id: p.id,
-            name: p.name,
-            apiBase: p.apiBase,
-            apiKey: p.apiKey, // masked/"" → server keeps stored key
-            models: p.models,
-          })),
+        providers: providers.map((p) => ({
+          id: p.id,
+          name: p.name,
+          apiBase: p.apiBase,
+          apiKey: p.apiKey, // masked/"" → server keeps stored key
+          models: p.models,
+          kind: p.kind,
+        })),
       };
       const res = await fetch(`${API_URL}/api/models`, {
         method: "PUT",
@@ -150,57 +165,63 @@ export function ModelSettings() {
         <select
           className="ms-select"
           value={defaultModel}
+          disabled={modelOptions.length === 0}
           onChange={(e) => setDefaultModel(e.target.value)}
         >
-          {modelOptions.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
+          {modelOptions.length === 0 ? (
+            <option value="">— add a provider below —</option>
+          ) : (
+            modelOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))
+          )}
         </select>
-        <div className="ms-hint">Used by Termany's AI features (theme generation, …).</div>
+        <div className="ms-hint">
+          Bring your own key. Used by Termany's AI features (theme generation, …).
+        </div>
       </div>
 
       <table className="ms-table">
         <thead>
           <tr>
             <th>Name</th>
+            <th>Type</th>
             <th>API Base</th>
             <th>API Key</th>
             <th>Models</th>
-            <th>Source</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
+          {providers.length === 0 && (
+            <tr>
+              <td colSpan={6} className="ms-empty">
+                No providers yet — add one with your own API key.
+              </td>
+            </tr>
+          )}
           {providers.map((p) => (
             <tr key={p.id}>
               <td>{p.name}</td>
-              <td>
-                <code className="ms-mono">{p.managed ? "Managed gateway" : p.apiBase || "—"}</code>
-              </td>
+              <td>{p.kind === "anthropic" ? "Anthropic" : "OpenAI-compatible"}</td>
               <td>
                 <code className="ms-mono">
-                  {p.managed ? (p.hasKey ? "Managed" : "No env key") : p.apiKey || "—"}
+                  {p.apiBase || (p.kind === "anthropic" ? "api.anthropic.com" : "—")}
                 </code>
               </td>
-              <td>{p.models.length}</td>
               <td>
-                <span className={`ms-badge ${p.builtin ? "builtin" : ""}`}>
-                  {p.builtin ? "Built-in" : "Custom"}
-                </span>
+                <code className="ms-mono">{p.hasKey ? p.apiKey || "••••" : "No key"}</code>
               </td>
+              <td>{p.models.length}</td>
               <td className="ms-actions">
-                {!p.builtin && (
-                  <>
-                    <button className="ms-icon" title="Edit" onClick={() => openEdit(p)}>
-                      <EditIcon />
-                    </button>
-                    <button className="ms-icon" title="Delete" onClick={() => remove(p.id)}>
-                      <CloseIcon />
-                    </button>
-                  </>
-                )}
+                <button className="ms-icon" title="Edit" onClick={() => openEdit(p)}>
+                  <EditIcon />
+                </button>
+                <button className="ms-icon" title="Delete" onClick={() => remove(p.id)}>
+                  <CloseIcon />
+                </button>
               </td>
             </tr>
           ))}
@@ -214,10 +235,35 @@ export function ModelSettings() {
           <div className="ms-form" onClick={(e) => e.stopPropagation()}>
             <div className="ms-form-title">Provider</div>
             <label className="ms-field">
+              <span>Type</span>
+              <select
+                value={draft.kind}
+                onChange={(e) => {
+                  const kind = e.target.value as Kind;
+                  setDraft((d) =>
+                    d
+                      ? {
+                          ...d,
+                          kind,
+                          // Helpful default model when switching to Anthropic.
+                          modelsText:
+                            kind === "anthropic" && !d.modelsText.trim()
+                              ? "claude-opus-4-8"
+                              : d.modelsText,
+                        }
+                      : d
+                  );
+                }}
+              >
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="openai">OpenAI-compatible</option>
+              </select>
+            </label>
+            <label className="ms-field">
               <span>Name</span>
               <input
                 value={draft.name}
-                placeholder="DeepSeek"
+                placeholder={draft.kind === "anthropic" ? "Anthropic" : "DeepSeek"}
                 onChange={(e) => setDraft({ ...draft, name: e.target.value })}
               />
             </label>
@@ -225,7 +271,11 @@ export function ModelSettings() {
               <span>API Base</span>
               <input
                 value={draft.apiBase}
-                placeholder="https://api.deepseek.com"
+                placeholder={
+                  draft.kind === "anthropic"
+                    ? "blank = api.anthropic.com (optional)"
+                    : "https://api.deepseek.com"
+                }
                 onChange={(e) => setDraft({ ...draft, apiBase: e.target.value })}
               />
             </label>
@@ -243,7 +293,7 @@ export function ModelSettings() {
               <textarea
                 rows={3}
                 value={draft.modelsText}
-                placeholder="deepseek-chat"
+                placeholder={draft.kind === "anthropic" ? "claude-opus-4-8" : "deepseek-chat"}
                 onChange={(e) => setDraft({ ...draft, modelsText: e.target.value })}
               />
             </label>

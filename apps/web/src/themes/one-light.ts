@@ -16,6 +16,8 @@ export const oneLight: Theme = {
   },
   // Softer, rounder corners suit the light surfaces.
   radius: { sm: "8px", md: "10px", lg: "14px" },
+  // A touch grayer than the white terminal — a distinct sidebar panel.
+  sidebar: { bg: "#e9ebee" },
   term: {
     background: "#fafafa",
     foreground: "#383a42",

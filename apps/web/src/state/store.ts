@@ -1,6 +1,12 @@
 import { create } from "zustand";
-import { disposeSession } from "../terminal/manager";
-import { applyTheme, loadThemeId } from "../themes";
+import {
+  type Chord,
+  DEFAULT_KEYBINDINGS,
+  loadKeybindings,
+  saveKeybindings,
+} from "../keybindings";
+import { disposeSession, inheritSessionCwd } from "../terminal/manager";
+import { applyTheme, loadThemeId, THEMES } from "../themes";
 
 /**
  * Notion-style model:
@@ -74,12 +80,21 @@ interface State {
   /** Active theme id (see themes.ts). Persisted to localStorage. */
   theme: string;
   setTheme: (id: string) => void;
+  nextTheme: () => void;
+  prevTheme: () => void;
 
   /** Whether the left sidebar is hidden. */
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
 
-  addWorkspace: () => void;
+  /** Action id → key chord. Persisted to localStorage. */
+  keybindings: Record<string, Chord>;
+  /** Rebind one action. Pass null to restore that action's default. */
+  setKeybinding: (actionId: string, chord: Chord | null) => void;
+  /** Restore every shortcut to its default. */
+  resetKeybindings: () => void;
+
+  addWorkspace: (init?: { title?: string; icon?: string }) => void;
   setActiveWorkspace: (id: string) => void;
   /** Activate the next / previous workspace (wraps around). */
   nextWorkspace: () => void;
@@ -102,6 +117,7 @@ interface State {
   addHTab: () => void;
   setActiveHTab: (id: string) => void;
   closeHTab: (id: string) => void;
+  renameHTab: (id: string, title: string) => void;
 
   /** Split the focused pane of the active tab in the given direction. */
   splitFocused: (dir: "row" | "col") => void;
@@ -127,7 +143,7 @@ function makeLeaf(title = "terminal"): Pane & { kind: "leaf" } {
 
 function makeHTab(n: number): HTab {
   const leaf = makeLeaf();
-  return { id: id(), title: `term ${n}`, layout: leaf, focused: leaf.id };
+  return { id: id(), title: `tab ${n}`, layout: leaf, focused: leaf.id };
 }
 
 // --- pane layout helpers ---------------------------------------------------
@@ -214,7 +230,7 @@ function makeNode(title: string): TreeNode {
 }
 
 function initialWorkspace(title: string): Workspace {
-  const root = makeNode("tab 1");
+  const root = makeNode("page 1");
   return { id: id(), title, roots: [root], activeNode: root.id };
 }
 
@@ -322,13 +338,42 @@ export const useStore = create<State>((set) => ({
     applyTheme(id);
     set({ theme: id });
   },
+  nextTheme: () =>
+    set((s) => {
+      const i = THEMES.findIndex((t) => t.id === s.theme);
+      const next = THEMES[(i + 1 + THEMES.length) % THEMES.length];
+      applyTheme(next.id);
+      return { theme: next.id };
+    }),
+  prevTheme: () =>
+    set((s) => {
+      const i = THEMES.findIndex((t) => t.id === s.theme);
+      const prev = THEMES[(i - 1 + THEMES.length) % THEMES.length];
+      applyTheme(prev.id);
+      return { theme: prev.id };
+    }),
 
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
-  addWorkspace: () =>
+  keybindings: loadKeybindings(),
+  setKeybinding: (actionId, chord) =>
     set((s) => {
-      const ws = initialWorkspace(`ws ${s.workspaces.length + 1}`);
+      const next = { ...s.keybindings, [actionId]: chord ?? DEFAULT_KEYBINDINGS[actionId] };
+      saveKeybindings(next);
+      return { keybindings: next };
+    }),
+  resetKeybindings: () =>
+    set(() => {
+      const next = { ...DEFAULT_KEYBINDINGS };
+      saveKeybindings(next);
+      return { keybindings: next };
+    }),
+
+  addWorkspace: (init) =>
+    set((s) => {
+      const ws = initialWorkspace(init?.title?.trim() || `ws ${s.workspaces.length + 1}`);
+      if (init?.icon) ws.icon = init.icon;
       return { workspaces: [...s.workspaces, ws], activeWorkspace: ws.id };
     }),
 
@@ -360,7 +405,7 @@ export const useStore = create<State>((set) => ({
   addRootNode: () =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => {
-        const node = makeNode(`tab ${ws.roots.length + 1}`);
+        const node = makeNode(`page ${ws.roots.length + 1}`);
         return { ...ws, roots: [...ws.roots, node], activeNode: node.id };
       }),
     })),
@@ -406,7 +451,7 @@ export const useStore = create<State>((set) => ({
         if (!target) return ws;
         subtreeLeafIds(target).forEach(disposeSession);
         let roots = removeNode(ws.roots, nodeId);
-        if (roots.length === 0) roots = [makeNode("tab 1")];
+        if (roots.length === 0) roots = [makeNode("page 1")];
         const activeNode = findNode(roots, ws.activeNode) ? ws.activeNode : roots[0].id;
         return { ...ws, roots, activeNode };
       }),
@@ -445,6 +490,17 @@ export const useStore = create<State>((set) => ({
       })),
     })),
 
+  renameHTab: (hId, title) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => (h.id === hId ? { ...h, title } : h)),
+        })),
+      })),
+    })),
+
   closeHTab: (hId) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -472,6 +528,7 @@ export const useStore = create<State>((set) => ({
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
             const leaf = makeLeaf();
+            inheritSessionCwd(leaf.id, h.focused);
             return {
               ...h,
               layout: splitPane(h.layout, h.focused, dir, leaf),

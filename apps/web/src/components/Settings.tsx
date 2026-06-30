@@ -1,10 +1,26 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Brain, Info, Keyboard, Palette } from "lucide-react";
 import { useEffect, useState } from "react";
+import { isTauri } from "../env";
 import { useStore } from "../state/store";
 import { registerTheme, THEMES } from "../themes";
 import { CloseIcon } from "./icons";
+import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
 
-type Section = "appearance" | "models";
+type Section = "appearance" | "models" | "keyboard" | "about";
+
+/** Open a URL in the system browser (desktop) or a new tab (web). Returns an
+ *  error message on failure (so a dead click surfaces a reason), null on ok. */
+async function openExternal(url: string): Promise<string | null> {
+  try {
+    if (isTauri) await openUrl(url);
+    else window.open(url, "_blank", "noopener,noreferrer");
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
 
 // Same host as the PTY server; the AI theme endpoint lives there (key stays
 // server-side). Override with VITE_API_URL if the server moves.
@@ -23,8 +39,20 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState("0.1.0");
+  const [aboutError, setAboutError] = useState<string | null>(null);
 
-  // Esc closes.
+  // The desktop app exposes the real bundle version; the browser keeps the default.
+  useEffect(() => {
+    if (!isTauri) return;
+    import("@tauri-apps/api/app")
+      .then((m) => m.getVersion())
+      .then(setVersion)
+      .catch(() => {});
+  }, []);
+
+  // Esc closes. Bubble phase (not capture) so the Keyboard section can intercept
+  // Esc during a rebind — its capture-phase listener stops propagation first.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -32,8 +60,8 @@ export function Settings({ onClose }: { onClose: () => void }) {
         onClose();
       }
     };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
   async function generate() {
@@ -72,18 +100,43 @@ export function Settings({ onClose }: { onClose: () => void }) {
             className={`settings-nav-item ${section === "appearance" ? "active" : ""}`}
             onClick={() => setSection("appearance")}
           >
-            <span className="settings-nav-icon">🎨</span> Appearance
+            <span className="settings-nav-icon">
+              <Palette size={18} />
+            </span>{" "}
+            Appearance
           </div>
           <div
             className={`settings-nav-item ${section === "models" ? "active" : ""}`}
             onClick={() => setSection("models")}
           >
-            <span className="settings-nav-icon">🧠</span> Models
+            <span className="settings-nav-icon">
+              <Brain size={18} />
+            </span>{" "}
+            Models
+          </div>
+          <div
+            className={`settings-nav-item ${section === "keyboard" ? "active" : ""}`}
+            onClick={() => setSection("keyboard")}
+          >
+            <span className="settings-nav-icon">
+              <Keyboard size={18} />
+            </span>{" "}
+            Keyboard
+          </div>
+          <div
+            className={`settings-nav-item ${section === "about" ? "active" : ""}`}
+            onClick={() => setSection("about")}
+          >
+            <span className="settings-nav-icon">
+              <Info size={18} />
+            </span>{" "}
+            About
           </div>
         </aside>
 
         <div className="settings-body">
           {section === "models" && <ModelSettings />}
+          {section === "keyboard" && <KeyboardSettings />}
           {section === "appearance" && (
           <>
           <div className="settings-section-title">GENERATE WITH AI</div>
@@ -95,6 +148,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
               disabled={generating}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return; // let the IME handle Enter
                 if (e.key === "Enter") generate();
               }}
             />
@@ -137,6 +191,26 @@ export function Settings({ onClose }: { onClose: () => void }) {
             ))}
           </div>
           </>
+          )}
+          {section === "about" && (
+            <>
+              <div className="settings-section-title">ABOUT</div>
+              <div className="about">
+                <div className="about-name">Termany</div>
+                <div className="about-version">Version {version}</div>
+                <p className="about-desc">An AI-native terminal — local-first, cloud-ready.</p>
+                <div className="about-author">
+                  Made by{" "}
+                  <button
+                    className="about-link"
+                    onClick={async () => setAboutError(await openExternal("https://idoubi.ai"))}
+                  >
+                    idoubi
+                  </button>
+                </div>
+                {aboutError && <div className="ai-theme-error">opener failed: {aboutError}</div>}
+              </div>
+            </>
           )}
         </div>
 

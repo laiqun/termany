@@ -13,6 +13,16 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --sidebar-bg: #151a21;
+  --sidebar-border: 1px solid #232b35;
+  --top-bar: #151a21;
+  --top-bar-border: 1px solid #232b35;
+  --active-tab: #0e1116;
+  --active-row: #1c232c;
+  --pane-gap: 8px;
+  --pane-radius: 12px;
+  --pane-border: 1px solid #232b35;
+  --pane-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04);
 }
 
 * {
@@ -37,19 +47,137 @@ body,
   overflow: hidden;
 }
 
-/* Desktop: the native title bar is hidden (titleBarStyle: Overlay), so the
-   macOS traffic lights float over the sidebar's top-left. Reserve room for
-   them so the workspace switcher doesn't sit underneath. */
+/* Desktop: borderless window, our own traffic lights float over the sidebar's
+   top-left. Reserve room so the workspace switcher doesn't sit underneath. */
 .app.tauri .ws-head {
   padding-left: 78px;
+}
+
+/* Desktop shell is a borderless, transparent window so we draw our own rounded
+   corners (no native frame = no top hairline). The window is transparent; .app
+   paints the dark card and clips it to a rounded rect, so the corners fall
+   through to the desktop. macOS adds the drop shadow. */
+html.tauri,
+html.tauri body,
+html.tauri #root {
+  background: transparent;
+}
+.app.tauri {
+  border-radius: 10px;
+}
+
+/* Custom traffic lights (top-left, over the reserved 78px) */
+.win-controls {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 13px;
+  z-index: 100;
+}
+.win-dot {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.2);
+  color: rgba(0, 0, 0, 0.6);
+  cursor: default;
+}
+.win-dot.close {
+  background: #ff5f57;
+}
+.win-dot.min {
+  background: #febc2e;
+}
+.win-dot.zoom {
+  background: #28c840;
+}
+.win-dot svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0;
+}
+/* macOS shows the glyphs only while hovering the cluster. */
+.win-controls:hover .win-dot svg {
+  opacity: 1;
+}
+
+/* Invisible window-resize handles along the edges/corners */
+.resize-handle {
+  position: fixed;
+  z-index: 90;
+}
+.resize-handle.n {
+  top: 0;
+  left: 8px;
+  right: 8px;
+  height: 5px;
+  cursor: ns-resize;
+}
+.resize-handle.s {
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 5px;
+  cursor: ns-resize;
+}
+.resize-handle.w {
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 5px;
+  cursor: ew-resize;
+}
+.resize-handle.e {
+  right: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 5px;
+  cursor: ew-resize;
+}
+.resize-handle.nw {
+  top: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nwse-resize;
+}
+.resize-handle.ne {
+  top: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nesw-resize;
+}
+.resize-handle.sw {
+  bottom: 0;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nesw-resize;
+}
+.resize-handle.se {
+  bottom: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  cursor: nwse-resize;
 }
 
 /* Left sidebar */
 .sidebar {
   width: 240px;
   flex-shrink: 0;
-  background: var(--bg-2);
-  border-right: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  border-right: var(--sidebar-border);
   display: flex;
   flex-direction: column;
 }
@@ -59,7 +187,10 @@ body,
 .ws-switcher {
   position: relative;
   height: 36px;
-  border-bottom: 1px solid var(--border);
+  /* Part of the sidebar block: same bg, no divider — the whole sidebar (header
+     + pages + tree) reads as one surface. The top-bar treatment is the tab
+     strip's alone. */
+  background: var(--sidebar-bg);
 }
 .ws-head {
   display: flex;
@@ -119,8 +250,9 @@ body,
   height: 22px;
   flex-shrink: 0;
   border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, #3a4a5a, #2a3441);
-  color: var(--fg);
+  /* Theme-driven: an accent chip with contrasting (bg-colored) letter. */
+  background: var(--accent);
+  color: var(--bg);
   font-size: 11px;
   font-weight: 600;
   display: flex;
@@ -169,21 +301,49 @@ body,
   padding: 6px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
+/* A workspace row: clickable pick area + hover-revealed edit button. */
 .ws-menu-item {
   display: flex;
   align-items: center;
+  border-radius: var(--radius-md);
+}
+.ws-menu-item:hover {
+  background: var(--bg);
+}
+.ws-menu-pick {
+  display: flex;
+  align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 7px 8px;
   border: none;
-  border-radius: var(--radius-md);
   background: transparent;
   color: var(--fg);
   cursor: pointer;
   text-align: left;
 }
-.ws-menu-item:hover {
-  background: var(--bg);
+.ws-menu-edit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  opacity: 0;
+}
+.ws-menu-item:hover .ws-menu-edit {
+  opacity: 1;
+}
+.ws-menu-edit:hover {
+  background: var(--bg-3);
+  color: var(--fg);
 }
 .ws-menu-name {
   flex: 1;
@@ -195,20 +355,129 @@ body,
 .ws-check {
   color: var(--accent);
   font-size: 12px;
+  margin-right: 10px;
 }
 .ws-menu-sep {
   height: 1px;
   background: var(--border);
   margin: 6px 4px;
 }
-.ws-menu-item.new {
+/* Full-width rows: New workspace, Settings. */
+.ws-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--fg-dim);
+  cursor: pointer;
+  text-align: left;
 }
-.ws-plus {
+.ws-menu-row:hover {
+  background: var(--bg);
+  color: var(--fg);
+}
+.ws-menu-ico {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 20px;
+}
+
+/* Create / edit workspace dialog */
+.ws-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ws-dialog {
+  position: relative;
+  width: 320px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+.ws-dialog-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ws-dialog-icon {
+  flex-shrink: 0;
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+.ws-dialog-icon:hover {
+  background: var(--bg-3);
+}
+.ws-dialog-input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.ws-dialog-input:focus {
+  border-color: var(--accent);
+}
+/* Inside the dialog the emoji picker flows inline instead of popping over —
+   and its full-screen click-catcher backdrop must not cover the cells. */
+.ws-dialog .ws-backdrop {
+  display: none;
+}
+.ws-dialog .emoji-pop {
+  position: static;
+  width: 100%;
+  margin-top: 10px;
+  box-shadow: none;
+}
+.ws-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.ws-dialog-btn {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ws-dialog-btn:hover {
+  background: var(--bg-3);
+}
+.ws-dialog-btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+.ws-dialog-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Emoji picker popover (workspace icon) */
@@ -230,6 +499,7 @@ body,
   gap: 2px;
 }
 .emoji-cell {
+  min-width: 0;
   height: 26px;
   border: none;
   border-radius: var(--radius-sm);
@@ -309,13 +579,14 @@ body,
 .tree {
   flex: 1;
   overflow-y: auto;
-  padding: 6px 4px;
+  /* Wider horizontal inset so the row highlight sits clear of the sidebar edges. */
+  padding: 6px 8px;
 }
 .tree-row {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 6px;
+  padding: 3px 6px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--fg-dim);
@@ -326,7 +597,7 @@ body,
   color: var(--fg);
 }
 .tree-row.active {
-  background: var(--bg-3);
+  background: var(--active-row);
   color: var(--fg);
 }
 .tree-row.drop-target {
@@ -380,14 +651,15 @@ body,
   color: var(--fg-dim);
   border-radius: var(--radius-md);
   padding: 1px 6px;
+  margin-left: 2px;
   flex-shrink: 0;
 }
 .tree-act {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   opacity: 0;
   border: none;
   border-radius: var(--radius-sm);
@@ -395,6 +667,10 @@ body,
   color: var(--fg-dim);
   cursor: pointer;
   flex-shrink: 0;
+}
+.tree-act svg {
+  width: 18px;
+  height: 18px;
 }
 .tree-row:hover .tree-act {
   opacity: 1;
@@ -407,8 +683,8 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   opacity: 0;
   border: none;
   border-radius: var(--radius-sm);
@@ -416,11 +692,21 @@ body,
   color: var(--fg-dim);
   cursor: pointer;
 }
+/* The CloseIcon's × only fills half its viewBox, so scale it up to read well.
+   flex-shrink:0 stops the flex button from squashing its width. */
+/* Slightly smaller than the 16px bar icons — the X on the bright active pill
+   reads heavier than the dim icons on the dark bar, so shrink it to balance. */
+.htab-close svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
 .htab-close:hover {
   background: var(--bg-3);
   color: var(--fg);
 }
-.htab:hover .htab-close {
+.htab:hover .htab-close,
+.htab.active .htab-close {
   opacity: 1;
 }
 
@@ -436,31 +722,50 @@ body,
 .htabbar {
   display: flex;
   align-items: stretch;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
+  background: var(--top-bar);
+  background-attachment: fixed;
+  border-bottom: var(--top-bar-border);
   padding: 0 6px;
   height: 36px;
   gap: 4px;
 }
+/* Tabs are centered pills, vertically aligned with the controls and + button. */
 .htab {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  margin-top: 5px;
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  align-self: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px 0 10px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   color: var(--fg-dim);
   font-size: 12px;
 }
 .htab:hover {
   color: var(--fg);
+  background: var(--bg-3);
 }
-.htab.active {
-  background: var(--bg);
+.htab.active,
+.htab.active:hover {
+  background: var(--active-tab);
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-bottom: none;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.htab-title {
+  white-space: nowrap;
+}
+.htab-rename {
+  width: 96px;
+  height: 18px;
+  padding: 0 4px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
 }
 .htab-add,
 .mini {
@@ -495,8 +800,8 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -520,8 +825,20 @@ body,
 .pane-area {
   flex: 1;
   min-height: 0;
-  background: var(--bg);
+  /* Recessed frame: terminals float as a card on this. */
+  background: var(--bg-2);
+  padding: var(--pane-gap);
   position: relative;
+}
+/* The floating terminal card (one per tab, splits divide it internally). */
+.pane-card {
+  position: relative;
+  height: 100%;
+  background: var(--bg);
+  border: var(--pane-border);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
+  box-shadow: var(--pane-shadow);
 }
 /* Split layout */
 .split {
@@ -580,10 +897,18 @@ body,
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-radius: var(--radius-sm);
+  /* No own rounding — the pane-card clips corners, so a single pane fills the
+     rounded card and split cells stay square at the internal gutters. */
 }
-.pane-slot.focused {
-  box-shadow: inset 0 0 0 1px var(--accent);
+/* Draw the focus ring as a top-most overlay so it sits ABOVE the opaque header
+   (an inset box-shadow gets painted over by the header's background). */
+.pane-slot.focused::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--accent);
+  pointer-events: none;
+  z-index: 6;
 }
 
 /* Per-pane header bar */
@@ -594,7 +919,9 @@ body,
   height: 28px;
   flex-shrink: 0;
   padding: 0 4px 0 8px;
-  background: var(--bg-2);
+  /* Transparent (inherits the terminal/card bg) so the rounded card corners
+     don't reveal a mismatched header color; the bottom hairline still divides. */
+  background: transparent;
   border-bottom: 1px solid var(--border);
   cursor: grab;
   user-select: none;
@@ -779,7 +1106,14 @@ body,
   color: var(--fg);
 }
 .settings-nav-icon {
-  font-size: 14px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.settings-nav-item.active .settings-nav-icon,
+.settings-nav-item:hover .settings-nav-icon {
+  color: var(--fg);
 }
 .settings-body {
   flex: 1;
@@ -793,6 +1127,41 @@ body,
   text-transform: uppercase;
   color: var(--fg-dim);
   margin-bottom: 18px;
+}
+
+/* About */
+.about-name {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--fg);
+}
+.about-version {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.about-desc {
+  margin: 14px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-dim);
+}
+.about-author {
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+.about-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.about-link:hover {
+  opacity: 0.85;
 }
 
 /* AI theme generator */
@@ -839,6 +1208,75 @@ body,
 .ai-theme-error {
   margin-top: 10px;
   font-size: 12px;
+  color: #e5736f;
+}
+
+/* Keyboard shortcuts */
+.kb-group {
+  margin-bottom: 22px;
+}
+.kb-group-title {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  margin: 0 0 8px;
+}
+.kb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.kb-row:last-child {
+  border-bottom: none;
+}
+.kb-label {
+  font-size: 13px;
+  color: var(--fg);
+}
+.kb-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.kb-reset {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.kb-reset:hover {
+  color: var(--fg);
+}
+.kb-chord {
+  min-width: 64px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.kb-chord:hover {
+  background: var(--bg-3);
+}
+.kb-chord.capturing {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 400;
+}
+.kb-chord.conflict {
+  border-color: #e5736f;
   color: #e5736f;
 }
 

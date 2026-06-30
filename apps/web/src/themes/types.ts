@@ -45,6 +45,50 @@ export interface Theme {
     lg: string;
   };
 
+  /**
+   * Sidebar chrome. Optional — omit to inherit `colors.bg2` background and a
+   * `colors.border` right divider. A theme can give the sidebar its own
+   * background, and set `border: "transparent"` to drop the right divider.
+   */
+  sidebar?: {
+    bg?: string;
+    border?: string;
+  };
+
+  /**
+   * Other chrome surfaces. All optional, with sensible fallbacks in applyTheme.
+   */
+  chrome?: {
+    /** Top strip (workspace header + tab bar). A color OR a gradient. Default: colors.bg2. */
+    topBar?: string;
+    /** Divider under the top strip; "transparent" to drop it. Default: colors.border. */
+    topBarBorder?: string;
+    /** Active tab background. Default: colors.bg. */
+    activeTab?: string;
+    /** Active sidebar row background. Default: colors.bg3. */
+    activeRow?: string;
+    /**
+     * Gap around the floating terminal card — a CSS padding shorthand, so the
+     * four sides can differ (e.g. "8px" or "0 8px 8px 8px"). Default: "8px".
+     * Set "0" for a flush, edge-to-edge layout (no floating card).
+     */
+    paneGap?: string;
+    /** Terminal card corner radius. Default: radius.lg. */
+    paneRadius?: string;
+    /** Terminal card border color; "transparent" to drop it. Default: colors.border. */
+    paneBorder?: string;
+    /** Terminal card box-shadow (full CSS value); "none" for a flat look. */
+    paneShadow?: string;
+  };
+
+  /**
+   * Escape hatch: raw CSS custom-property overrides applied last, so a theme
+   * can restyle anything that isn't a first-class token yet (e.g. "--accent",
+   * "--radius-lg", or any var referenced in styles.css). Keys may omit the
+   * leading "--".
+   */
+  vars?: Record<string, string>;
+
   /** The xterm.js terminal palette. */
   term: ITheme;
 }

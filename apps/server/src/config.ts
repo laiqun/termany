@@ -1,14 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { getModelsRaw, setModelsRaw } from "./db.js";
 
 /**
- * Model-provider configuration, persisted to ~/.termany/models.json.
+ * Model-provider configuration, persisted in the local SQLite DB (see db.ts).
  *
- * Keys live here (server-side) — they're used to call provider APIs and are
- * never sent to the browser in the clear (GET masks them). One built-in
- * "Anthropic" provider is always present; it's "managed" (uses the server's
- * ANTHROPIC_API_KEY env var) and can't be edited or deleted.
+ * BYOK (bring your own key): there is no managed/built-in provider. The user
+ * adds their own providers — Anthropic or any OpenAI-compatible endpoint — with
+ * their own API key. Keys live here (server-side) and are masked on read.
  */
 
 export type ProviderKind = "anthropic" | "openai";
@@ -16,14 +13,12 @@ export type ProviderKind = "anthropic" | "openai";
 export interface Provider {
   id: string;
   name: string;
-  /** Base URL, e.g. https://api.deepseek.com. Empty for the managed built-in. */
+  /** Base URL. Empty for Anthropic = the official api.anthropic.com endpoint. */
   apiBase: string;
   /** Full key (file only). Never returned by listConfig(). */
   apiKey: string;
   models: string[];
   kind: ProviderKind;
-  /** Built-in providers are managed (env key) and read-only. */
-  builtin?: boolean;
 }
 
 export interface ModelsConfig {
@@ -32,21 +27,9 @@ export interface ModelsConfig {
   defaultModel: string;
 }
 
-const FILE = path.join(os.homedir(), ".termany", "models.json");
-
-const BUILT_IN: Provider = {
-  id: "anthropic",
-  name: "Anthropic",
-  apiBase: "",
-  apiKey: "",
-  models: ["claude-opus-4-8"],
-  kind: "anthropic",
-  builtin: true,
-};
-
-function readFile(): { providers: Provider[]; defaultModel: string } {
+function readFile(): ModelsConfig {
   try {
-    const raw = JSON.parse(readFileSync(FILE, "utf8"));
+    const raw = JSON.parse(getModelsRaw() ?? "{}");
     return {
       providers: Array.isArray(raw.providers) ? raw.providers : [],
       defaultModel: typeof raw.defaultModel === "string" ? raw.defaultModel : "",
@@ -56,16 +39,13 @@ function readFile(): { providers: Provider[]; defaultModel: string } {
   }
 }
 
-/** Full config including the managed built-in and real keys (server-internal). */
+/** Full config including real keys (server-internal). */
 export function loadConfig(): ModelsConfig {
   const { providers, defaultModel } = readFile();
-  const custom = providers.filter((p) => !p.builtin && p.id !== BUILT_IN.id);
-  const all = [BUILT_IN, ...custom];
-  const valid = all.some((p) => p.models.some((m) => `${p.id}/${m}` === defaultModel));
-  return {
-    providers: all,
-    defaultModel: valid ? defaultModel : `${BUILT_IN.id}/${BUILT_IN.models[0]}`,
-  };
+  const all = providers.flatMap((p) => p.models.map((m) => `${p.id}/${m}`));
+  const valid = all.includes(defaultModel);
+  // If the saved default is gone, fall back to the first available model (or none).
+  return { providers, defaultModel: valid ? defaultModel : all[0] ?? "" };
 }
 
 function maskKey(key: string): string {
@@ -73,7 +53,7 @@ function maskKey(key: string): string {
   return "•".repeat(Math.max(0, key.length - 4)).slice(0, 8) + key.slice(-4);
 }
 
-/** Public config for the browser: built-in flagged managed, custom keys masked. */
+/** Public config for the browser: keys masked, never sent in the clear. */
 export function listConfig() {
   const cfg = loadConfig();
   return {
@@ -84,10 +64,8 @@ export function listConfig() {
       apiBase: p.apiBase,
       models: p.models,
       kind: p.kind,
-      builtin: !!p.builtin,
-      managed: !!p.builtin,
-      keyMask: p.builtin ? "" : maskKey(p.apiKey),
-      hasKey: p.builtin ? !!process.env.ANTHROPIC_API_KEY : !!p.apiKey,
+      keyMask: maskKey(p.apiKey),
+      hasKey: !!p.apiKey,
     })),
   };
 }
@@ -95,8 +73,8 @@ export function listConfig() {
 const MASK_RE = /[•*]/;
 
 /**
- * Persist incoming custom providers + default selection. An incoming apiKey
- * that's empty or still masked means "unchanged" — we keep the stored key.
+ * Persist providers + default selection. An incoming apiKey that's empty or
+ * still masked means "unchanged" — we keep the stored key.
  */
 export function saveConfig(input: {
   providers: Array<Partial<Provider>>;
@@ -104,23 +82,23 @@ export function saveConfig(input: {
 }): ModelsConfig {
   const existing = new Map(readFile().providers.map((p) => [p.id, p]));
 
-  const custom: Provider[] = (input.providers ?? [])
-    .filter((p) => p.id && p.id !== BUILT_IN.id && !p.builtin)
+  const providers: Provider[] = (input.providers ?? [])
+    .filter((p) => p.id)
     .map((p) => {
       const prior = existing.get(p.id!);
       const incomingKey = p.apiKey ?? "";
       const keepOld = prior && (incomingKey === "" || MASK_RE.test(incomingKey));
+      const kind: ProviderKind = p.kind === "anthropic" ? "anthropic" : "openai";
       return {
         id: p.id!,
         name: (p.name ?? "").trim() || "Provider",
         apiBase: (p.apiBase ?? "").trim().replace(/\/+$/, ""),
         apiKey: keepOld ? prior!.apiKey : incomingKey,
         models: (p.models ?? []).map((m) => m.trim()).filter(Boolean),
-        kind: "openai",
+        kind,
       };
     });
 
-  mkdirSync(path.dirname(FILE), { recursive: true });
-  writeFileSync(FILE, JSON.stringify({ providers: custom, defaultModel: input.defaultModel }, null, 2));
+  setModelsRaw(JSON.stringify({ providers, defaultModel: input.defaultModel }));
   return loadConfig();
 }

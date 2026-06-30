@@ -16,6 +16,7 @@ export const solarizedDark: Theme = {
   },
   // A touch tighter than Default Dark to show radius is per-theme.
   radius: { sm: "5px", md: "7px", lg: "10px" },
+  sidebar: { bg: "#00222b" },
   term: {
     background: "#002b36",
     foreground: "#93a1a1",

@@ -10,6 +10,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
     "node-pty": "^1.0.0",
+    "undici": "^8.5.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

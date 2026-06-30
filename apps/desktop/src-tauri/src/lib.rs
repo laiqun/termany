@@ -17,15 +17,31 @@ fn start_server(app: &tauri::App) {
             return;
         }
     };
-    let server_dir = resource_dir.join("server");
-    let node = server_dir.join("node");
+    // The bundled Node runtime is `node` on unix, `node.exe` on Windows.
+    let node_bin = if cfg!(windows) { "node.exe" } else { "node" };
+    // Tauri's resource glob (`resources/server/**/*`) preserves the leading
+    // `resources/` segment, so the bundle lands at <Resources>/resources/server.
+    // Fall back to <Resources>/server in case the mapping ever changes.
+    let bundled = resource_dir.join("resources").join("server");
+    let server_dir = if bundled.join(node_bin).exists() {
+        bundled
+    } else {
+        resource_dir.join("server")
+    };
+    let node = server_dir.join(node_bin);
     let entry = server_dir.join("server.cjs");
 
-    match Command::new(&node)
-        .arg(&entry)
-        .current_dir(&server_dir)
-        .spawn()
+    let mut command = Command::new(&node);
+    command.arg(&entry).current_dir(&server_dir);
+    // On Windows, spawning a console subprocess flashes a black cmd window;
+    // CREATE_NO_WINDOW (0x0800_0000) keeps the bundled server headless.
+    #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+
+    match command.spawn() {
         Ok(child) => {
             app.manage(ServerProcess(Mutex::new(Some(child))));
         }
@@ -46,6 +62,7 @@ fn kill_server(app: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -56,6 +73,7 @@ pub fn run() {
             } else {
                 start_server(app);
             }
+
             Ok(())
         })
         .on_window_event(|window, event| {

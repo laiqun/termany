@@ -15,6 +15,8 @@ export const defaultDark: Theme = {
     accentSoft: "rgba(92, 207, 230, 0.16)",
   },
   radius: { sm: "6px", md: "8px", lg: "12px" },
+  // A touch darker than the terminal — a distinct, recessed sidebar rail.
+  sidebar: { bg: "#0a0c11" },
   term: {
     background: "#0e1116",
     foreground: "#d7dce2",

@@ -17,8 +17,12 @@ export class WebSocketBackend implements ITerminalBackend {
   private dataCb?: (data: string) => void;
   private exitCb?: () => void;
 
-  constructor(url: string) {
-    this.ws = new WebSocket(url);
+  constructor(url: string, params?: Record<string, string | undefined>) {
+    const wsUrl = new URL(url);
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value) wsUrl.searchParams.set(key, value);
+    }
+    this.ws = new WebSocket(wsUrl);
     this.ws.onopen = () => {
       this.open = true;
       for (const m of this.outbox) this.ws.send(m);

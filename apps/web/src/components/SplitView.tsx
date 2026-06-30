@@ -55,6 +55,7 @@ function PaneHeader({ leaf, solo }: { leaf: Leaf; solo: boolean }) {
             setEditing(false);
           }}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             else if (e.key === "Escape") setEditing(false);
           }}

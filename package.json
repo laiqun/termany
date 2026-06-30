@@ -1,6 +1,6 @@
 {
   "name": "termany",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "AI terminal — local-first, cloud-ready. Workspaces > vertical tabs > horizontal tabs.",
   "workspaces": [
@@ -15,7 +15,8 @@
     "dev:web": "npm -w @termany/web run dev",
     "dev:app": "npm -w @termany/desktop run dev",
     "build:web": "npm -w @termany/web run build",
-    "bundle:server": "node scripts/bundle-server.mjs"
+    "bundle:server": "node scripts/bundle-server.mjs",
+    "release:mac": "bash scripts/release-mac.sh"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",

@@ -14,10 +14,21 @@ export function TerminalPane({ id }: { id: string }) {
     if (!host) return;
     attachSession(id, host);
 
-    const ro = new ResizeObserver(() => fitSession(id));
+    // Coalesce resize bursts (window/split-drag fires RO every frame) to ONE fit
+    // per animation frame — fit.fit() measures + reflows the grid and sends a PTY
+    // resize, so running it per RO callback floods the socket while dragging.
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        fitSession(id);
+      });
+    });
     ro.observe(host);
 
     return () => {
+      if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       detachSession(id, host);
     };

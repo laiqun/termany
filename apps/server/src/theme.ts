@@ -97,12 +97,11 @@ export async function generateTheme(prompt: string): Promise<unknown> {
 }
 
 async function viaAnthropic(provider: Provider, model: string, prompt: string): Promise<string> {
-  if (provider.builtin && !process.env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY is not set on the server");
-  }
-  const client = new Anthropic(
-    provider.apiBase ? { baseURL: provider.apiBase, apiKey: provider.apiKey } : {}
-  );
+  if (!provider.apiKey) throw new Error(`${provider.name}: API key is not set`);
+  const client = new Anthropic({
+    apiKey: provider.apiKey,
+    ...(provider.apiBase ? { baseURL: provider.apiBase } : {}),
+  });
   const response = await client.messages.create({
     model,
     max_tokens: 1500,
