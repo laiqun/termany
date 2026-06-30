@@ -89,7 +89,10 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npm run tauri --
-          args: --target aarch64-apple-darwin --config src-tauri/tauri.release.conf.json
+          # No args: build the host default target (macos-latest is arm64), and
+          # Tauri auto-merges src-tauri/tauri.macos.conf.json for signing +
+          # resources. (--config / --target via tauri-action's args land after a
+          # `--`, where cargo — not tauri — would try to parse them.)
           tagName: v__VERSION__
           releaseName: "Termany v__VERSION__"
           releaseBody: "Download the .dmg below, open it, and drag Termany to Applications."

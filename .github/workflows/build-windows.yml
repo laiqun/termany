@@ -53,11 +53,16 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npm run tauri --
-          args: --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+          # No args: build the host default target (windows-latest is x64), and
+          # Tauri auto-merges src-tauri/tauri.windows.conf.json for the NSIS
+          # bundle. (--config / --target via tauri-action's args land after a
+          # `--`, where cargo — not tauri — would try to parse them.)
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: termany-windows-x64-setup
-          path: apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+          # Recursive glob so it matches whether or not Tauri nests under a
+          # target-triple dir.
+          path: apps/desktop/src-tauri/target/**/release/bundle/nsis/*-setup.exe
           if-no-files-found: error

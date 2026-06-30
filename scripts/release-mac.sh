@@ -35,9 +35,9 @@ find "$RES" \( -name "*.node" -o -name "spawn-helper" \) -type f -print0 \
     done
 
 echo "==> [4/4] Build, sign & notarize the app (this takes a few minutes)"
+# tauri.macos.conf.json is auto-merged on macOS, so no --config is needed.
 npm -w @termany/desktop run tauri -- build \
-  --target aarch64-apple-darwin \
-  --config src-tauri/tauri.release.conf.json
+  --target aarch64-apple-darwin
 
 DMG=$(ls apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
 
