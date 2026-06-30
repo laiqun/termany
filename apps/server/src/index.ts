@@ -69,13 +69,25 @@ function readBuffer(
 
 const PORT = Number(process.env.TERMANY_PORT ?? 5174);
 const IS_WIN = os.platform() === "win32";
-const SHELL = process.env.SHELL || (IS_WIN ? "powershell.exe" : "zsh");
 const PASTE_DIR = process.env.TERMANY_PASTE_DIR ?? `${os.tmpdir()}/termany-pastes`;
 // Launch a LOGIN shell so it runs /etc/zprofile + ~/.zprofile (Homebrew's
 // `brew shellenv`, fnm/pyenv/etc.) — a GUI app inherits only a minimal PATH,
 // so without this the user's profile hits "command not found".
-const SHELL_ARGS = IS_WIN ? [] : ["-l"];
 const execFileAsync = promisify(execFile);
+
+function windowsPowerShellPath(): string {
+  const root = process.env.SystemRoot || "C:\\Windows";
+  return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+}
+
+function defaultShell(): string {
+  if (process.env.TERMANY_SHELL) return process.env.TERMANY_SHELL;
+  if (IS_WIN) return windowsPowerShellPath();
+  return process.env.SHELL || "zsh";
+}
+
+const SHELL = defaultShell();
+const SHELL_ARGS = IS_WIN ? ["-NoLogo"] : ["-l"];
 
 type ClientMessage =
   | { type: "input"; data: string }
@@ -242,7 +254,7 @@ async function cwdForPid(pid: number): Promise<string | undefined> {
 }
 
 async function resolveSpawnCwd(cwdFrom: string | null): Promise<string> {
-  const fallback = process.env.HOME || process.cwd();
+  const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
   if (!cwdFrom) return fallback;
   const source = ptysBySession.get(cwdFrom);
   const cwd = source ? await cwdForPid(source.pid) : undefined;
@@ -338,7 +350,17 @@ wss.on("connection", async (ws: WebSocket, req) => {
     if (ws.readyState === ws.OPEN) ws.send(data);
   });
 
-  const onExit = pty.onExit(() => {
+  const onExit = pty.onExit(({ exitCode, signal }) => {
+    livePtys.delete(pty);
+    if (sessionId && ptysBySession.get(sessionId) === pty) ptysBySession.delete(sessionId);
+    console.error(
+      `[termany] shell exited (pid: ${pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
+    );
+    if (ws.readyState === ws.OPEN) {
+      ws.send(
+        `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
+      );
+    }
     if (ws.readyState === ws.OPEN) ws.close();
   });
 
