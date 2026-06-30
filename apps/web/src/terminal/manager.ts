@@ -17,7 +17,11 @@ import "@xterm/xterm/css/xterm.css";
  */
 
 const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
+
+function apiUrl(): string {
+  const configured = import.meta.env.VITE_API_URL || WS_URL || "http://localhost:5174";
+  return configured.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
+}
 
 export interface Session {
   el: HTMLDivElement;
@@ -42,30 +46,28 @@ let currentTermTheme: ITheme = {
   selectionBackground: "#2a3441",
 };
 
-const IMAGE_MIMES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+const IMAGE_MIMES = new Set(["image/gif", "image/jpeg", "image/png", "image/tiff", "image/webp"]);
+const IMAGE_UTIS = new Map([
+  ["public.jpeg", "image/jpeg"],
+  ["public.jpg", "image/jpeg"],
+  ["public.png", "image/png"],
+  ["public.tiff", "image/tiff"],
+  ["org.webmproject.webp", "image/webp"],
+]);
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-  }
-  return btoa(binary);
+function normalizeImageType(value: string): string {
+  const type = value.toLowerCase();
+  return IMAGE_UTIS.get(type) ?? type;
 }
 
 async function uploadClipboardImage(file: File): Promise<string> {
-  const data = arrayBufferToBase64(await file.arrayBuffer());
-  const res = await fetch(`${API_URL}/api/paste-image`, {
+  const type = normalizeImageType(file.type) || "image/png";
+  const res = await fetch(`${apiUrl()}/api/paste-image?type=${encodeURIComponent(type)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: file.type, data }),
+    body: file,
   });
-  const payload = await res.json();
+  const text = await res.text();
+  const payload = text ? JSON.parse(text) : {};
   if (!res.ok) throw new Error(payload.error ?? `upload failed (${res.status})`);
   return String(payload.path);
 }
@@ -73,7 +75,7 @@ async function uploadClipboardImage(file: File): Promise<string> {
 function pastedImages(e: ClipboardEvent): File[] {
   const items = Array.from(e.clipboardData?.items ?? []);
   return items
-    .filter((item) => IMAGE_MIMES.has(item.type))
+    .filter((item) => IMAGE_MIMES.has(normalizeImageType(item.type)))
     .map((item) => item.getAsFile())
     .filter((file): file is File => Boolean(file));
 }
@@ -127,11 +129,16 @@ function getSession(id: string): Session {
       if (!images.length) return;
       e.preventDefault();
       void (async () => {
-        try {
-          const paths = await Promise.all(images.map(uploadClipboardImage));
-          backend.write(`${paths.map(shellQuote).join(" ")} `);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+        const settled = await Promise.allSettled(images.map(uploadClipboardImage));
+        const paths = settled
+          .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
+          .map((result) => result.value);
+        if (paths.length) backend.write(`${paths.join(" ")} `);
+        if (!paths.length) {
+          const reason = settled.find(
+            (result): result is PromiseRejectedResult => result.status === "rejected"
+          )?.reason;
+          const msg = reason instanceof Error ? reason.message : String(reason ?? "unknown error");
           term.write(`\r\n\x1b[31m[termany] failed to paste image: ${msg}\x1b[0m\r\n`);
         }
       })();

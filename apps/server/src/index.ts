@@ -37,6 +37,27 @@ function readJson(req: import("node:http").IncomingMessage, maxChars = 1_000_000
   });
 }
 
+function readBuffer(
+  req: import("node:http").IncomingMessage,
+  maxBytes = 20_000_000
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.byteLength;
+      if (size > maxBytes) {
+        reject(new Error("request body too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
 /**
  * The PTY server. One WebSocket connection == one shell session.
  *
@@ -64,21 +85,35 @@ const IMAGE_EXT_BY_MIME: Record<string, string> = {
   "image/gif": "gif",
   "image/jpeg": "jpg",
   "image/png": "png",
+  "image/tiff": "tiff",
   "image/webp": "webp",
 };
 
-async function savePastedImage(body: any): Promise<{ path: string }> {
-  const mime = String(body.type ?? "").toLowerCase();
-  const data = String(body.data ?? "");
-  const ext = IMAGE_EXT_BY_MIME[mime];
+function normalizeImageType(value: string): string {
+  const type = value.toLowerCase();
+  if (type === "public.jpeg" || type === "public.jpg") return "image/jpeg";
+  if (type === "public.png") return "image/png";
+  if (type === "public.tiff") return "image/tiff";
+  if (type === "org.webmproject.webp") return "image/webp";
+  return type;
+}
+
+async function writePastedImage(mime: string, data: Buffer): Promise<{ path: string }> {
+  const ext = IMAGE_EXT_BY_MIME[normalizeImageType(mime)];
   if (!ext) throw new Error("unsupported image type");
-  if (!data) throw new Error("image data is required");
+  if (!data.byteLength) throw new Error("image data is required");
 
   await fs.promises.mkdir(PASTE_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const filePath = `${PASTE_DIR}/paste-${stamp}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-  await fs.promises.writeFile(filePath, Buffer.from(data, "base64"));
+  await fs.promises.writeFile(filePath, data);
   return { path: filePath };
+}
+
+async function savePastedImage(body: any): Promise<{ path: string }> {
+  const mime = String(body.type ?? "").toLowerCase();
+  const data = String(body.data ?? "");
+  return writePastedImage(mime, Buffer.from(data, "base64"));
 }
 
 // One HTTP server hosts both the WebSocket upgrade (PTY sessions) and a small
@@ -148,10 +183,20 @@ const http = createServer((req, res) => {
   // Clipboard image paste support. The browser cannot write directly to the
   // local filesystem, so the local server persists the blob and returns a path
   // that can be inserted into the active terminal prompt.
-  if (req.method === "POST" && req.url === "/api/paste-image") {
-    readJson(req, 30_000_000)
+  const reqUrl = new URL(req.url ?? "/", "http://localhost");
+  if (req.method === "POST" && reqUrl.pathname === "/api/paste-image") {
+    const contentType = normalizeImageType(
+      reqUrl.searchParams.get("type") ||
+        String(req.headers["content-type"] ?? "").split(";")[0] ||
+        "image/png"
+    );
+    readBuffer(req)
       .then(async (body) => {
-        json(200, await savePastedImage(body));
+        if (contentType === "application/json") {
+          json(200, await savePastedImage(JSON.parse(body.toString("utf8") || "{}")));
+          return;
+        }
+        json(200, await writePastedImage(contentType, body));
       })
       .catch(fail);
     return;
