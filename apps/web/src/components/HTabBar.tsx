@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { isTauri } from "../env";
-import { useStore, activeNode } from "../state/store";
+import { useStore, activeNode, HTAB_DRAG_MIME } from "../state/store";
 import { ChevronIcon, CloseIcon, PanelIcon, PlusIcon } from "./icons";
 
 /**
@@ -55,6 +55,16 @@ export function HTabBar() {
           className={`htab ${h.id === node.activeHTab ? "active" : ""}`}
           onClick={() => setActiveHTab(h.id)}
           onDoubleClick={() => setEditing(h.id)}
+          // Drag a tab onto a tree page to move it there. Off while renaming so
+          // the user can select text in the input.
+          draggable={editing !== h.id}
+          onDragStart={(e) => {
+            e.dataTransfer.setData(
+              HTAB_DRAG_MIME,
+              JSON.stringify({ tabId: h.id, nodeId: node.id })
+            );
+            e.dataTransfer.effectAllowed = "move";
+          }}
         >
           {editing === h.id ? (
             <input

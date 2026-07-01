@@ -1,7 +1,7 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { Brain, Info, Keyboard, Palette } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isTauri } from "../env";
+import { openExternal } from "../openExternal";
 import { useStore } from "../state/store";
 import { registerTheme, THEMES } from "../themes";
 import { CloseIcon } from "./icons";
@@ -9,18 +9,6 @@ import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
 
 type Section = "appearance" | "models" | "keyboard" | "about";
-
-/** Open a URL in the system browser (desktop) or a new tab (web). Returns an
- *  error message on failure (so a dead click surfaces a reason), null on ok. */
-async function openExternal(url: string): Promise<string | null> {
-  try {
-    if (isTauri) await openUrl(url);
-    else window.open(url, "_blank", "noopener,noreferrer");
-    return null;
-  } catch (e) {
-    return e instanceof Error ? e.message : String(e);
-  }
-}
 
 // Same host as the PTY server; the AI theme endpoint lives there (key stays
 // server-side). Override with VITE_API_URL if the server moves.

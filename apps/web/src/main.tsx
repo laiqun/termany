@@ -4,6 +4,7 @@ import { App } from "./App";
 import { isTauri } from "./env";
 import { loadState, startStateSync } from "./state/sync";
 import "./styles.css";
+import { loadSnapshots, startScrollSync } from "./terminal/scroll";
 import { applyTheme, loadAiThemes, loadThemeId } from "./themes";
 
 // In the desktop shell the window is borderless + transparent so we can draw our
@@ -16,10 +17,13 @@ if (isTauri) document.documentElement.classList.add("tauri");
 loadAiThemes();
 applyTheme(loadThemeId());
 
-// Hydrate the workspace/tab layout from the server (SQLite) BEFORE first render,
-// then start syncing changes back. Render after, so we never flash empty tabs.
-loadState().finally(() => {
+// Hydrate the workspace/tab layout AND the saved terminal scrollback from the
+// server (SQLite) BEFORE first render, then start syncing both back. Rendering
+// after means we never flash empty tabs and snapshots are ready before the first
+// terminal attaches (so its restored screen is in place before the shell paints).
+Promise.allSettled([loadState(), loadSnapshots()]).finally(() => {
   startStateSync();
+  startScrollSync();
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <App />

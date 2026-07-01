@@ -12,7 +12,15 @@ import os from "node:os";
 import { promisify } from "node:util";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
-import { loadState, saveState } from "./db.js";
+import {
+  forgetSessions,
+  getAllScroll,
+  getSessionCwd,
+  loadState,
+  saveState,
+  setScrollBatch,
+  setSessionCwd,
+} from "./db.js";
 import { generateTheme } from "./theme.js";
 
 /** Read a JSON request body (capped) into an object. */
@@ -133,7 +141,7 @@ async function savePastedImage(body: any): Promise<{ path: string }> {
 const http = createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Image-Type");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204).end();
@@ -174,6 +182,32 @@ const http = createServer((req, res) => {
     readJson(req)
       .then((body) => {
         saveState(body);
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Terminal scrollback snapshots — the frontend serializes each open terminal
+  // periodically (and on close) so a restored pane can replay its last screen.
+  if (req.method === "GET" && req.url === "/api/scroll") {
+    json(200, getAllScroll());
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/scroll") {
+    readJson(req)
+      .then((body) => {
+        setScrollBatch(body?.snapshots ?? {});
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+  // Permanently drop restore data (cwd + scrollback) for closed panes.
+  if (req.method === "POST" && req.url === "/api/forget") {
+    readJson(req)
+      .then((body) => {
+        forgetSessions(Array.isArray(body?.ids) ? body.ids.map(String) : []);
         json(200, { ok: true });
       })
       .catch(fail);
@@ -253,19 +287,56 @@ async function cwdForPid(pid: number): Promise<string | undefined> {
   return undefined;
 }
 
-async function resolveSpawnCwd(cwdFrom: string | null): Promise<string> {
-  const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
-  if (!cwdFrom) return fallback;
-  const source = ptysBySession.get(cwdFrom);
-  const cwd = source ? await cwdForPid(source.pid) : undefined;
-  if (!cwd) return fallback;
+/** Return `dir` if it's an existing directory, else undefined. */
+async function dirIfValid(dir: string | undefined): Promise<string | undefined> {
+  if (!dir) return undefined;
   try {
-    const stat = await fs.promises.stat(cwd);
-    return stat.isDirectory() ? cwd : fallback;
+    return (await fs.promises.stat(dir)).isDirectory() ? dir : undefined;
   } catch {
-    return fallback;
+    return undefined;
   }
 }
+
+/**
+ * Where to start a new shell. A split inherits its sibling's live cwd
+ * (`cwdFrom`); otherwise a restored pane lands in its own last-known directory
+ * (persisted by the periodic sweep); failing both, the home directory.
+ */
+async function resolveSpawnCwd(cwdFrom: string | null, sessionId: string | null): Promise<string> {
+  const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
+  if (cwdFrom) {
+    const source = ptysBySession.get(cwdFrom);
+    const live = await dirIfValid(source ? await cwdForPid(source.pid) : undefined);
+    if (live) return live;
+  }
+  if (sessionId) {
+    const saved = await dirIfValid(getSessionCwd(sessionId) ?? undefined);
+    if (saved) return saved;
+  }
+  return fallback;
+}
+
+/**
+ * Record every live session's working directory so a respawned shell can return
+ * to it after the app is closed and reopened. Runs on an interval (the app may
+ * be SIGKILLed on quit, so we can't rely on a shutdown hook) and once at exit.
+ */
+async function sweepCwds(): Promise<void> {
+  for (const [id, pty] of ptysBySession) {
+    const cwd = await dirIfValid(await cwdForPid(pty.pid));
+    if (cwd) {
+      try {
+        setSessionCwd(id, cwd);
+      } catch {
+        /* DB busy — next sweep will catch it */
+      }
+    }
+  }
+}
+
+setInterval(() => {
+  void sweepCwds();
+}, 5000).unref();
 
 wss.on("connection", async (ws: WebSocket, req) => {
   const cid = ++connCount;
@@ -320,7 +391,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
     }
   });
 
-  const cwd = await resolveSpawnCwd(url.searchParams.get("cwdFrom"));
+  const cwd = await resolveSpawnCwd(url.searchParams.get("cwdFrom"), sessionId);
   if (closed) return;
 
   try {
@@ -374,7 +445,10 @@ wss.on("connection", async (ws: WebSocket, req) => {
 
 // Kill every spawned shell when the server is stopped, so dev restarts don't
 // leave a pile of orphaned interactive shells behind.
-function shutdown() {
+async function shutdown() {
+  // Best-effort: capture the final working directories before the shells die, so
+  // a clean quit restores them exactly. Bounded so we never hang the exit.
+  await Promise.race([sweepCwds(), new Promise((r) => setTimeout(r, 800))]).catch(() => {});
   for (const pty of livePtys) {
     try {
       pty.kill();

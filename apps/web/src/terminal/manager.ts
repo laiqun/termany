@@ -1,8 +1,11 @@
 import { WebSocketBackend } from "@termany/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { SerializeAddon } from "@xterm/addon-serialize";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { openExternal } from "../openExternal";
 
 /**
  * The terminal session registry.
@@ -27,12 +30,43 @@ export interface Session {
   el: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
+  serialize: SerializeAddon;
   backend: WebSocketBackend;
   opened: boolean;
 }
 
 const sessions = new Map<string, Session>();
 const pendingCwdFrom = new Map<string, string>();
+
+/**
+ * Scrollback snapshots from the previous run, keyed by session id, primed once
+ * at startup (see scroll.ts). Each is replayed into its terminal the first time
+ * that session is created, then dropped so a live session is never overwritten.
+ */
+const restoreSnapshots = new Map<string, string>();
+
+/** Seed the saved snapshots before any session is attached (startup only). */
+export function primeSnapshots(snapshots: Record<string, string>) {
+  for (const [id, data] of Object.entries(snapshots)) {
+    if (data) restoreSnapshots.set(id, data);
+  }
+}
+
+/** Serialize a live session's screen + scrollback (capped) for persistence. */
+export function snapshotSession(id: string): string | undefined {
+  const s = sessions.get(id);
+  if (!s || !s.opened) return undefined;
+  try {
+    return s.serialize.serialize({ scrollback: 1000 });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Ids of every session currently live in the registry. */
+export function liveSessionIds(): string[] {
+  return [...sessions.keys()];
+}
 
 /**
  * The terminal palette in effect. New sessions are created with it, and
@@ -60,14 +94,43 @@ function normalizeImageType(value: string): string {
   return IMAGE_UTIS.get(type) ?? type;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function readJsonResponse(res: Response): Promise<any> {
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
 async function uploadClipboardImage(file: File): Promise<string> {
   const type = normalizeImageType(file.type) || "image/png";
   const res = await fetch(`${apiUrl()}/api/paste-image?type=${encodeURIComponent(type)}`, {
     method: "POST",
     body: file,
   });
-  const text = await res.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = await readJsonResponse(res);
+  if (res.status === 404) {
+    const fallback = await fetch(`${apiUrl()}/api/paste-image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, data: arrayBufferToBase64(await file.arrayBuffer()) }),
+    });
+    payload = await readJsonResponse(fallback);
+    if (!fallback.ok) throw new Error(payload.error ?? `upload failed (${fallback.status})`);
+    return String(payload.path);
+  }
   if (!res.ok) throw new Error(payload.error ?? `upload failed (${res.status})`);
   return String(payload.path);
 }
@@ -103,6 +166,29 @@ function getSession(id: string): Session {
 
   const fit = new FitAddon();
   term.loadAddon(fit);
+
+  const serialize = new SerializeAddon();
+  term.loadAddon(serialize);
+
+  // Replay the previous run's screen + scrollback (a static snapshot) ABOVE the
+  // fresh shell, so a reopened pane shows where it left off. Written before the
+  // backend connects, so it can never interleave with the new shell's output.
+  const snapshot = restoreSnapshots.get(id);
+  if (snapshot) {
+    restoreSnapshots.delete(id);
+    term.write(snapshot);
+    term.write("\r\n\x1b[2m── restored from last session — new shell below ──\x1b[0m\r\n");
+  }
+
+  // Make URLs in terminal output clickable — open in the system browser on
+  // desktop, a new tab on web. (xterm only underlines/links on hover by default
+  // once this addon is loaded.)
+  term.loadAddon(
+    new WebLinksAddon((event, uri) => {
+      event.preventDefault();
+      void openExternal(uri);
+    })
+  );
 
   const backend = new WebSocketBackend(WS_URL, {
     session: id,
@@ -146,7 +232,7 @@ function getSession(id: string): Session {
     true
   );
 
-  const session: Session = { el, term, fit, backend, opened: false };
+  const session: Session = { el, term, fit, serialize, backend, opened: false };
   sessions.set(id, session);
   return session;
 }
@@ -208,4 +294,11 @@ export function disposeSession(id: string) {
   s.term.dispose();
   s.el.remove();
   sessions.delete(id);
+  restoreSnapshots.delete(id);
+  // Drop its persisted restore data — a closed pane should not come back.
+  fetch(`${apiUrl()}/api/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: [id] }),
+  }).catch(() => {});
 }

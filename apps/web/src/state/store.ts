@@ -45,6 +45,13 @@ export type Pane =
 /** Which side of a target pane a drag is dropping onto. */
 export type DropEdge = "left" | "right" | "top" | "bottom";
 
+/**
+ * DataTransfer MIME for dragging a whole terminal tab onto a tree page.
+ * Payload is JSON: `{ tabId, nodeId }` (the tab and the page it came from).
+ * Distinct from the tree-node MIME so a page-drag and a tab-drag never collide.
+ */
+export const HTAB_DRAG_MIME = "application/x-termany-htab";
+
 export interface HTab {
   id: string;
   title: string;
@@ -118,6 +125,13 @@ interface State {
   setActiveHTab: (id: string) => void;
   closeHTab: (id: string) => void;
   renameHTab: (id: string, title: string) => void;
+  /**
+   * Move a whole tab from one page to another (drag tab → tree page). The
+   * terminal sessions live outside React keyed by id, so this just relocates the
+   * HTab object — the shells keep running. Refills the source page with a fresh
+   * blank tab if it would otherwise be left with none.
+   */
+  moveHTab: (tabId: string, fromNodeId: string, toNodeId: string) => void;
 
   /** Split the focused pane of the active tab in the given direction. */
   splitFocused: (dir: "row" | "col") => void;
@@ -518,6 +532,36 @@ export const useStore = create<State>((set) => ({
         }),
       })),
     })),
+
+  moveHTab: (tabId, fromNodeId, toNodeId) =>
+    set((s) => {
+      if (fromNodeId === toNodeId) return {};
+      return {
+        workspaces: inActiveWs(s, (ws) => {
+          const from = findNode(ws.roots, fromNodeId);
+          const moving = from?.htabs.find((h) => h.id === tabId);
+          if (!moving || !findNode(ws.roots, toNodeId)) return ws;
+          // Pull the tab out of its source page (refill to keep every page ≥1 tab).
+          let roots = updateNode(ws.roots, fromNodeId, (n) => {
+            const htabs = n.htabs.filter((h) => h.id !== tabId);
+            if (htabs.length === 0) {
+              const h = makeHTab(1);
+              return { ...n, htabs: [h], activeHTab: h.id };
+            }
+            const activeHTab =
+              n.activeHTab === tabId ? htabs[htabs.length - 1].id : n.activeHTab;
+            return { ...n, htabs, activeHTab };
+          });
+          // Append to the target page and focus it there.
+          roots = updateNode(roots, toNodeId, (n) => ({
+            ...n,
+            htabs: [...n.htabs, moving],
+            activeHTab: moving.id,
+          }));
+          return { ...ws, roots };
+        }),
+      };
+    }),
 
   splitFocused: (dir) =>
     set((s) => ({

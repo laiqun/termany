@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { activeWorkspace, useStore, type TreeNode } from "../state/store";
+import { activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
 import { ChevronIcon, CloseIcon, CollapseAllIcon, PageIcon, PlusIcon } from "./icons";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
@@ -14,6 +14,7 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
   const deleteNode = useStore((s) => s.deleteNode);
   const renameNode = useStore((s) => s.renameNode);
   const moveNode = useStore((s) => s.moveNode);
+  const moveHTab = useStore((s) => s.moveHTab);
   const [editing, setEditing] = useState(false);
   const [dropTarget, setDropTarget] = useState(false);
 
@@ -33,7 +34,8 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
           e.dataTransfer.effectAllowed = "move";
         }}
         onDragOver={(e) => {
-          if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+          const { types } = e.dataTransfer;
+          if (!types.includes(DRAG_MIME) && !types.includes(HTAB_DRAG_MIME)) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
           setDropTarget(true);
@@ -43,6 +45,13 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
           e.preventDefault();
           e.stopPropagation(); // drop ON a row reparents; empty area handled by container
           setDropTarget(false);
+          // A tab dropped onto this page moves the whole terminal tab here.
+          const htab = e.dataTransfer.getData(HTAB_DRAG_MIME);
+          if (htab) {
+            const { tabId, nodeId } = JSON.parse(htab);
+            moveHTab(tabId, nodeId, node.id);
+            return;
+          }
           const dragId = e.dataTransfer.getData(DRAG_MIME);
           if (dragId) moveNode(dragId, node.id);
         }}

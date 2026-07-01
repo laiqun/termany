@@ -15,6 +15,9 @@ apps/desktop/src-tauri/gen/schemas/
 # Bundled server (assembled in CI by scripts/bundle-server.mjs)
 apps/desktop/src-tauri/resources/
 
+# Build artifacts (CI bundles land here locally)
+artifacts/
+
 # Logs & OS cruft
 *.log
 .DS_Store
