@@ -901,12 +901,15 @@ html.tauri #root {
      rounded card and split cells stay square at the internal gutters. */
 }
 /* Draw the focus ring as a top-most overlay so it sits ABOVE the opaque header
-   (an inset box-shadow gets painted over by the header's background). */
+   (an inset box-shadow gets painted over by the header's background).
+   Radius matches the pane-card (minus its 1px border) so the ring follows the
+   card's rounded corners instead of getting clipped into a notch there. */
 .pane-slot.focused::after {
   content: "";
   position: absolute;
   inset: 0;
   border: 1px solid var(--accent);
+  border-radius: calc(var(--pane-radius) - 1px);
   pointer-events: none;
   z-index: 6;
 }

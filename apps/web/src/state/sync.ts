@@ -3,6 +3,32 @@ import { useStore } from "./store";
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
 
 /**
+ * True once the server has answered a state load. Saves are gated on this:
+ * if we never managed to load, persisting would OVERWRITE the user's real
+ * layout in SQLite with this webview's in-memory defaults.
+ */
+let hydrated = false;
+
+/**
+ * Wait for the local server to answer. The bundled server boots in parallel
+ * with the webview and usually loses that race by a few hundred ms — without
+ * this, startup hydrates from a dead socket and renders the default layout.
+ */
+export async function waitForServer(timeoutMs = 12_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${API}/api/state`, { signal: AbortSignal.timeout(1000) });
+      if (res.ok) return true;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+
+/**
  * The webview is a reflection of server state now (SQLite), not the source of
  * truth. Hydrate the store from the server on startup; fall back to a one-time
  * import of the old localStorage blob so existing layouts aren't lost.
@@ -11,6 +37,7 @@ export async function loadState(): Promise<void> {
   try {
     const res = await fetch(`${API}/api/state`);
     if (res.ok) {
+      hydrated = true; // an empty-but-ok answer is a genuine fresh install
       const s = await res.json();
       if (Array.isArray(s.workspaces) && s.workspaces.length) {
         useStore.setState({
@@ -52,6 +79,8 @@ export function startStateSync(): void {
   useStore.subscribe(() => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      // Never persist a layout we never loaded — see `hydrated`.
+      if (!hydrated) return;
       const { workspaces, activeWorkspace, sidebarCollapsed } = useStore.getState();
       fetch(`${API}/api/state`, {
         method: "PUT",

@@ -1,4 +1,4 @@
-import { liveSessionIds, primeSnapshots, snapshotSession } from "./manager";
+import { finalScreens, primeSnapshots } from "./manager";
 
 const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
 
@@ -8,13 +8,14 @@ function apiUrl(): string {
 }
 
 /**
- * Terminal scrollback restore: each open terminal's screen + scrollback is
- * serialized and persisted server-side (SQLite), then replayed as a static
- * snapshot above the fresh shell when the app reopens. Pairs with the server's
- * cwd restore so a reopened pane shows its last output AND lands in its old dir.
+ * Terminal history restore: the SERVER tails every session's raw PTY output
+ * into a capped ring (SQLite-backed) as it happens — the frontend never
+ * serializes screens. On reopen the saved tail is replayed into the fresh
+ * terminal's scrollback. Pairs with the server's cwd restore so a reopened
+ * pane shows its last output AND lands in its old directory.
  */
 
-/** Fetch the saved snapshots and prime the manager BEFORE the first attach. */
+/** Fetch the saved histories and prime the manager BEFORE the first attach. */
 export async function loadSnapshots(): Promise<void> {
   try {
     const res = await fetch(`${apiUrl()}/api/scroll`);
@@ -24,44 +25,31 @@ export async function loadSnapshots(): Promise<void> {
   }
 }
 
-/** Serialize every live terminal into an `{ id: data }` map. */
-function collect(): Record<string, string> {
-  const snapshots: Record<string, string> = {};
-  for (const id of liveSessionIds()) {
-    const data = snapshotSession(id);
-    if (data) snapshots[id] = data;
-  }
-  return snapshots;
-}
-
 /**
- * Persist snapshots on an interval (the backbone) plus a reliable flush when the
- * window goes away. `fetch` from an unload handler is dropped by the browser, so
- * the final flush uses `sendBeacon`, which the server accepts as a POST.
+ * Ask the server to persist its in-memory history rings when the window goes
+ * away — on quit the app may SIGKILL the server before its next timed flush.
+ * The beacon body carries final-screen captures for sessions inside a TUI's
+ * alternate screen (which raw history replay cannot restore). `sendBeacon` is
+ * used because plain fetch is dropped from unload handlers; the blob is
+ * text/plain so the cross-origin beacon needs no CORS preflight.
  */
 export function startScrollSync(): void {
-  const save = () => {
-    const snapshots = collect();
-    if (!Object.keys(snapshots).length) return;
-    fetch(`${apiUrl()}/api/scroll`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ snapshots }),
-    }).catch(() => {});
-  };
-
   const flush = () => {
-    const snapshots = collect();
-    if (!Object.keys(snapshots).length) return;
-    const blob = new Blob([JSON.stringify({ snapshots })], { type: "application/json" });
-    navigator.sendBeacon?.(`${apiUrl()}/api/scroll`, blob);
+    const blob = new Blob([JSON.stringify({ screens: finalScreens() })], { type: "text/plain" });
+    navigator.sendBeacon?.(`${apiUrl()}/api/scroll/flush`, blob);
   };
-
-  setInterval(save, 10_000);
-  // pagehide fires on app/tab close (incl. the Tauri webview); visibilitychange
-  // covers backgrounding, where the app may be killed without a further event.
   window.addEventListener("pagehide", flush);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flush();
   });
+  // The quit beacon races the app killing the server, so also sync on an
+  // interval — a lost race then costs at most the last few seconds of a TUI's
+  // screen. Tiny payload (nulls unless a session is inside a fullscreen app).
+  setInterval(() => {
+    fetch(`${apiUrl()}/api/scroll/flush`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ screens: finalScreens() }),
+    }).catch(() => {});
+  }, 15_000);
 }

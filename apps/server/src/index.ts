@@ -14,10 +14,13 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
 import {
   forgetSessions,
+  getAllScreens,
   getAllScroll,
+  getScroll,
   getSessionCwd,
   loadState,
   saveState,
+  setScreenBatch,
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
@@ -100,6 +103,119 @@ const SHELL_ARGS = IS_WIN ? ["-NoLogo"] : ["-l"];
 type ClientMessage =
   | { type: "input"; data: string }
   | { type: "resize"; cols: number; rows: number };
+
+// --- scroll history ---------------------------------------------------------
+// The server tails every session's raw PTY output into a per-session ring
+// (Wave-style: history survives restarts without the frontend serializing
+// anything). Memory: only sessions connected this run hold a ring, each capped
+// at SCROLL_CAP bytes. Disk: dirty rings flush to SQLite every 10s, on session
+// close, and on a pagehide beacon from the frontend (the app may SIGKILL us on
+// quit, so the timed flush alone isn't enough).
+
+const SCROLL_CAP = 512 * 1024; // raw bytes/session ≈ a few thousand visible lines
+
+interface ScrollRing {
+  chunks: string[];
+  bytes: number;
+  dirty: boolean;
+}
+
+const scrollRings = new Map<string, ScrollRing>();
+
+/** The session's ring, seeded from its saved history so runs concatenate. */
+function ringFor(sessionId: string): ScrollRing {
+  let ring = scrollRings.get(sessionId);
+  if (!ring) {
+    const saved = getScroll(sessionId) ?? "";
+    ring = {
+      chunks: saved ? [saved] : [],
+      bytes: Buffer.byteLength(saved),
+      dirty: false,
+    };
+    scrollRings.set(sessionId, ring);
+  }
+  return ring;
+}
+
+function ringAppend(ring: ScrollRing, data: string): void {
+  ring.chunks.push(data);
+  ring.bytes += Buffer.byteLength(data);
+  ring.dirty = true;
+  if (ring.bytes <= SCROLL_CAP) return;
+  // Overflow: drop whole chunks from the head, then cut the new head to a line
+  // boundary so a replay never starts mid-escape-sequence.
+  while (ring.bytes > SCROLL_CAP && ring.chunks.length > 1) {
+    ring.bytes -= Buffer.byteLength(ring.chunks.shift()!);
+  }
+  const head = ring.chunks[0];
+  if (ring.bytes > SCROLL_CAP) {
+    // A single oversized chunk (e.g. `cat` of a huge file) — keep its tail.
+    ring.chunks[0] = head.slice(-SCROLL_CAP);
+    ring.bytes = Buffer.byteLength(ring.chunks[0]);
+  }
+  const nl = ring.chunks[0].indexOf("\n");
+  if (nl >= 0 && nl < ring.chunks[0].length - 1) {
+    ring.bytes -= Buffer.byteLength(ring.chunks[0].slice(0, nl + 1));
+    ring.chunks[0] = ring.chunks[0].slice(nl + 1);
+  }
+}
+
+/** Persist every dirty ring; coalesces each into one string as a side effect. */
+function flushScroll(): void {
+  const batch: Record<string, string> = {};
+  for (const [id, ring] of scrollRings) {
+    if (!ring.dirty) continue;
+    const data = ring.chunks.join("");
+    ring.chunks = [data]; // coalesce: fewer live string objects between flushes
+    ring.dirty = false;
+    batch[id] = data;
+  }
+  try {
+    setScrollBatch(batch);
+  } catch (err) {
+    console.error("[termany] scroll flush failed:", err);
+  }
+}
+
+setInterval(flushScroll, 10_000).unref();
+
+/**
+ * Make raw PTY output safe to replay into a fresh terminal: strip sequences
+ * that would make xterm.js answer back into the NEW shell (device/status
+ * queries) or cause side effects (clipboard writes). Heuristic by design —
+ * anything it misses is neutralised by the client's post-replay reset.
+ */
+function sanitizeForReplay(data: string): string {
+  return (
+    data
+      // DCS strings (XTGETTCAP etc.) — queries wrapped in ESC P ... ESC \
+      .replace(/\x1bP[\s\S]*?(?:\x1b\\|\x07)/g, "")
+      // OSC 52 — replaying it would overwrite the user's clipboard
+      .replace(/\x1b\]52;[^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      // OSC color queries (]10;? / ]11;? …) — xterm.js replies to these
+      .replace(/\x1b\](?:1[0-9]|4);[^\x07\x1b]*\?[^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      // CSI queries with replies: DSR/CPR (final `n`), DA1/DA2/DA3 (final `c`)
+      .replace(/\x1b\[[?>=]?[0-9;]*[nc]/g, "")
+      // XTVERSION, DECRQM, kitty keyboard query
+      .replace(/\x1b\[>[0-9;]*q/g, "")
+      .replace(/\x1b\[\?[0-9;]*\$p/g, "")
+      .replace(/\x1b\[\?u/g, "")
+      // ED3 (erase scrollback) and RIS (full reset) — replayed verbatim they'd
+      // destroy the restored history itself
+      .replace(/\x1b\[3J/g, "")
+      .replace(/\x1bc/g, "")
+      // Interactive-mode ENABLES (focus reporting 1004, mouse 100x/1015,
+      // bracketed paste 2004, kitty keyboard). Replaying one arms the mode on
+      // the fresh terminal, and any focus/mouse event fired before the client's
+      // post-replay reset lands goes to the NEW shell as garbage input (the
+      // echoed `^[[I` then gets captured into history — compounding forever).
+      .replace(
+        /\x1b\[\?(?:[0-9]{1,4};)*(?:100[0-6]|1015|1016|2004)(?:;[0-9]{1,4})*h/g,
+        ""
+      )
+      .replace(/\x1b\[[><][0-9;]*u/g, "")
+  );
+}
 
 const IMAGE_EXT_BY_MIME: Record<string, string> = {
   "image/gif": "gif",
@@ -188,26 +304,46 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Terminal scrollback snapshots — the frontend serializes each open terminal
-  // periodically (and on close) so a restored pane can replay its last screen.
+  // Terminal scroll history — the server tails each session's raw PTY output
+  // (see the ring machinery above), so restore is one sanitized read. Sessions
+  // that quit inside a TUI's alternate screen get their captured final screen
+  // appended AFTER leaving the alt screen, so it survives as plain history
+  // (the alt screen itself is discarded on replay, by terminal semantics).
   if (req.method === "GET" && req.url === "/api/scroll") {
-    json(200, getAllScroll());
+    const merged = getAllScroll();
+    for (const [id, ring] of scrollRings) merged[id] = ring.chunks.join("");
+    for (const id of Object.keys(merged)) merged[id] = sanitizeForReplay(merged[id]);
+    for (const [id, text] of Object.entries(getAllScreens())) {
+      merged[id] =
+        (merged[id] ?? "") +
+        "\x1b[?1049l\x1b[0m\r\n\x1b[2m── screen at last quit ──\x1b[0m\r\n" +
+        text +
+        "\r\n";
+    }
+    json(200, merged);
     return;
   }
-  if (req.method === "POST" && req.url === "/api/scroll") {
+  // sendBeacon target: persist all in-memory history NOW — the window is going
+  // away and the app may SIGKILL this server before the next timed flush. The
+  // body (optional) carries final-screen captures of sessions inside a TUI;
+  // null entries clear a stale capture for sessions back on the primary screen.
+  if (req.method === "POST" && req.url === "/api/scroll/flush") {
     readJson(req)
       .then((body) => {
-        setScrollBatch(body?.snapshots ?? {});
-        json(200, { ok: true });
+        setScreenBatch(body?.screens ?? {});
+        flushScroll();
+        res.writeHead(204).end();
       })
       .catch(fail);
     return;
   }
-  // Permanently drop restore data (cwd + scrollback) for closed panes.
+  // Permanently drop restore data (cwd + scroll history) for closed panes.
   if (req.method === "POST" && req.url === "/api/forget") {
     readJson(req)
       .then((body) => {
-        forgetSessions(Array.isArray(body?.ids) ? body.ids.map(String) : []);
+        const ids = Array.isArray(body?.ids) ? body.ids.map(String) : [];
+        forgetSessions(ids);
+        for (const id of ids) scrollRings.delete(id);
         json(200, { ok: true });
       })
       .catch(fail);
@@ -381,6 +517,21 @@ wss.on("connection", async (ws: WebSocket, req) => {
 
   ws.on("close", () => {
     closed = true;
+    // Persist and release this session's history ring — unless a newer
+    // connection has already adopted the session (window reload race).
+    if (sessionId && (!pty || ptysBySession.get(sessionId) === pty)) {
+      const ring = scrollRings.get(sessionId);
+      if (ring) {
+        if (ring.dirty) {
+          try {
+            setScrollBatch({ [sessionId]: ring.chunks.join("") });
+          } catch {
+            /* the 10s flush already saved most of it */
+          }
+        }
+        scrollRings.delete(sessionId);
+      }
+    }
     if (!pty) return;
     livePtys.delete(pty);
     if (sessionId && ptysBySession.get(sessionId) === pty) ptysBySession.delete(sessionId);
@@ -415,10 +566,14 @@ wss.on("connection", async (ws: WebSocket, req) => {
 
   livePtys.add(pty);
   if (sessionId) ptysBySession.set(sessionId, pty);
+  // Acquired AFTER registering the pty, so the reload race in ws.on("close")
+  // above can never delete a ring this connection is still appending to.
+  const ring = sessionId ? ringFor(sessionId) : undefined;
 
-  // PTY output -> client (raw text frames)
+  // PTY output -> client (raw text frames) + the session's history ring
   const onData = pty.onData((data) => {
     if (ws.readyState === ws.OPEN) ws.send(data);
+    if (ring) ringAppend(ring, data);
   });
 
   const onExit = pty.onExit(({ exitCode, signal }) => {
@@ -449,6 +604,7 @@ async function shutdown() {
   // Best-effort: capture the final working directories before the shells die, so
   // a clean quit restores them exactly. Bounded so we never hang the exit.
   await Promise.race([sweepCwds(), new Promise((r) => setTimeout(r, 800))]).catch(() => {});
+  flushScroll();
   for (const pty of livePtys) {
     try {
       pty.kill();

@@ -1,5 +1,11 @@
 import type { ClientMessage, ITerminalBackend } from "./backend.js";
 
+// The bundled server boots in parallel with the webview and can lose the race
+// by a few hundred ms — retry the INITIAL connection instead of declaring the
+// session dead. Once a connection has opened, a close is a real exit.
+const MAX_CONNECT_ATTEMPTS = 8;
+const RETRY_DELAY_MS = 400; // × attempt number ≈ 11s of patience in total
+
 /**
  * Talks to a PTY server over a single WebSocket.
  *
@@ -8,11 +14,16 @@ import type { ClientMessage, ITerminalBackend } from "./backend.js";
  *   - client -> server : JSON ClientMessage frames (input / resize)
  *
  * Messages sent before the socket is open are buffered and flushed on open,
- * so callers never have to care about connection timing.
+ * so callers never have to care about connection timing (or retries).
  */
 export class WebSocketBackend implements ITerminalBackend {
-  private ws: WebSocket;
+  private ws!: WebSocket;
+  private url: URL;
   private open = false;
+  private everOpened = false;
+  private attempts = 0;
+  private disposed = false;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private outbox: string[] = [];
   private dataCb?: (data: string) => void;
   private exitCb?: () => void;
@@ -22,16 +33,31 @@ export class WebSocketBackend implements ITerminalBackend {
     for (const [key, value] of Object.entries(params ?? {})) {
       if (value) wsUrl.searchParams.set(key, value);
     }
-    this.ws = new WebSocket(wsUrl);
+    this.url = wsUrl;
+    this.connect();
+  }
+
+  private connect() {
+    this.attempts++;
+    this.ws = new WebSocket(this.url);
     this.ws.onopen = () => {
       this.open = true;
+      this.everOpened = true;
       for (const m of this.outbox) this.ws.send(m);
       this.outbox = [];
     };
     this.ws.onmessage = (e) => {
       if (typeof e.data === "string") this.dataCb?.(e.data);
     };
-    this.ws.onclose = () => this.exitCb?.();
+    this.ws.onclose = () => {
+      this.open = false;
+      if (this.disposed) return;
+      if (!this.everOpened && this.attempts < MAX_CONNECT_ATTEMPTS) {
+        this.retryTimer = setTimeout(() => this.connect(), RETRY_DELAY_MS * this.attempts);
+        return;
+      }
+      this.exitCb?.();
+    };
   }
 
   onData(cb: (data: string) => void) {
@@ -51,6 +77,8 @@ export class WebSocketBackend implements ITerminalBackend {
   }
 
   dispose() {
+    this.disposed = true;
+    clearTimeout(this.retryTimer);
     this.open = false;
     try {
       this.ws.close();

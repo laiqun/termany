@@ -1,6 +1,5 @@
 import { WebSocketBackend } from "@termany/core";
 import { FitAddon } from "@xterm/addon-fit";
-import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
@@ -30,7 +29,6 @@ export interface Session {
   el: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
-  serialize: SerializeAddon;
   backend: WebSocketBackend;
   opened: boolean;
 }
@@ -39,33 +37,52 @@ const sessions = new Map<string, Session>();
 const pendingCwdFrom = new Map<string, string>();
 
 /**
- * Scrollback snapshots from the previous run, keyed by session id, primed once
- * at startup (see scroll.ts). Each is replayed into its terminal the first time
+ * Lines of scrollback xterm keeps in memory per terminal. Sized to hold the
+ * server's replayed history tail (SCROLL_CAP raw bytes ≈ a few thousand
+ * visible lines) with room for the live session on top — going much higher
+ * mostly burns webview memory on lines the history cap can't refill anyway.
+ */
+const SCROLLBACK_LINES = 5000;
+
+/**
+ * History tails from previous runs, keyed by session id, primed once at
+ * startup (see scroll.ts). Each is replayed into its terminal the first time
  * that session is created, then dropped so a live session is never overwritten.
  */
 const restoreSnapshots = new Map<string, string>();
 
-/** Seed the saved snapshots before any session is attached (startup only). */
+/** Seed the saved histories before any session is attached (startup only). */
 export function primeSnapshots(snapshots: Record<string, string>) {
   for (const [id, data] of Object.entries(snapshots)) {
     if (data) restoreSnapshots.set(id, data);
   }
 }
 
-/** Serialize a live session's screen + scrollback (capped) for persistence. */
-export function snapshotSession(id: string): string | undefined {
-  const s = sessions.get(id);
-  if (!s || !s.opened) return undefined;
-  try {
-    return s.serialize.serialize({ scrollback: 1000 });
-  } catch {
-    return undefined;
+/**
+ * The visible screen of every session currently inside the ALTERNATE buffer
+ * (fullscreen TUIs: claude, vim, htop…), as plain text — their raw output can't
+ * be restored from history because leaving the alt screen discards it. `null`
+ * for sessions on the primary screen (their history replay already covers
+ * them), which tells the server to clear any stale capture. Sent at quit via
+ * the scroll-flush beacon (see scroll.ts).
+ */
+export function finalScreens(): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const [id, s] of sessions) {
+    if (!s.opened) continue;
+    const buf = s.term.buffer.active;
+    if (buf.type !== "alternate") {
+      out[id] = null;
+      continue;
+    }
+    const lines: string[] = [];
+    for (let y = 0; y < s.term.rows; y++) {
+      lines.push(buf.getLine(y)?.translateToString(true) ?? "");
+    }
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    out[id] = lines.join("\r\n");
   }
-}
-
-/** Ids of every session currently live in the registry. */
-export function liveSessionIds(): string[] {
-  return [...sessions.keys()];
+  return out;
 }
 
 /**
@@ -159,6 +176,7 @@ function getSession(id: string): Session {
   const term = new Terminal({
     fontFamily: 'Menlo, "SF Mono", Monaco, monospace',
     fontSize: 13,
+    scrollback: SCROLLBACK_LINES,
     cursorBlink: true,
     allowProposedApi: true,
     theme: currentTermTheme,
@@ -167,17 +185,41 @@ function getSession(id: string): Session {
   const fit = new FitAddon();
   term.loadAddon(fit);
 
-  const serialize = new SerializeAddon();
-  term.loadAddon(serialize);
-
-  // Replay the previous run's screen + scrollback (a static snapshot) ABOVE the
-  // fresh shell, so a reopened pane shows where it left off. Written before the
-  // backend connects, so it can never interleave with the new shell's output.
+  // Replay the previous run's output tail (server-captured, sanitized) ABOVE
+  // the fresh shell, so a reopened pane shows where it left off. The raw replay
+  // can leave the emulator in a mode the dead shell set (alt screen, mouse
+  // reporting, scroll margins, hidden cursor, line-drawing charset…), so
+  // neutralise all of that before drawing the divider. Two hard-won subtleties:
+  //  - `?1049l` is sent ONLY if the replay actually ended inside the alternate
+  //    screen: on the normal screen it performs a cursor RESTORE to a stale
+  //    saved position, teleporting the cursor up into the restored content —
+  //    which the new shell's erase-below then wipes out.
+  //  - The reset runs in write-callbacks (async), so the new shell's first
+  //    output is held in `pendingOutput` until the divider is down; otherwise
+  //    it could interleave into the middle of the reset sequence.
+  const pendingOutput: string[] = [];
+  let replaying = false;
   const snapshot = restoreSnapshots.get(id);
   if (snapshot) {
     restoreSnapshots.delete(id);
-    term.write(snapshot);
-    term.write("\r\n\x1b[2m── restored from last session — new shell below ──\x1b[0m\r\n");
+    replaying = true;
+    term.write(snapshot, () => {
+      const finishReset = () => {
+        const row = term.buffer.active.cursorY + 1; // where the replay ended
+        term.write(
+          "\x1b[r\x1b[?1000;1002;1003;1006l\x1b[?1004l\x1b[?2004l\x1b[?6l\x1b[?7h" +
+            "\x1b[?25h\x1b(B\x0f\x1b[0m" +
+            `\x1b[${row};1H\x1b7` + // re-park at the content end; overwrite stale saved-cursor
+            "\r\n", // no divider — history flows straight into the new shell
+          () => {
+            replaying = false;
+            for (const d of pendingOutput.splice(0)) term.write(d);
+          }
+        );
+      };
+      if (term.buffer.active.type === "alternate") term.write("\x1b[?1049l", finishReset);
+      else finishReset();
+    });
   }
 
   // Make URLs in terminal output clickable — open in the system browser on
@@ -195,7 +237,10 @@ function getSession(id: string): Session {
     cwdFrom: pendingCwdFrom.get(id),
   });
   pendingCwdFrom.delete(id);
-  backend.onData((data) => term.write(data));
+  backend.onData((data) => {
+    if (replaying) pendingOutput.push(data);
+    else term.write(data);
+  });
   backend.onExit(() => term.write("\r\n\x1b[2m[session ended]\x1b[0m\r\n"));
   term.onData((data) => backend.write(data));
 
@@ -232,7 +277,7 @@ function getSession(id: string): Session {
     true
   );
 
-  const session: Session = { el, term, fit, serialize, backend, opened: false };
+  const session: Session = { el, term, fit, backend, opened: false };
   sessions.set(id, session);
   return session;
 }
