@@ -21,6 +21,8 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
   const renameWorkspace = useStore((s) => s.renameWorkspace);
   const setWorkspaceIcon = useStore((s) => s.setWorkspaceIcon);
 
+  const updateVersion = useStore((s) => s.updateVersion);
+
   const [menuOpen, setMenuOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -45,6 +47,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
           <span className="ws-chevron">
             <ChevronIcon dir="down" />
           </span>
+          {updateVersion && <span className="update-dot" title={`Update ${updateVersion} available`} />}
         </button>
       </div>
 
@@ -112,6 +115,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
                 <GearIcon />
               </span>
               <span className="ws-menu-name">Settings</span>
+              {updateVersion && <span className="update-dot" title={`Update ${updateVersion} available`} />}
             </button>
           </div>
         </>

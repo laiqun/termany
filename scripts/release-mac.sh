@@ -15,8 +15,25 @@ cd "$(dirname "$0")/.."
 : "${APPLE_PASSWORD:?set APPLE_PASSWORD}"
 : "${APPLE_TEAM_ID:?set APPLE_TEAM_ID}"
 
+# Self-update artifacts (Termany.app.tar.gz + .sig) are signed with the Tauri
+# updater key — separate from Apple signing. Falls back to the local key file
+# generated with `tauri signer generate` (no password).
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  UPDATER_KEY="$HOME/.tauri/termany-updater.key"
+  [ -f "$UPDATER_KEY" ] || { echo "missing TAURI_SIGNING_PRIVATE_KEY (or $UPDATER_KEY)" >&2; exit 1; }
+  TAURI_SIGNING_PRIVATE_KEY="$(cat "$UPDATER_KEY")"
+  export TAURI_SIGNING_PRIVATE_KEY
+fi
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+
 RES="apps/desktop/src-tauri/resources/server"
 ENT="apps/desktop/src-tauri/entitlements.plist"
+
+# A stale mounted Termany volume (from a previous install/test) makes Tauri's
+# bundle_dmg.sh fail — detach any before building.
+for v in /Volumes/Termany*; do
+  [ -d "$v" ] && hdiutil detach "$v" -force -quiet && echo "==> detached stale volume $v"
+done
 
 echo "==> [1/4] Build web frontend"
 npm run build:web
@@ -46,6 +63,16 @@ xcrun notarytool submit "$DMG" \
   --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
 xcrun stapler staple "$DMG"
 
+# Give the updater artifacts the versioned Termany_<ver>_<arch> names that
+# `gh release create` uploads and the site's publish-release.sh recognizes.
+VERSION=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+MACOS_BUNDLE="apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+UPDATER_TGZ="$MACOS_BUNDLE/Termany_${VERSION}_aarch64.app.tar.gz"
+cp "$MACOS_BUNDLE/Termany.app.tar.gz" "$UPDATER_TGZ"
+cp "$MACOS_BUNDLE/Termany.app.tar.gz.sig" "$UPDATER_TGZ.sig"
+
 echo
 echo "==> Done. Distributable DMG (signed + notarized + stapled):"
 ls -lh "$DMG"
+echo "==> Self-update artifacts (publish BOTH alongside the DMG):"
+ls -lh "$UPDATER_TGZ" "$UPDATER_TGZ.sig"

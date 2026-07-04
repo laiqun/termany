@@ -1,3 +1,4 @@
+import { demoState, isDemo } from "../demo";
 import { useStore } from "./store";
 
 const API = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
@@ -15,6 +16,7 @@ let hydrated = false;
  * this, startup hydrates from a dead socket and renders the default layout.
  */
 export async function waitForServer(timeoutMs = 12_000): Promise<boolean> {
+  if (isDemo) return true; // no server to wait for
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -34,6 +36,11 @@ export async function waitForServer(timeoutMs = 12_000): Promise<boolean> {
  * import of the old localStorage blob so existing layouts aren't lost.
  */
 export async function loadState(): Promise<void> {
+  if (isDemo) {
+    // Curated layout; `hydrated` stays false so nothing is ever persisted.
+    useStore.setState({ ...demoState(), sidebarCollapsed: false });
+    return;
+  }
   try {
     const res = await fetch(`${API}/api/state`);
     if (res.ok) {
@@ -76,6 +83,7 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 
 /** Debounced save of the layout slice to the server on every store change. */
 export function startStateSync(): void {
+  if (isDemo) return;
   useStore.subscribe(() => {
     clearTimeout(timer);
     timer = setTimeout(() => {

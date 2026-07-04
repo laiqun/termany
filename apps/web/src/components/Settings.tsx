@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { isTauri } from "../env";
 import { openExternal } from "../openExternal";
 import { useStore } from "../state/store";
+import { checkForUpdate, installUpdate, relaunchApp } from "../updater";
 import { registerTheme, THEMES } from "../themes";
 import { CloseIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
@@ -29,6 +30,41 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState("0.1.0");
   const [aboutError, setAboutError] = useState<string | null>(null);
+
+  // Self-update flow (desktop only): idle → checking → (none | available) →
+  // downloading → restarting. `updateVersion` is global so badges stay in sync.
+  const updateVersion = useStore((s) => s.updateVersion);
+  const setUpdateVersion = useStore((s) => s.setUpdateVersion);
+  const [updPhase, setUpdPhase] = useState<"idle" | "checking" | "none" | "downloading" | "restarting">("idle");
+  const [updPct, setUpdPct] = useState(0);
+  const [updError, setUpdError] = useState<string | null>(null);
+
+  async function checkUpdates() {
+    setUpdPhase("checking");
+    setUpdError(null);
+    try {
+      const u = await checkForUpdate();
+      setUpdateVersion(u?.version ?? null);
+      setUpdPhase(u ? "idle" : "none");
+    } catch (e) {
+      setUpdError(e instanceof Error ? e.message : String(e));
+      setUpdPhase("idle");
+    }
+  }
+
+  async function applyUpdate() {
+    setUpdPhase("downloading");
+    setUpdPct(0);
+    setUpdError(null);
+    try {
+      await installUpdate(setUpdPct);
+      setUpdPhase("restarting");
+      await relaunchApp();
+    } catch (e) {
+      setUpdError(e instanceof Error ? e.message : String(e));
+      setUpdPhase("idle");
+    }
+  }
 
   // The desktop app exposes the real bundle version; the browser keeps the default.
   useEffect(() => {
@@ -186,7 +222,49 @@ export function Settings({ onClose }: { onClose: () => void }) {
               <div className="about">
                 <div className="about-name">Termany</div>
                 <div className="about-version">Version {version}</div>
-                <p className="about-desc">An AI-native terminal — local-first, cloud-ready.</p>
+                {isTauri && (
+                  <div className="about-update">
+                    {updateVersion ? (
+                      updPhase === "downloading" ? (
+                        <div className="update-progress">
+                          <div className="update-progress-track">
+                            <div className="update-progress-fill" style={{ width: `${updPct}%` }} />
+                          </div>
+                          <span>Downloading… {updPct}%</span>
+                        </div>
+                      ) : updPhase === "restarting" ? (
+                        <span className="update-status">Installed — restarting…</span>
+                      ) : (
+                        <button className="update-btn" onClick={applyUpdate}>
+                          Update to v{updateVersion} &amp; restart
+                        </button>
+                      )
+                    ) : (
+                      <button
+                        className="update-check-btn"
+                        onClick={checkUpdates}
+                        disabled={updPhase === "checking"}
+                      >
+                        {updPhase === "checking"
+                          ? "Checking…"
+                          : updPhase === "none"
+                            ? "You're up to date ✓"
+                            : "Check for updates"}
+                      </button>
+                    )}
+                    {updError && <div className="ai-theme-error">update failed: {updError}</div>}
+                  </div>
+                )}
+                <p className="about-desc">An agent-native terminal — local-first, cloud-ready.</p>
+                <div className="about-author">
+                  Website{" "}
+                  <button
+                    className="about-link"
+                    onClick={async () => setAboutError(await openExternal("https://termany.sh"))}
+                  >
+                    termany.sh
+                  </button>
+                </div>
                 <div className="about-author">
                   Made by{" "}
                   <button

@@ -1,5 +1,16 @@
 name: Build and Release
 
+# One matrix job per shipping platform; every job attaches its installer to
+# the SAME draft release v<version> (tauri-action creates it if missing, then
+# uploads — the standard tauri matrix pattern). Publishing the draft fires
+# publish-site.yml, which pushes all assets to the website's R2 + download menu.
+#
+# Assets produced (names drive the website's platform mapping — keep stable):
+#   macos-arm64  → Termany_X.Y.Z_aarch64.dmg          (signed + notarized)
+#   macos-x64    → Termany_X.Y.Z_x64.dmg              (signed + notarized)
+#   windows-x64  → Termany_X.Y.Z_x64-setup.exe        (NSIS, unsigned)
+#   linux-x64    → Termany_X.Y.Z_amd64.AppImage/.deb  (unsigned)
+
 on:
   push:
     branches: [main]
@@ -11,8 +22,23 @@ env:
 
 jobs:
   build:
-    # macos-latest is Apple Silicon (arm64) — the only target for now.
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest is Apple Silicon (arm64).
+          - platform: macos-arm64
+            runner: macos-latest
+          # GitHub's last Intel macOS runner (announced through Aug 2027).
+          # If this label ever disappears, an x86_64 cross-build needs real
+          # work in bundle-server.mjs — don't just swap the label.
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: windows-x64
+            runner: windows-latest
+          - platform: linux-x64
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
 
@@ -27,13 +53,20 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "apps/desktop/src-tauri -> target"
+          key: ${{ matrix.platform }}
+
+      - name: Install Tauri system deps (Linux)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl \
+            wget file libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
 
       - name: Install dependencies
         run: npm install
@@ -41,10 +74,14 @@ jobs:
       - name: Build web frontend
         run: npm run build:web
 
+      # bundle-server.mjs is host-platform aware: it downloads the matching
+      # Node runtime and keeps only this platform's node-pty prebuild, so each
+      # matrix job produces its own native server bundle.
       - name: Bundle the Node server (node + node-pty + server.cjs)
         run: npm run bundle:server
 
-      - name: Sign bundled server binaries
+      - name: Sign bundled server binaries (macOS)
+        if: startsWith(matrix.platform, 'macos')
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -76,10 +113,11 @@ jobs:
           security delete-keychain "$KEYCHAIN"
           rm -f "$CERT_PATH"
 
-      - name: Build, sign, notarize & release
+      - name: Build, bundle & attach to the draft release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple signing/notarization vars are only read on macOS runners.
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -89,12 +127,12 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npm run tauri --
-          # No args: build the host default target (macos-latest is arm64), and
-          # Tauri auto-merges src-tauri/tauri.macos.conf.json for signing +
-          # resources. (--config / --target via tauri-action's args land after a
-          # `--`, where cargo — not tauri — would try to parse them.)
+          # No args: build the host default target; Tauri auto-merges
+          # src-tauri/tauri.<platform>.conf.json (signing/resources/targets).
+          # (--config / --target via tauri-action's args land after a `--`,
+          # where cargo — not tauri — would try to parse them.)
           tagName: v__VERSION__
           releaseName: "Termany v__VERSION__"
-          releaseBody: "Download the .dmg below, open it, and drag Termany to Applications."
+          releaseBody: "macOS: download the .dmg for your chip (aarch64 = Apple Silicon, x64 = Intel). Windows: the -setup.exe. Linux: the AppImage."
           releaseDraft: true
           prerelease: false

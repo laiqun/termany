@@ -91,7 +91,16 @@ export async function generateTheme(prompt: string): Promise<unknown> {
       ? await viaAnthropic(provider, model, prompt)
       : await viaOpenAI(provider, model, prompt);
 
-  const theme = JSON.parse(raw) as { name: string; id?: string };
+  // Some providers ignore response_format and fence the JSON in ```json … ```
+  // (or add prose around it) — extract the outermost object before parsing.
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  let theme: { name: string; id?: string };
+  try {
+    theme = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw);
+  } catch {
+    throw new Error("model returned invalid theme JSON — try again or switch the default model");
+  }
   theme.id = `ai-${slug(theme.name)}-${Math.random().toString(36).slice(2, 6)}`;
   return theme;
 }

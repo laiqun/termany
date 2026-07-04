@@ -29,6 +29,32 @@
   box-sizing: border-box;
 }
 
+/* Native scrollbars follow the theme. Without this, machines that always show
+   scrollbars (Windows; macOS with "Show scroll bars: Always") paint the
+   default light scrollbar over dark panes — most visibly xterm's viewport. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-3) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-dim);
+  background-clip: padding-box;
+}
+
 html,
 body,
 #root {
@@ -583,6 +609,7 @@ html.tauri #root {
   padding: 6px 8px;
 }
 .tree-row {
+  position: relative; /* anchors the drop-before/after insertion line */
   display: flex;
   align-items: center;
   gap: 4px;
@@ -604,6 +631,26 @@ html.tauri #root {
   background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
   color: var(--fg);
+}
+/* Sibling-reorder indicator: a flat insertion line hovering at the row's
+   top/bottom edge (a pseudo-element — an inset box-shadow would bend around
+   the row's rounded corners). */
+.tree-row.drop-before::after,
+.tree-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.tree-row.drop-before::after {
+  top: -1px;
+}
+.tree-row.drop-after::after {
+  bottom: -1px;
 }
 .tree.root-drop {
   box-shadow: inset 0 0 0 1px var(--accent);
@@ -627,6 +674,20 @@ html.tauri #root {
 }
 .tree-twisty.leaf {
   cursor: default;
+}
+/* Rows with children read as pages by default; the collapse chevron only
+   appears while hovering the row (Notion-style). */
+.tree-twisty .twisty-page,
+.tree-twisty .twisty-chevron {
+  display: flex;
+  align-items: center;
+}
+.tree-twisty .twisty-chevron,
+.tree-row:hover .tree-twisty .twisty-page {
+  display: none;
+}
+.tree-row:hover .tree-twisty .twisty-chevron {
+  display: flex;
 }
 .tree-title {
   flex: 1;
@@ -1167,6 +1228,75 @@ html.tauri #root {
   opacity: 0.85;
 }
 
+/* Self-update (About section + badges) */
+.about-update {
+  margin: 10px 0 14px;
+}
+.update-btn {
+  padding: 7px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.update-btn:hover {
+  opacity: 0.9;
+}
+.update-check-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.update-check-btn:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+.update-check-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.update-status {
+  font-size: 12.5px;
+  color: var(--fg-dim);
+}
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.update-progress-track {
+  width: 180px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.update-progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+/* Little "new version" dot on the workspace switcher + Settings menu row */
+.update-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #e5544b;
+}
+
 /* AI theme generator */
 .ai-theme {
   display: flex;
@@ -1496,6 +1626,9 @@ html.tauri #root {
 .theme-preview {
   position: relative;
   display: block;
+  /* Explicit — some engines don't flex-stretch children of a <button>, which
+     collapses the preview to a 0-width sliver. */
+  width: 100%;
   height: 96px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);

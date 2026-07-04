@@ -1,9 +1,9 @@
 {
   "name": "termany",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "private": true,
   "license": "AGPL-3.0-only",
-  "description": "AI terminal — local-first, cloud-ready. Workspaces > vertical tabs > horizontal tabs.",
+  "description": "Agent-native terminal — local-first, cloud-ready. Workspaces > vertical tabs > horizontal tabs.",
   "workspaces": [
     "packages/*",
     "apps/*"

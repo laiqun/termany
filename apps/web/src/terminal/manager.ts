@@ -1,9 +1,10 @@
-import { WebSocketBackend } from "@termany/core";
+import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { DemoBackend, demoInteracted, isDemo } from "../demo";
 import { openExternal } from "../openExternal";
 
 /**
@@ -29,7 +30,7 @@ export interface Session {
   el: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
-  backend: WebSocketBackend;
+  backend: ITerminalBackend;
   opened: boolean;
 }
 
@@ -160,6 +161,71 @@ function pastedImages(e: ClipboardEvent): File[] {
     .filter((file): file is File => Boolean(file));
 }
 
+/**
+ * IME event tracing, enabled with `?imedebug` in the URL. Logs every
+ * keyboard/composition/input event on xterm's hidden textarea plus what xterm
+ * actually emits to the PTY, into an on-screen overlay + console. Kept as a
+ * diagnostic — WebKit's IME event ordering has bitten us before (see
+ * fixWebkitImeDirectInsert) and this pinpoints such bugs in one screenshot.
+ */
+const IME_DEBUG = new URLSearchParams(location.search).has("imedebug");
+let imeLogEl: HTMLDivElement | null = null;
+function imeLog(line: string) {
+  if (!IME_DEBUG) return;
+  if (!imeLogEl) {
+    imeLogEl = document.createElement("div");
+    imeLogEl.style.cssText =
+      "position:fixed;right:8px;bottom:8px;z-index:9999;max-width:60vw;max-height:45vh;" +
+      "overflow:auto;background:rgba(0,0,0,.88);color:#9f9;font:11px/1.5 Menlo,monospace;" +
+      "padding:8px 10px;border-radius:6px;pointer-events:none;white-space:pre-wrap;";
+    document.body.appendChild(imeLogEl);
+  }
+  imeLogEl.textContent += line + "\n";
+  imeLogEl.scrollTop = imeLogEl.scrollHeight;
+  console.log("[ime]", line);
+}
+
+function traceImeEvents(term: Terminal) {
+  if (!IME_DEBUG || !term.textarea) return;
+  const ta = term.textarea;
+  const fmt = (v: unknown) => JSON.stringify(v ?? null);
+  for (const type of ["keydown", "keypress", "keyup"]) {
+    ta.addEventListener(
+      type,
+      (e) => {
+        const k = e as KeyboardEvent;
+        imeLog(
+          `${type} key=${fmt(k.key)} code=${k.code} keyCode=${k.keyCode} ` +
+            `composing=${k.isComposing} ta=${fmt(ta.value)}`
+        );
+      },
+      true
+    );
+  }
+  for (const type of ["compositionstart", "compositionupdate", "compositionend"]) {
+    ta.addEventListener(
+      type,
+      (e) => imeLog(`${type} data=${fmt((e as CompositionEvent).data)} ta=${fmt(ta.value)}`),
+      true
+    );
+  }
+  for (const type of ["beforeinput", "input"]) {
+    ta.addEventListener(
+      type,
+      (e) => {
+        const i = e as InputEvent;
+        imeLog(
+          `${type} inputType=${i.inputType} data=${fmt(i.data)} ` +
+            `composing=${i.isComposing} ta=${fmt(ta.value)}`
+        );
+      },
+      true
+    );
+  }
+  ta.addEventListener("focus", () => imeLog("focus"), true);
+  ta.addEventListener("blur", () => imeLog("blur"), true);
+}
+
 /** Switch the terminal palette: future sessions + all currently open ones. */
 export function applyTermTheme(theme: ITheme) {
   currentTermTheme = theme;
@@ -232,17 +298,22 @@ function getSession(id: string): Session {
     })
   );
 
-  const backend = new WebSocketBackend(WS_URL, {
-    session: id,
-    cwdFrom: pendingCwdFrom.get(id),
-  });
+  const backend: ITerminalBackend = isDemo
+    ? new DemoBackend(id)
+    : new WebSocketBackend(WS_URL, {
+        session: id,
+        cwdFrom: pendingCwdFrom.get(id),
+      });
   pendingCwdFrom.delete(id);
   backend.onData((data) => {
     if (replaying) pendingOutput.push(data);
     else term.write(data);
   });
   backend.onExit(() => term.write("\r\n\x1b[2m[session ended]\x1b[0m\r\n"));
-  term.onData((data) => backend.write(data));
+  term.onData((data) => {
+    if (IME_DEBUG) imeLog(`→PTY ${JSON.stringify(data)}`);
+    backend.write(data);
+  });
 
   // Select-to-copy: when the mouse is released over a non-empty selection, copy
   // it to the clipboard (iTerm/Terminal.app behaviour). The selection stays put.
@@ -253,18 +324,34 @@ function getSession(id: string): Session {
 
   // Paste image blobs as local file paths, which keeps terminal input plain text
   // while still making screenshots available to CLI tools that accept images.
+  // Duplicate-fire guard: swallow a second image paste while one is still
+  // uploading or within a short cooldown — key auto-repeat on a held ⌘V (and
+  // any double-dispatched event) otherwise inserts the same screenshot twice.
+  let imagePasteBusyUntil = 0;
   el.addEventListener(
     "paste",
     (e) => {
+      if (isDemo) return; // no upload endpoint — let text paste through, drop images
       const images = pastedImages(e);
       if (!images.length) return;
       e.preventDefault();
+      // Also stop xterm's own paste handler (it ignores defaultPrevented and
+      // pastes any text/plain flavor riding along with the image — e.g. the
+      // source file path when copying from WeChat/Preview/browsers — which
+      // otherwise lands in the prompt as a SECOND image reference).
+      e.stopPropagation();
+      if (Date.now() < imagePasteBusyUntil) return;
+      imagePasteBusyUntil = Date.now() + 1000;
       void (async () => {
         const settled = await Promise.allSettled(images.map(uploadClipboardImage));
         const paths = settled
           .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
           .map((result) => result.value);
-        if (paths.length) backend.write(`${paths.join(" ")} `);
+        // Deliver through xterm's paste pipeline, NOT as raw keystrokes: apps
+        // with bracketed paste on (claude, vim, modern shells) then receive ONE
+        // paste event — Claude Code recognizes a pasted image path and shows
+        // just its [Image #N] chip instead of echoing the path as typed text.
+        if (paths.length) term.paste(`${paths.join(" ")} `);
         if (!paths.length) {
           const reason = settled.find(
             (result): result is PromiseRejectedResult => result.status === "rejected"
@@ -280,6 +367,70 @@ function getSession(id: string): Session {
   const session: Session = { el, term, fit, backend, opened: false };
   sessions.set(id, session);
   return session;
+}
+
+/**
+ * WKWebView/Safari IME fix: SHIFTED full-width punctuation from a CJK IME
+ * (？ ： etc.) arrives as keydown keyCode 229 + an `insertText` input event,
+ * with NO composition events. xterm's 229 fallback snapshots the textarea on
+ * keydown and diffs it a tick later — on WebKit that diff runs one keystroke
+ * LATE, so each press shows the PREVIOUS character ("press twice to type").
+ * Catch exactly that shape ourselves: forward the inserted text and clear the
+ * textarea so xterm's late diff finds nothing to (re)send. Unshifted marks
+ * (，。) use real keycodes and normal pinyin uses composition events — both
+ * are skipped here and keep working through xterm's own paths.
+ */
+function fixWebkitImeDirectInsert(term: Terminal) {
+  const ua = navigator.userAgent;
+  const isPureWebKit = ua.includes("AppleWebKit") && !/Chrome|Chromium|Edg\//.test(ua);
+  if (!isPureWebKit || !term.textarea) return;
+  const ta = term.textarea;
+  const MODIFIERS = new Set([16, 17, 18, 91, 93]); // shift ctrl alt meta(L/R)
+  let composing = false;
+  let compositionEndedAt = 0;
+  let lastRealKeydownAt = 0; // any non-modifier, non-229 keydown
+
+  ta.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.keyCode !== 229 && !MODIFIERS.has(e.keyCode)) lastRealKeydownAt = performance.now();
+    },
+    true
+  );
+  ta.addEventListener("compositionstart", () => (composing = true), true);
+  ta.addEventListener(
+    "compositionend",
+    () => {
+      composing = false;
+      compositionEndedAt = performance.now();
+    },
+    true
+  );
+  // Intercept at BEFOREINPUT — it precedes xterm's own `input` listener, so
+  // cancelling here means the character never reaches the textarea and xterm
+  // never sees an input event: exactly one copy goes to the PTY, ours.
+  ta.addEventListener(
+    "beforeinput",
+    (e) => {
+      const ev = e as InputEvent;
+      if (ev.inputType !== "insertText" || !ev.data) return; // compositions, paste, deletes…
+      if (composing || ev.isComposing || performance.now() - compositionEndedAt < 150) {
+        imeLog("fix:skip composition window");
+        return;
+      }
+      // A normal keystroke's keydown → beforeinput chain is sub-millisecond.
+      // An IME direct insert has NO real keydown before it (WebKit delivers
+      // its keyCode-229 keydown AFTER the input events), so any gap means IME.
+      if (performance.now() - lastRealKeydownAt < 30) {
+        imeLog(`fix:skip normal-typing ${JSON.stringify(ev.data)}`);
+        return;
+      }
+      ev.preventDefault();
+      imeLog(`fix:SEND ${JSON.stringify(ev.data)}`);
+      term.input(ev.data, true);
+    },
+    true
+  );
 }
 
 /** Attach the session's element into `host` and open the terminal (once). */
@@ -298,6 +449,8 @@ export function attachSession(id: string, host: HTMLElement) {
     } catch {
       /* no WebGL available — DOM renderer still works */
     }
+    fixWebkitImeDirectInsert(s.term);
+    traceImeEvents(s.term);
     s.opened = true;
   }
   fitSession(id);
@@ -323,6 +476,9 @@ export function fitSession(id: string) {
 }
 
 export function focusSession(id: string) {
+  // In the landing-page demo iframe, programmatic focus on load would steal
+  // the visitor's keyboard/scroll — hold off until they click into the demo.
+  if (isDemo && !demoInteracted()) return;
   sessions.get(id)?.term.focus();
 }
 
@@ -340,6 +496,7 @@ export function disposeSession(id: string) {
   s.el.remove();
   sessions.delete(id);
   restoreSnapshots.delete(id);
+  if (isDemo) return;
   // Drop its persisted restore data — a closed pane should not come back.
   fetch(`${apiUrl()}/api/forget`, {
     method: "POST",

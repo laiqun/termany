@@ -94,6 +94,10 @@ interface State {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
 
+  /** Version of an available desktop update (badges + About), or null. */
+  updateVersion: string | null;
+  setUpdateVersion: (v: string | null) => void;
+
   /** Action id → key chord. Persisted to localStorage. */
   keybindings: Record<string, Chord>;
   /** Rebind one action. Pass null to restore that action's default. */
@@ -118,8 +122,12 @@ interface State {
   setActiveNode: (id: string) => void;
   renameNode: (id: string, title: string) => void;
   deleteNode: (id: string) => void;
-  /** Move a node under `targetId` (as last child), or to root level if null. */
-  moveNode: (dragId: string, targetId: string | null) => void;
+  /**
+   * Move a node relative to `targetId`: "into" nests it as the last child
+   * (default), "before"/"after" reorder it as a sibling. `null` target moves
+   * it to the end of the root level.
+   */
+  moveNode: (dragId: string, targetId: string | null, pos?: "into" | "before" | "after") => void;
 
   addHTab: () => void;
   setActiveHTab: (id: string) => void;
@@ -280,6 +288,24 @@ function removeNode(nodes: TreeNode[], nodeId: string): TreeNode[] {
     .map((n) => (n.children.length ? { ...n, children: removeNode(n.children, nodeId) } : n));
 }
 
+/** Insert `node` as a SIBLING of `targetId`, directly before or after it. */
+function insertSibling(
+  nodes: TreeNode[],
+  targetId: string,
+  node: TreeNode,
+  after: boolean
+): TreeNode[] {
+  const i = nodes.findIndex((n) => n.id === targetId);
+  if (i >= 0) {
+    const out = [...nodes];
+    out.splice(after ? i + 1 : i, 0, node);
+    return out;
+  }
+  return nodes.map((n) =>
+    n.children.length ? { ...n, children: insertSibling(n.children, targetId, node, after) } : n
+  );
+}
+
 function findNode(nodes: TreeNode[], nodeId: string): TreeNode | undefined {
   for (const n of nodes) {
     if (n.id === nodeId) return n;
@@ -369,6 +395,9 @@ export const useStore = create<State>((set) => ({
 
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+
+  updateVersion: null,
+  setUpdateVersion: (v) => set({ updateVersion: v }),
 
   keybindings: loadKeybindings(),
   setKeybinding: (actionId, chord) =>
@@ -471,7 +500,7 @@ export const useStore = create<State>((set) => ({
       }),
     })),
 
-  moveNode: (dragId, targetId) =>
+  moveNode: (dragId, targetId, pos = "into") =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => {
         if (dragId === targetId) return ws;
@@ -480,7 +509,11 @@ export const useStore = create<State>((set) => ({
         // Can't drop a node into itself or one of its own descendants.
         if (targetId && findNode([dragged], targetId)) return ws;
         const without = removeNode(ws.roots, dragId);
-        const roots = targetId ? insertChild(without, targetId, dragged) : [...without, dragged];
+        const roots = !targetId
+          ? [...without, dragged]
+          : pos === "into"
+            ? insertChild(without, targetId, dragged)
+            : insertSibling(without, targetId, dragged, pos === "after");
         return { ...ws, roots };
       }),
     })),
@@ -552,13 +585,15 @@ export const useStore = create<State>((set) => ({
               n.activeHTab === tabId ? htabs[htabs.length - 1].id : n.activeHTab;
             return { ...n, htabs, activeHTab };
           });
-          // Append to the target page and focus it there.
+          // Append to the target page, focus it there, and FOLLOW the tab:
+          // after the drop the user lands on the target page with the moved
+          // tab active, instead of staying on the source page.
           roots = updateNode(roots, toNodeId, (n) => ({
             ...n,
             htabs: [...n.htabs, moving],
             activeHTab: moving.id,
           }));
-          return { ...ws, roots };
+          return { ...ws, roots, activeNode: toNodeId };
         }),
       };
     }),

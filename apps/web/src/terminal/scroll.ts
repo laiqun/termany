@@ -1,3 +1,4 @@
+import { isDemo } from "../demo";
 import { finalScreens, primeSnapshots } from "./manager";
 
 const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
@@ -17,6 +18,7 @@ function apiUrl(): string {
 
 /** Fetch the saved histories and prime the manager BEFORE the first attach. */
 export async function loadSnapshots(): Promise<void> {
+  if (isDemo) return; // nothing persisted, nothing to restore
   try {
     const res = await fetch(`${apiUrl()}/api/scroll`);
     if (res.ok) primeSnapshots(await res.json());
@@ -34,6 +36,7 @@ export async function loadSnapshots(): Promise<void> {
  * text/plain so the cross-origin beacon needs no CORS preflight.
  */
 export function startScrollSync(): void {
+  if (isDemo) return;
   const flush = () => {
     const blob = new Blob([JSON.stringify({ screens: finalScreens() })], { type: "text/plain" });
     navigator.sendBeacon?.(`${apiUrl()}/api/scroll/flush`, blob);

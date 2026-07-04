@@ -1,7 +1,7 @@
 {
   "$schema": "../../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Termany",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "identifier": "ai.trys.termany",
   "build": {
     "frontendDist": "../../web/dist",
@@ -28,8 +28,17 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://cdn.termany.sh/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzNEEzMThGQjBFOUFBMTQKUldRVXF1bXdqekZLRTRDV3NsMlZ2aWIraFllbW5KWExyWmlBcmgwaE1kMFl2clgyaDYxN2lhZXIK"
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": [
       "app",
       "dmg"

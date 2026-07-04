@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:demo": "tsc --noEmit && VITE_DEMO=1 vite build --base=/demo/ --outDir dist-demo",
     "preview": "vite preview"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "@termany/core": "*",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.12.0",

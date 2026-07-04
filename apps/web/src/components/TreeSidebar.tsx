@@ -16,7 +16,9 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
   const moveNode = useStore((s) => s.moveNode);
   const moveHTab = useStore((s) => s.moveHTab);
   const [editing, setEditing] = useState(false);
-  const [dropTarget, setDropTarget] = useState(false);
+  // Where a drag over this row would land: nest into it, or reorder as a
+  // sibling before/after it (top/bottom quarter of the row).
+  const [dropPos, setDropPos] = useState<"into" | "before" | "after" | null>(null);
 
   const hasChildren = node.children.length > 0;
 
@@ -24,9 +26,11 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
     <>
       <div
         className={`tree-row ${node.id === activeId ? "active" : ""} ${
-          dropTarget ? "drop-target" : ""
+          dropPos === "into" ? "drop-target" : ""
+        } ${dropPos === "before" ? "drop-before" : ""} ${
+          dropPos === "after" ? "drop-after" : ""
         }`}
-        style={{ paddingLeft: 6 + depth * 14 }}
+        style={{ paddingLeft: 6 + depth * 10 }}
         onClick={() => setActiveNode(node.id)}
         draggable={!editing}
         onDragStart={(e) => {
@@ -37,14 +41,23 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
           const { types } = e.dataTransfer;
           if (!types.includes(DRAG_MIME) && !types.includes(HTAB_DRAG_MIME)) return;
           e.preventDefault();
+          e.stopPropagation(); // over a row, don't also light up the root-drop area
           e.dataTransfer.dropEffect = "move";
-          setDropTarget(true);
+          // Tabs always drop INTO a page; page drags pick a zone by cursor Y.
+          if (!types.includes(DRAG_MIME)) {
+            setDropPos("into");
+            return;
+          }
+          const r = e.currentTarget.getBoundingClientRect();
+          const y = (e.clientY - r.top) / r.height;
+          setDropPos(y < 0.25 ? "before" : y > 0.75 ? "after" : "into");
         }}
-        onDragLeave={() => setDropTarget(false)}
+        onDragLeave={() => setDropPos(null)}
         onDrop={(e) => {
           e.preventDefault();
-          e.stopPropagation(); // drop ON a row reparents; empty area handled by container
-          setDropTarget(false);
+          e.stopPropagation(); // drop ON a row handled here; empty area by container
+          const pos = dropPos ?? "into";
+          setDropPos(null);
           // A tab dropped onto this page moves the whole terminal tab here.
           const htab = e.dataTransfer.getData(HTAB_DRAG_MIME);
           if (htab) {
@@ -53,7 +66,7 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
             return;
           }
           const dragId = e.dataTransfer.getData(DRAG_MIME);
-          if (dragId) moveNode(dragId, node.id);
+          if (dragId) moveNode(dragId, node.id, pos);
         }}
       >
         <button
@@ -63,7 +76,20 @@ function TreeItem({ node, depth }: { node: TreeNode; depth: number }) {
             if (hasChildren) toggleExpand(node.id);
           }}
         >
-          {hasChildren ? <ChevronIcon dir={node.expanded ? "down" : "right"} /> : <PageIcon />}
+          {hasChildren ? (
+            // Every row reads as a page by default; the chevron only appears
+            // on hover (CSS swaps the two), like Notion's sidebar.
+            <>
+              <span className="twisty-page">
+                <PageIcon />
+              </span>
+              <span className="twisty-chevron">
+                <ChevronIcon dir={node.expanded ? "down" : "right"} />
+              </span>
+            </>
+          ) : (
+            <PageIcon />
+          )}
         </button>
 
         {editing ? (

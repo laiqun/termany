@@ -1,0 +1,66 @@
+name: Publish installer to website
+
+# When a release is PUBLISHED (build.yml only creates drafts — publishing the
+# draft is "shipping it"), push its macOS dmg into the marketing-site repo
+# (thinkany-ai/termany-tanstack): the site's scripts/publish-release.sh drops
+# the file into public/download/ and rewrites src/config/releases.ts, so the
+# landing page's Download button serves the new version on the next deploy.
+#
+# Required secret (repo Settings → Secrets → Actions):
+#   SITE_PUSH_TOKEN — fine-grained PAT with "Contents: read and write" on
+#                     thinkany-ai/termany-tanstack.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.1.7)"
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the release's installers (all platforms)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "Termany_*" \
+            --dir dist
+          ls -lh dist
+
+      - name: Checkout website repo
+        uses: actions/checkout@v4
+        with:
+          repository: thinkany-ai/termany-tanstack
+          token: ${{ secrets.SITE_PUSH_TOKEN }}
+          path: site
+
+      # Uploads the dmg to the R2 bucket (termany-downloads) and rewrites
+      # src/config/releases.ts. Needs two more repo secrets:
+      #   CLOUDFLARE_API_TOKEN  — token with R2 edit permission
+      #   CLOUDFLARE_ACCOUNT_ID — the Cloudflare account id
+      - name: Publish into the site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash site/scripts/publish-release.sh dist/Termany_*
+
+      - name: Commit & push
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          cd site
+          git config user.name "termany-release-bot"
+          git config user.email "support@trys.ai"
+          git add src/config/releases.ts
+          if git diff --cached --quiet; then
+            echo "nothing new to publish"
+            exit 0
+          fi
+          git commit -m "release: Termany $TAG (macOS arm64)"
+          git push

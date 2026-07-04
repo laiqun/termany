@@ -1,6 +1,6 @@
 # Termany
 
-An AI terminal — **local-first, cloud-ready**. The same UI runs as a web app and as a
+An agent-native terminal — **local-first, cloud-ready**. The same UI runs as a web app and as a
 desktop client today, and as a cloud service later, by swapping one thing: the backend.
 
 ## Why it's shaped like this

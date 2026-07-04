@@ -8,6 +8,7 @@ import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, useStore } from "./state/store";
+import { checkForUpdate } from "./updater";
 
 export function App() {
   const htab = useStore(activeHtab);
@@ -50,6 +51,18 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Desktop: check for a new release once, shortly after startup (stays quiet —
+  // just lights up the update badges; the install lives in Settings → About).
+  useEffect(() => {
+    if (!isTauri) return;
+    const t = setTimeout(() => {
+      checkForUpdate()
+        .then((u) => u && useStore.getState().setUpdateVersion(u.version))
+        .catch(() => {}); // offline / endpoint missing — try again next launch
+    }, 5000);
+    return () => clearTimeout(t);
   }, []);
 
   return (
