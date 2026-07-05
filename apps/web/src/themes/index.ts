@@ -48,29 +48,30 @@ function isTheme(t: unknown): t is Theme {
 }
 
 /**
- * Add a theme to the registry at runtime (AI-generated, see Settings). Replaces
- * any existing theme with the same id. AI themes (id prefixed "ai-") are
- * persisted so they survive a reload. Returns the theme on success.
+ * Add a theme to the registry at runtime (AI-generated or hand-edited, see
+ * Settings). Replaces any existing theme with the same id. User-authored
+ * themes (id prefixed "ai-" or "custom-") are persisted so they survive a
+ * reload. Returns the theme on success.
  */
 export function registerTheme(theme: unknown): Theme {
   if (!isTheme(theme)) throw new Error("invalid theme");
   const i = THEMES.findIndex((t) => t.id === theme.id);
   if (i >= 0) THEMES[i] = theme;
   else THEMES.push(theme);
-  persistAiThemes();
+  persistUserThemes();
   return theme;
 }
 
-function persistAiThemes() {
+function persistUserThemes() {
   try {
-    const ai = THEMES.filter((t) => t.id.startsWith("ai-"));
-    localStorage.setItem(AI_THEMES_KEY, JSON.stringify(ai));
+    const userThemes = THEMES.filter((t) => t.id.startsWith("ai-") || t.id.startsWith("custom-"));
+    localStorage.setItem(AI_THEMES_KEY, JSON.stringify(userThemes));
   } catch {
     /* ignore persistence failure */
   }
 }
 
-/** Load any persisted AI themes into THEMES. Call once at startup. */
+/** Load any persisted user (AI-generated or hand-edited) themes into THEMES. */
 export function loadAiThemes() {
   try {
     const raw = localStorage.getItem(AI_THEMES_KEY);
@@ -94,9 +95,23 @@ export function loadThemeId(): string {
   return DEFAULT_THEME_ID;
 }
 
-/** Apply a theme everywhere (CSS vars + all terminals) and persist the choice. */
-export function applyTheme(id: string) {
-  const theme = getTheme(id);
+/**
+ * "#rgb"/"#rrggbb" → "rgba(r, g, b, alpha)". Anything else (gradients, an
+ * already-translucent rgba(), a named color) is returned unchanged — safer
+ * than mis-blending a format we don't understand.
+ */
+function withAlpha(color: string, alpha: number): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+  if (!m) return color;
+  const hex = m[1].length === 3 ? m[1].split("").map((c) => c + c).join("") : m[1];
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Apply a theme's CSS vars + terminal palette, without touching persistence. */
+function applyThemeObject(theme: Theme) {
   const root = document.documentElement;
   const { colors, radius } = theme;
 
@@ -118,9 +133,18 @@ export function applyTheme(id: string) {
     return c === "transparent" || c === "none" ? "0 solid transparent" : `1px solid ${c}`;
   };
 
-  root.style.setProperty("--sidebar-bg", theme.sidebar?.bg ?? colors.bg2);
+  // A background image shows through the pane gaps + sidebar/top bar, which
+  // get alpha-blended below; the terminal panes (--bg) stay fully opaque on
+  // purpose (see the `background` field's doc comment in themes/types.ts).
+  const bgImage = theme.background?.image;
+  const opacity = theme.background?.opacity ?? 1;
+  const blend = (c: string) => (bgImage ? withAlpha(c, opacity) : c);
+
+  root.style.setProperty("--bg-image", bgImage ? `url("${bgImage}")` : "none");
+  root.style.setProperty("--pane-area-bg", blend(colors.bg2));
+  root.style.setProperty("--sidebar-bg", blend(theme.sidebar?.bg ?? colors.bg2));
   root.style.setProperty("--sidebar-border", borderRule(theme.sidebar?.border, colors.border));
-  root.style.setProperty("--top-bar", theme.chrome?.topBar ?? colors.bg2);
+  root.style.setProperty("--top-bar", blend(theme.chrome?.topBar ?? colors.bg2));
   root.style.setProperty("--top-bar-border", borderRule(theme.chrome?.topBarBorder, colors.border));
   root.style.setProperty("--active-tab", theme.chrome?.activeTab ?? colors.bg);
   root.style.setProperty("--active-row", theme.chrome?.activeRow ?? colors.bg3);
@@ -138,10 +162,24 @@ export function applyTheme(id: string) {
   root.dataset.appearance = theme.appearance;
 
   applyTermTheme(theme.term);
+}
 
+/** Apply a theme everywhere (CSS vars + all terminals) and persist the choice. */
+export function applyTheme(id: string) {
+  applyThemeObject(getTheme(id));
   try {
     localStorage.setItem(STORAGE_KEY, id);
   } catch {
     /* ignore persistence failure */
   }
+}
+
+/**
+ * Live-preview an in-progress theme edit (the theme editor calls this on
+ * every keystroke) without registering or persisting it — the caller is
+ * responsible for reverting via `applyTheme(activeId)` if the edit is
+ * cancelled.
+ */
+export function previewTheme(theme: Theme) {
+  applyThemeObject(theme);
 }

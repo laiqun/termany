@@ -1,7 +1,7 @@
 {
   "$schema": "../../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Termany",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "identifier": "ai.trys.termany",
   "build": {
     "frontendDist": "../../web/dist",
@@ -20,7 +20,7 @@
         "decorations": false,
         "transparent": true,
         "shadow": true,
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       }
     ],
     "macOSPrivateApi": true,

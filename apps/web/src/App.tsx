@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { HTabBar } from "./components/HTabBar";
+import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { SearchPalette } from "./components/SearchPalette";
-import { Settings } from "./components/Settings";
+import { Settings, type SettingsSection } from "./components/Settings";
 import { SideRail } from "./components/SideRail";
 import { SplitView } from "./components/SplitView";
 import { TreeSidebar } from "./components/TreeSidebar";
@@ -11,14 +12,30 @@ import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, useStore } from "./state/store";
 import { clearSession } from "./terminal/manager";
+import { openLocalPathsInFocusedSession } from "./terminal/openLocalPath";
 import { checkForUpdate } from "./updater";
 
 export function App() {
   const htab = useStore(activeHtab);
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const railCollapsed = useStore((s) => s.railCollapsed);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const settingsOpen = settingsSection !== null;
+
+  useEffect(() => {
+    const suppressed = settingsOpen || searchOpen;
+    document.body.classList.toggle("native-webviews-suppressed", suppressed);
+    window.dispatchEvent(
+      new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
+    );
+    return () => {
+      document.body.classList.remove("native-webviews-suppressed");
+      window.dispatchEvent(
+        new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
+      );
+    };
+  }, [settingsOpen, searchOpen]);
 
   // Global shortcuts. Each action's chord is user-customizable (Settings →
   // Keyboard, persisted to localStorage); the catalog and defaults live in
@@ -39,6 +56,10 @@ export function App() {
         const h = activeHtab(s);
         if (h) clearSession(h.focused);
       },
+      nextTab: (s) => s.nextHTab(),
+      prevTab: (s) => s.prevHTab(),
+      nextPane: (s) => s.nextPane(),
+      prevPane: (s) => s.prevPane(),
       newPage: (s) => s.addRootNode(),
       newChildPage: (s) => {
         const current = activeNode(s);
@@ -49,7 +70,7 @@ export function App() {
       nextTheme: (s) => s.nextTheme(),
       toggleSidebar: (s) => s.toggleSidebar(),
       toggleRail: (s) => s.toggleRail(),
-      openSettings: () => setSettingsOpen(true),
+      openSettings: () => setSettingsSection("appearance"),
       search: () => setSearchOpen((o) => !o),
     };
 
@@ -80,20 +101,63 @@ export function App() {
     return () => clearTimeout(t);
   }, []);
 
+  useEffect(() => {
+    if (!isTauri) return;
+    let cleanup: (() => void) | undefined;
+    let cancelled = false;
+    const openPaths = (paths: unknown) => {
+      if (cancelled || !Array.isArray(paths)) return;
+      const localPaths = paths.filter((p): p is string => typeof p === "string");
+      if (!localPaths.length) return;
+      window.setTimeout(() => openLocalPathsInFocusedSession(localPaths), 100);
+    };
+
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => listen<string[]>("open-paths", (event) => {
+        openPaths(event.payload);
+      }))
+      .then((unlisten) => {
+        if (cancelled) unlisten();
+        else cleanup = unlisten;
+      })
+      .catch(() => {});
+
+    import("@tauri-apps/api/core")
+      .then(({ invoke }) => invoke("frontend_ready_for_open_paths"))
+      .then(openPaths)
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      cleanup?.();
+    };
+  }, []);
+
   return (
     <div className={`app${isTauri ? " tauri" : ""}`}>
       {isTauri && <WindowControls />}
       {isTauri && <ResizeHandles />}
-      {!collapsed && <TreeSidebar onOpenSettings={() => setSettingsOpen(true)} />}
+      {!collapsed && <TreeSidebar onOpenSettings={() => setSettingsSection("appearance")} />}
       <div className="main">
         <HTabBar />
         <div className="pane-area">
           <div className="pane-card">{htab && <SplitView key={htab.id} htab={htab} />}</div>
         </div>
       </div>
-      {!railCollapsed && <SideRail />}
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      {!railCollapsed && (
+        <SideRail
+          onOpenSettings={() => setSettingsSection("appearance")}
+          onOpenAgentsSettings={() => setSettingsSection("agents")}
+        />
+      )}
+      {settingsOpen && (
+        <Settings
+          initialSection={settingsSection ?? "appearance"}
+          onClose={() => setSettingsSection(null)}
+        />
+      )}
       {searchOpen && <SearchPalette onClose={() => setSearchOpen(false)} />}
+      {isTauri && <QuitConfirm />}
     </div>
   );
 }

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { attachSession, detachSession, fitSession, focusSession, pasteIntoSession } from "../terminal/manager";
+import { attachSession, detachSession, fitSession, focusSession } from "../terminal/manager";
+import { subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
+import { activeHtab, useStore } from "../state/store";
+import { openLocalPathsInSession } from "../terminal/openLocalPath";
 
 function fileUrlToPath(url: string): string | null {
   if (!url.startsWith("file://")) return null;
@@ -37,15 +40,6 @@ function extractDroppedPaths(dt: DataTransfer): string[] {
     .filter((p): p is string => !!p);
 }
 
-/** Escape a path for insertion, UNQUOTED, into a shell command line — the
- *  same convention Terminal.app/iTerm2 use when you drag a file in: backslash
- *  each character the shell would otherwise treat specially, rather than
- *  wrapping the whole thing in quotes, so several dropped files land as
- *  separate ready-to-use arguments. */
-function escapeForShell(path: string): string {
-  return path.replace(/([ \\'"()[\]{}$&;|<>*?!`#~])/g, "\\$1");
-}
-
 /**
  * Mounts the persistent session DOM node for `id` into this slot. On unmount we
  * only DETACH the node — the session keeps living in the registry so its shell
@@ -80,6 +74,34 @@ export function TerminalPane({ id }: { id: string }) {
     };
   }, [id]);
 
+  useEffect(() => {
+    const containsPoint = (point: { x: number; y: number }) => {
+      const rect = hostRef.current?.getBoundingClientRect();
+      return !!rect && point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+    };
+
+    return subscribeDesktopFileDrops((event) => {
+      if (event.type === "leave") {
+        setDragOver(false);
+        return;
+      }
+      const isTarget = event.points.some(containsPoint);
+      const isFocusedFallback = event.type === "drop" && activeHtab(useStore.getState())?.focused === id;
+      if (!isTarget && !isFocusedFallback) {
+        setDragOver(false);
+        return;
+      }
+
+      if (event.type === "drop") {
+        setDragOver(false);
+        void openLocalPathsInSession(id, event.paths);
+        return;
+      }
+
+      setDragOver(true);
+    });
+  }, [id]);
+
   return (
     <div
       className={`term-pane ${dragOver ? "drag-over" : ""}`}
@@ -96,7 +118,7 @@ export function TerminalPane({ id }: { id: string }) {
         e.preventDefault();
         setDragOver(false);
         const paths = extractDroppedPaths(e.dataTransfer);
-        if (paths.length) pasteIntoSession(id, `${paths.map(escapeForShell).join(" ")} `);
+        void openLocalPathsInSession(id, paths);
       }}
     />
   );

@@ -1,20 +1,130 @@
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+#[cfg(target_os = "macos")]
+mod macos_services {
+    use std::cell::OnceCell;
+
+    use objc2::rc::Retained;
+    use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{
+        NSApp, NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL,
+    };
+    use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+    use tauri::{AppHandle, Url};
+
+    use super::emit_open_paths;
+
+    #[derive(Debug, Default)]
+    struct ServiceProviderIvars {
+        app_handle: OnceCell<AppHandle>,
+    }
+
+    define_class!(
+        // SAFETY: NSObject has no additional subclassing requirements here, and
+        // this object is intentionally leaked for the app lifetime.
+        #[unsafe(super = NSObject)]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = ServiceProviderIvars]
+        struct TermanyServiceProvider;
+
+        unsafe impl NSObjectProtocol for TermanyServiceProvider {}
+
+        impl TermanyServiceProvider {
+            #[unsafe(method(openInTermany:userData:error:))]
+            fn open_in_termany(
+                &self,
+                pasteboard: &NSPasteboard,
+                _user_data: Option<&NSString>,
+                _error: *mut *mut NSString,
+            ) {
+                let Some(app_handle) = self.ivars().app_handle.get() else {
+                    return;
+                };
+                let paths = paths_from_pasteboard(pasteboard);
+                emit_open_paths(app_handle, paths);
+            }
+        }
+    );
+
+    impl TermanyServiceProvider {
+        fn new(app_handle: AppHandle, mtm: MainThreadMarker) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(ServiceProviderIvars::default());
+            let this: Retained<Self> = unsafe { msg_send![super(this), init] };
+            let _ = this.ivars().app_handle.set(app_handle);
+            this
+        }
+    }
+
+    fn paths_from_pasteboard(pasteboard: &NSPasteboard) -> Vec<String> {
+        let mut paths = Vec::new();
+        let Some(items) = pasteboard.pasteboardItems() else {
+            return paths;
+        };
+
+        for i in 0..items.count() {
+            let item: Retained<NSPasteboardItem> = items.objectAtIndex(i);
+            if let Some(file_url) = item.stringForType(unsafe { NSPasteboardTypeFileURL }) {
+                if let Ok(url) = Url::parse(&file_url.to_string()) {
+                    if let Ok(path) = url.to_file_path() {
+                        paths.push(path.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+
+        paths
+    }
+
+    pub fn install(app_handle: AppHandle) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let provider = TermanyServiceProvider::new(app_handle, mtm);
+        let app = NSApp(mtm);
+        unsafe { app.setServicesProvider(Some(provider.as_ref())) };
+        let _: *const TermanyServiceProvider = Retained::into_raw(provider);
+    }
+}
 
 /// Holds the bundled Node PTY/API server child so we can kill it on exit.
 struct ServerProcess(Mutex<Option<Child>>);
+
+/// Counts unexpected server exits (crash, lost the port race) so the restart
+/// loop below can give up instead of spinning forever if the binary is broken.
+struct ServerRestartAttempts(AtomicU32);
+const MAX_AUTO_RESTARTS: u32 = 3;
+
+struct OpenPathState(Mutex<OpenPathStateInner>);
+
+struct OpenPathStateInner {
+    pending: Vec<String>,
+    frontend_ready: bool,
+}
+
+#[tauri::command]
+fn frontend_ready_for_open_paths(state: tauri::State<'_, OpenPathState>) -> Vec<String> {
+    match state.0.lock() {
+        Ok(mut guard) => {
+            guard.frontend_ready = true;
+            std::mem::take(&mut guard.pending)
+        }
+        Err(_) => Vec::new(),
+    }
+}
 
 /// In a packaged build there is no `npm run dev` to start the backend, so the
 /// app launches the bundled Node server itself (PTY over ws://localhost:5174 +
 /// the /api/* endpoints). In dev (`debug_assertions`) the concurrently-run dev
 /// server already owns that port, so we don't spawn — we'd just collide.
-fn start_server(app: &tauri::App) {
+fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
     let resource_dir = match app.path().resource_dir() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("[termany] no resource dir: {e}");
-            return;
+            return None;
         }
     };
     // The bundled Node runtime is `node` on unix, `node.exe` on Windows.
@@ -42,11 +152,62 @@ fn start_server(app: &tauri::App) {
     }
 
     match command.spawn() {
-        Ok(child) => {
-            app.manage(ServerProcess(Mutex::new(Some(child))));
+        Ok(child) => Some(child),
+        Err(e) => {
+            eprintln!("[termany] failed to start server ({node:?}): {e}");
+            None
         }
-        Err(e) => eprintln!("[termany] failed to start server ({node:?}): {e}"),
     }
+}
+
+/// Spawns the bundled server and stores it in the already-managed
+/// `ServerProcess` state, then starts a watchdog thread that auto-restarts it
+/// if it exits on its own (e.g. it lost the port race against a not-yet-dead
+/// previous instance and gave up — see apps/server's own listen retry/backoff).
+/// A deliberate stop (`kill_server`) empties the state *before* killing, so the
+/// watchdog sees `None` and treats it as intentional rather than a crash.
+fn start_server(app: &tauri::AppHandle) {
+    let Some(child) = spawn_server_child(app) else {
+        return;
+    };
+    if let Some(state) = app.try_state::<ServerProcess>() {
+        *state.0.lock().unwrap() = Some(child);
+    } else {
+        app.manage(ServerProcess(Mutex::new(Some(child))));
+    }
+
+    let watched = app.clone();
+    std::thread::spawn(move || monitor_server(watched));
+}
+
+fn monitor_server(app: tauri::AppHandle) {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let Some(state) = app.try_state::<ServerProcess>() else {
+            return;
+        };
+        let mut guard = state.0.lock().unwrap();
+        match guard.as_mut() {
+            None => return, // stopped intentionally elsewhere (kill_server)
+            Some(child) => match child.try_wait() {
+                Ok(Some(_)) => *guard = None, // exited on its own — fall through to restart
+                _ => continue,                // still running (or a transient wait() error)
+            },
+        }
+        drop(guard);
+        break;
+    }
+
+    let attempts = app
+        .try_state::<ServerRestartAttempts>()
+        .map(|s| s.0.fetch_add(1, Ordering::SeqCst) + 1)
+        .unwrap_or(u32::MAX);
+    if attempts > MAX_AUTO_RESTARTS {
+        eprintln!("[termany] bundled server exited unexpectedly {attempts} times — giving up on auto-restart");
+        return;
+    }
+    eprintln!("[termany] bundled server exited unexpectedly — restarting (attempt {attempts}/{MAX_AUTO_RESTARTS})");
+    start_server(&app);
 }
 
 fn kill_server(app: &tauri::AppHandle) {
@@ -70,11 +231,75 @@ fn stop_server(app: tauri::AppHandle) {
     kill_server(&app);
 }
 
+#[tauri::command]
+fn webview_history(app: tauri::AppHandle, label: String, direction: String) -> Result<(), String> {
+    if !label.starts_with("web_") {
+        return Err("invalid webview label".into());
+    }
+    let script = match direction.as_str() {
+        "back" => "history.back()",
+        "forward" => "history.forward()",
+        _ => return Err("invalid history direction".into()),
+    };
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| "webview not found".to_string())?;
+    webview.eval(script).map_err(|e| e.to_string())
+}
+
+fn focus_main_window(app_handle: &tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn emit_open_paths(app_handle: &tauri::AppHandle, paths: Vec<String>) {
+    focus_main_window(app_handle);
+    if paths.is_empty() {
+        return;
+    }
+
+    let mut frontend_ready = true;
+    if let Some(state) = app_handle.try_state::<OpenPathState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            frontend_ready = guard.frontend_ready;
+            if !guard.frontend_ready {
+                guard.pending.extend(paths.iter().cloned());
+            }
+        }
+    }
+
+    if frontend_ready {
+        let _ = app_handle.emit_to("main", "open-paths", paths);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // Must be the first plugin registered: a second launch attempt (double
+    // Dock click, "reopen windows" after a reboot, etc.) is redirected here
+    // instead of spawning a second app + a second bundled server that would
+    // just fight the first one for port 5174.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let paths: Vec<String> = argv
+                .into_iter()
+                .skip(1)
+                .filter(|a| std::path::Path::new(a).exists())
+                .collect();
+            emit_open_paths(app, paths);
+        }));
+    }
+    builder = builder
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![stop_server]);
+        .invoke_handler(tauri::generate_handler![
+            stop_server,
+            frontend_ready_for_open_paths,
+            webview_history
+        ]);
     // Self-update: version check + install (desktop only; mobile stores handle it).
     #[cfg(desktop)]
     {
@@ -84,6 +309,13 @@ pub fn run() {
     }
     builder
         .setup(|app| {
+            app.manage(OpenPathState(Mutex::new(OpenPathStateInner {
+                pending: Vec::new(),
+                frontend_ready: false,
+            })));
+            #[cfg(target_os = "macos")]
+            macos_services::install(app.handle().clone());
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -91,7 +323,8 @@ pub fn run() {
                         .build(),
                 )?;
             } else {
-                start_server(app);
+                app.manage(ServerRestartAttempts(AtomicU32::new(0)));
+                start_server(app.handle());
             }
 
             Ok(())
@@ -103,5 +336,27 @@ pub fn run() {
         // the user killing the process directly.
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, _event| {});
+        .run(|app_handle, event| {
+            match event {
+                // Always intercept the OS quit request (⌘Q, Dock → Quit, closing
+                // the last window) and hand the decision to the frontend instead
+                // of exiting immediately — guards against an accidental ⌘Q. The
+                // frontend calls the process plugin's `exit()` itself once the
+                // user confirms, which is a real exit and doesn't loop back here.
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    api.prevent_exit();
+                    let _ = app_handle.emit_to("main", "quit-requested", ());
+                }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Opened { urls } => {
+                    let paths = urls
+                        .into_iter()
+                        .filter_map(|url| url.to_file_path().ok())
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    emit_open_paths(app_handle, paths);
+                }
+                _ => {}
+            }
+        });
 }

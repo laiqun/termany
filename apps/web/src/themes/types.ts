@@ -89,6 +89,20 @@ export interface Theme {
    */
   vars?: Record<string, string>;
 
+  /**
+   * Custom background image, set via the theme editor's upload. It paints
+   * behind the whole window; `opacity` is how translucent the chrome
+   * surfaces (pane gaps, sidebar, top bar) become so it shows through. The
+   * terminal panes themselves stay fully opaque — xterm draws its own
+   * background, and blending that would hurt text contrast.
+   */
+  background?: {
+    /** Data URL (or remote URL), "cover"-fit and centered. */
+    image: string;
+    /** 0–1 translucency for chrome surfaces. Ignored when `image` is unset. */
+    opacity: number;
+  };
+
   /** The xterm.js terminal palette. */
   term: ITheme;
 }

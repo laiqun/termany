@@ -1,30 +1,38 @@
-import { Brain, Info, Keyboard, Palette } from "lucide-react";
+import { Bot, Brain, Info, Keyboard, Palette } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiPath } from "../api";
 import { isTauri } from "../env";
+import { useI18n, type Language } from "../i18n";
 import { openExternal } from "../openExternal";
 import { useStore } from "../state/store";
 import { checkForUpdate, installUpdate, relaunchApp } from "../updater";
-import { registerTheme, THEMES } from "../themes";
-import { CloseIcon } from "./icons";
+import { registerTheme, THEMES, type Theme } from "../themes";
+import { AgentSettings } from "./AgentSettings";
+import { CloseIcon, EditIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
+import { ThemeEditor } from "./ThemeEditor";
 
-type Section = "appearance" | "models" | "keyboard" | "about";
-
-// Same host as the PTY server; the AI theme endpoint lives there (key stays
-// server-side). Override with VITE_API_URL if the server moves.
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
+export type SettingsSection = "appearance" | "models" | "agents" | "keyboard" | "about";
 
 /**
  * App-wide settings, shown as an in-app overlay (works in both web and the
  * desktop build — no separate OS window to keep in sync). Left nav + right
  * content, mirroring the familiar terminal-settings layout. MVP: Appearance.
  */
-export function Settings({ onClose }: { onClose: () => void }) {
+export function Settings({
+  initialSection = "appearance",
+  onClose,
+}: {
+  initialSection?: SettingsSection;
+  onClose: () => void;
+}) {
+  const { language, setLanguage, t } = useI18n();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
 
-  const [section, setSection] = useState<Section>("appearance");
+  const [section, setSection] = useState<SettingsSection>(initialSection);
+  const [editingTheme, setEditingTheme] = useState<Theme | null>(null);
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +46,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [updPhase, setUpdPhase] = useState<"idle" | "checking" | "none" | "downloading" | "restarting">("idle");
   const [updPct, setUpdPct] = useState(0);
   const [updError, setUpdError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSection(initialSection);
+  }, [initialSection]);
 
   async function checkUpdates() {
     setUpdPhase("checking");
@@ -77,16 +89,19 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
   // Esc closes. Bubble phase (not capture) so the Keyboard section can intercept
   // Esc during a rebind — its capture-phase listener stops propagation first.
+  // Skipped while the theme editor is open: both listeners sit on `window`,
+  // so stopPropagation here wouldn't stop ThemeEditor's own Esc handler from
+  // also firing — this guard is what keeps Esc closing just the editor.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        onClose();
+        if (!editingTheme) onClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, editingTheme]);
 
   async function generate() {
     const brief = prompt.trim();
@@ -94,7 +109,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
     setGenerating(true);
     setError(null);
     try {
-      const res = await fetch(`${API_URL}/api/theme`, {
+      const res = await fetch(apiPath("/api/theme"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: brief }),
@@ -127,7 +142,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <span className="settings-nav-icon">
               <Palette size={18} />
             </span>{" "}
-            Appearance
+            {t("settings.appearance")}
           </div>
           <div
             className={`settings-nav-item ${section === "models" ? "active" : ""}`}
@@ -136,7 +151,16 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <span className="settings-nav-icon">
               <Brain size={18} />
             </span>{" "}
-            Models
+            {t("settings.models")}
+          </div>
+          <div
+            className={`settings-nav-item ${section === "agents" ? "active" : ""}`}
+            onClick={() => setSection("agents")}
+          >
+            <span className="settings-nav-icon">
+              <Bot size={18} />
+            </span>{" "}
+            {t("settings.agents")}
           </div>
           <div
             className={`settings-nav-item ${section === "keyboard" ? "active" : ""}`}
@@ -145,7 +169,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <span className="settings-nav-icon">
               <Keyboard size={18} />
             </span>{" "}
-            Keyboard
+            {t("settings.keyboard")}
           </div>
           <div
             className={`settings-nav-item ${section === "about" ? "active" : ""}`}
@@ -154,15 +178,28 @@ export function Settings({ onClose }: { onClose: () => void }) {
             <span className="settings-nav-icon">
               <Info size={18} />
             </span>{" "}
-            About
+            {t("settings.about")}
           </div>
         </aside>
 
         <div className="settings-body">
           {section === "models" && <ModelSettings />}
+          {section === "agents" && <AgentSettings />}
           {section === "keyboard" && <KeyboardSettings />}
           {section === "appearance" && (
           <>
+          <div className="settings-section-title">{t("settings.language.title")}</div>
+          <label className="language-setting">
+            <span>{t("settings.language.label")}</span>
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value as Language)}
+            >
+              <option value="en">{t("settings.language.en")}</option>
+              <option value="zh-CN">{t("settings.language.zh")}</option>
+            </select>
+          </label>
+
           <div className="settings-section-title">GENERATE WITH AI</div>
           <div className="ai-theme">
             <input
@@ -191,27 +228,29 @@ export function Settings({ onClose }: { onClose: () => void }) {
           </div>
           <div className="theme-grid">
             {THEMES.map((t) => (
-              <button
-                key={t.id}
-                className={`theme-card ${t.id === theme ? "selected" : ""}`}
-                onClick={() => setTheme(t.id)}
-              >
-                <span
-                  className="theme-preview"
-                  style={{
-                    background: t.term.background as string,
-                    borderColor: t.colors.border,
-                    borderRadius: t.radius.lg,
-                  }}
-                >
-                  <span className="theme-preview-side" style={{ background: t.colors.bg2 }} />
-                  <span className="theme-preview-dot" style={{ background: t.colors.accent }} />
-                  <span className="theme-preview-line lg" style={{ background: t.colors.fg }} />
-                  <span className="theme-preview-line" style={{ background: t.colors.fgDim }} />
-                  <span className="theme-preview-line sm" style={{ background: t.colors.fgDim }} />
-                </span>
+              <div key={t.id} className={`theme-card ${t.id === theme ? "selected" : ""}`}>
+                <div className="theme-preview-wrap">
+                  <button
+                    className="theme-preview"
+                    onClick={() => setTheme(t.id)}
+                    style={{
+                      background: t.term.background as string,
+                      borderColor: t.colors.border,
+                      borderRadius: t.radius.lg,
+                    }}
+                  >
+                    <span className="theme-preview-side" style={{ background: t.colors.bg2 }} />
+                    <span className="theme-preview-dot" style={{ background: t.colors.accent }} />
+                    <span className="theme-preview-line lg" style={{ background: t.colors.fg }} />
+                    <span className="theme-preview-line" style={{ background: t.colors.fgDim }} />
+                    <span className="theme-preview-line sm" style={{ background: t.colors.fgDim }} />
+                  </button>
+                  <button className="theme-edit-btn" title="Edit theme" onClick={() => setEditingTheme(t)}>
+                    <EditIcon />
+                  </button>
+                </div>
                 <span className="theme-card-name">{t.name}</span>
-              </button>
+              </div>
             ))}
           </div>
           </>
@@ -284,6 +323,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
           <CloseIcon />
         </button>
       </div>
+
+      {editingTheme && (
+        <ThemeEditor base={editingTheme} activeThemeId={theme} onClose={() => setEditingTheme(null)} />
+      )}
     </div>
   );
 }

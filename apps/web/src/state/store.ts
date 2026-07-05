@@ -33,11 +33,16 @@ export type Pane =
       kind: "leaf";
       id: string;
       title: string;
-      view?: "terminal" | "files";
+      view?: "terminal" | "files" | "web";
       /** For a files-view leaf created via addPane: whose live cwd the file
        *  tree should open in, since this leaf has no PTY session of its own
        *  to resolve a directory from. Unused once the tree is loaded. */
       cwdFrom?: string;
+      /** Explicit directory root requested by an external action, such as
+       *  dropping a folder/file from Finder onto this pane. */
+      filesRoot?: string;
+      /** File to preview when opening this pane in files view. */
+      filesSelected?: string;
     }
   | {
       kind: "split";
@@ -170,11 +175,24 @@ interface State {
   /** Close the focused pane; closes the whole tab if it was the last pane. */
   closeFocusedPane: () => void;
   setFocusedPane: (leafId: string) => void;
+  /** Activate the next / previous tab on the active page (wraps around). */
+  nextHTab: () => void;
+  prevHTab: () => void;
+  /** Focus the next / previous pane (leaf) in the active tab's layout, in
+   *  the same left-to-right/top-to-bottom order the split tree stores them. */
+  nextPane: () => void;
+  prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
+  /** Set a pane's body explicitly. */
+  setPaneView: (leafId: string, view: "terminal" | "files" | "web") => void;
+  /** Open a dropped local path in this pane's files view. */
+  openPathInPane: (leafId: string, root: string, selectedFile?: string) => void;
+  /** Forget a one-shot dropped file/tree target after it no longer applies. */
+  clearPathInPane: (leafId: string) => void;
   /** Split the focused pane, creating a new leaf that opens directly in `view`. */
-  addPane: (view: "terminal" | "files") => void;
+  addPane: (view: "terminal" | "files" | "web", title?: string) => string | null;
   /** Close a specific pane; closes the whole tab if it was the last pane. */
   closePane: (leafId: string) => void;
   /** Toggle magnify on a pane (show it alone, filling the tab). */
@@ -724,6 +742,64 @@ export const useStore = create<State>((set) => ({
       })),
     })),
 
+  nextHTab: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+          if (n.htabs.length < 2) return n;
+          const i = n.htabs.findIndex((h) => h.id === n.activeHTab);
+          return { ...n, activeHTab: n.htabs[(i + 1) % n.htabs.length].id };
+        }),
+      })),
+    })),
+
+  prevHTab: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+          if (n.htabs.length < 2) return n;
+          const i = n.htabs.findIndex((h) => h.id === n.activeHTab);
+          return { ...n, activeHTab: n.htabs[(i - 1 + n.htabs.length) % n.htabs.length].id };
+        }),
+      })),
+    })),
+
+  nextPane: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const ids = leafIds(h.layout);
+            if (ids.length < 2) return h;
+            const i = ids.indexOf(h.focused);
+            return { ...h, focused: ids[(i + 1) % ids.length] };
+          }),
+        })),
+      })),
+    })),
+
+  prevPane: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const ids = leafIds(h.layout);
+            if (ids.length < 2) return h;
+            const i = ids.indexOf(h.focused);
+            return { ...h, focused: ids[(i - 1 + ids.length) % ids.length] };
+          }),
+        })),
+      })),
+    })),
+
   renamePane: (leafId, title) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -755,7 +831,7 @@ export const useStore = create<State>((set) => ({
             const flip = (p: Pane): Pane =>
               p.kind === "leaf"
                 ? p.id === leafId
-                  ? { ...p, view: p.view === "files" ? "terminal" : "files" }
+                  ? { ...p, view: p.view === "terminal" || !p.view ? "files" : "terminal" }
                   : p
                 : { ...p, children: p.children.map(flip) };
             return { ...h, layout: flip(h.layout) };
@@ -764,7 +840,73 @@ export const useStore = create<State>((set) => ({
       })),
     })),
 
-  addPane: (view) =>
+  setPaneView: (leafId, view) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const setView = (p: Pane): Pane =>
+              p.kind === "leaf"
+                ? p.id === leafId
+                  ? { ...p, view }
+                  : p
+                : { ...p, children: p.children.map(setView) };
+            return { ...h, layout: setView(h.layout) };
+          }),
+        })),
+      })),
+    })),
+
+  openPathInPane: (leafId, root, selectedFile) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const open = (p: Pane): Pane =>
+              p.kind === "leaf"
+                ? p.id === leafId
+                  ? { ...p, view: "files", filesRoot: root, filesSelected: selectedFile }
+                  : p
+                : { ...p, children: p.children.map(open) };
+            return {
+              ...h,
+              layout: open(h.layout),
+              focused: leafId,
+              maximized: selectedFile ? leafId : undefined,
+            };
+          }),
+        })),
+      })),
+    })),
+
+  clearPathInPane: (leafId) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const clear = (p: Pane): Pane =>
+              p.kind === "leaf"
+                ? p.id === leafId
+                  ? { ...p, filesRoot: undefined, filesSelected: undefined }
+                  : p
+                : { ...p, children: p.children.map(clear) };
+            return { ...h, layout: clear(h.layout) };
+          }),
+        })),
+      })),
+    })),
+
+  addPane: (view, title) => {
+    let created: string | null = null;
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
@@ -776,7 +918,8 @@ export const useStore = create<State>((set) => ({
             // never mounts for it), so it can't resolve "my own live cwd" the
             // way a terminal pane does — instead it opens rooted at whatever
             // pane was focused when created (see FileTree's initialCwdFrom).
-            const leaf = { ...makeLeaf(view), view, cwdFrom: view === "files" ? h.focused : undefined };
+            const leaf = { ...makeLeaf(title ?? view), view, cwdFrom: view === "files" ? h.focused : undefined };
+            created = leaf.id;
             inheritSessionCwd(leaf.id, h.focused);
             return {
               ...h,
@@ -787,7 +930,9 @@ export const useStore = create<State>((set) => ({
           }),
         })),
       })),
-    })),
+    }));
+    return created;
+  },
 
   toggleMaximize: (leafId) =>
     set((s) => ({

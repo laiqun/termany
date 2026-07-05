@@ -70,6 +70,41 @@ function readBuffer(
   });
 }
 
+function mediaTypeForPath(filePath: string): string | null {
+  const ext = path.extname(filePath).toLowerCase();
+  const types: Record<string, string> = {
+    ".apng": "image/apng",
+    ".avif": "image/avif",
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".ogv": "video/ogg",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+    ".flac": "audio/flac",
+    ".oga": "audio/ogg",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/opus",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  };
+  return types[ext] ?? null;
+}
+
 /**
  * The PTY server. One WebSocket connection == one shell session.
  *
@@ -91,6 +126,42 @@ const PASTE_DIR = process.env.TERMANY_PASTE_DIR ?? `${os.tmpdir()}/termany-paste
 // `brew shellenv`, fnm/pyenv/etc.) — a GUI app inherits only a minimal PATH,
 // so without this the user's profile hits "command not found".
 const execFileAsync = promisify(execFile);
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function firstShellToken(input: string): string {
+  const trimmed = input.trim();
+  const match = /^"([^"]+)"|^'([^']+)'|^(\S+)/.exec(trimmed);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+}
+
+async function detectExecutable(command: string): Promise<{ command: string; installed: boolean; path?: string }> {
+  const executable = firstShellToken(command);
+  if (!executable) return { command, installed: false };
+  if (/[\\/]/.test(executable)) {
+    try {
+      await fs.promises.access(executable, fs.constants.X_OK);
+      return { command, installed: true, path: executable };
+    } catch {
+      return { command, installed: false };
+    }
+  }
+
+  try {
+    const { stdout } = IS_WIN
+      ? await execFileAsync("where.exe", [executable], { timeout: 2500 })
+      : await execFileAsync(SHELL, ["-lc", `command -v -- ${shellQuote(executable)}`], { timeout: 2500 });
+    const found = stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    return found ? { command, installed: true, path: found } : { command, installed: false };
+  } catch {
+    return { command, installed: false };
+  }
+}
 
 function windowsPowerShellPath(): string {
   const root = process.env.SystemRoot || "C:\\Windows";
@@ -426,6 +497,18 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Detect local agent CLIs using the same login-shell PATH that terminal panes use.
+  if (req.method === "POST" && req.url === "/api/agents/detect") {
+    readJson(req)
+      .then(async (body) => {
+        const commands = Array.isArray(body?.commands) ? body.commands.slice(0, 64).map(String) : [];
+        const unique = [...new Set(commands.map((command) => command.trim()).filter(Boolean))];
+        json(200, { results: await Promise.all(unique.map(detectExecutable)) });
+      })
+      .catch(fail);
+    return;
+  }
+
   // Workspace/tab layout (SQLite-backed). The webview is just a reflection.
   if (req.method === "GET" && req.url === "/api/state") {
     json(200, loadState());
@@ -567,6 +650,72 @@ const http = createServer((req, res) => {
       );
       const parent = path.dirname(dir);
       json(200, { path: dir, parent: parent === dir ? null : parent, entries });
+    })().catch(fail);
+    return;
+  }
+
+  // Metadata for a path dropped from the OS into a terminal pane. The frontend
+  // uses this to decide whether to open a file-tree root or a file preview.
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/stat") {
+    (async () => {
+      const requested = reqUrl.searchParams.get("path");
+      if (!requested) throw new Error("path is required");
+      const abs = path.resolve(requested);
+      const st = await fs.promises.stat(abs);
+      json(200, {
+        path: abs,
+        isDir: st.isDirectory(),
+        isFile: st.isFile(),
+        size: st.size,
+        mtimeMs: st.mtimeMs,
+      });
+    })().catch(fail);
+    return;
+  }
+
+  // Stream previewable local media. Supports Range so videos/audio can seek
+  // and large files are not buffered into memory.
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/media") {
+    (async () => {
+      const requested = reqUrl.searchParams.get("path");
+      if (!requested) throw new Error("path is required");
+      const abs = path.resolve(requested);
+      const contentType = mediaTypeForPath(abs);
+      if (!contentType) throw new Error("unsupported media type");
+      const stat = await fs.promises.stat(abs);
+      if (!stat.isFile()) throw new Error("not a file");
+
+      const range = req.headers.range;
+      if (range) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+        if (!match) {
+          res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
+          res.end();
+          return;
+        }
+        const start = match[1] ? Number(match[1]) : 0;
+        const end = match[2] ? Math.min(Number(match[2]), stat.size - 1) : stat.size - 1;
+        if (start > end || start >= stat.size) {
+          res.writeHead(416, { "Content-Range": `bytes */${stat.size}` });
+          res.end();
+          return;
+        }
+        res.writeHead(206, {
+          "Content-Type": contentType,
+          "Content-Length": end - start + 1,
+          "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+          "Accept-Ranges": "bytes",
+        });
+        fs.createReadStream(abs, { start, end }).pipe(res);
+        return;
+      }
+
+      res.writeHead(200, {
+        "Content-Type": contentType,
+        "Content-Length": stat.size,
+        "Accept-Ranges": "bytes",
+      });
+      fs.createReadStream(abs).pipe(res);
     })().catch(fail);
     return;
   }

@@ -4,6 +4,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { apiUrl } from "../api";
 import { DemoBackend, demoInteracted, isDemo } from "../demo";
 import { openExternal } from "../openExternal";
 import { registerLocalPathLinks } from "./localLinks";
@@ -22,11 +23,6 @@ import { registerLocalPathLinks } from "./localLinks";
 
 const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
 
-export function apiUrl(): string {
-  const configured = import.meta.env.VITE_API_URL || WS_URL || "http://localhost:5174";
-  return configured.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
-}
-
 export interface Session {
   el: HTMLDivElement;
   term: Terminal;
@@ -37,6 +33,7 @@ export interface Session {
 
 const sessions = new Map<string, Session>();
 const pendingCwdFrom = new Map<string, string>();
+const pendingCommands = new Map<string, string[]>();
 
 /**
  * Lines of scrollback xterm keeps in memory per terminal. Sized to hold the
@@ -499,6 +496,13 @@ export function attachSession(id: string, host: HTMLElement) {
   }
   fitSession(id);
   focusSession(id);
+  const queued = pendingCommands.get(id);
+  if (queued?.length) {
+    pendingCommands.delete(id);
+    window.setTimeout(() => {
+      for (const command of queued) sendCommand(id, command);
+    }, 50);
+  }
 }
 
 /** Detach from the DOM but keep the session (and its shell) alive. */
@@ -557,12 +561,39 @@ export function sendCommand(id: string, command: string) {
   sessions.get(id)?.backend.write(`${command}\r`);
 }
 
+export function queueCommand(id: string, command: string) {
+  if (sessions.has(id)) {
+    sendCommand(id, command);
+    return;
+  }
+  pendingCommands.set(id, [...(pendingCommands.get(id) ?? []), command]);
+}
+
 /** Insert text at the cursor via xterm's paste pipeline — same path clipboard
  *  image paste uses (see the `paste` listener above), so apps with bracketed
  *  paste on (vim, claude, modern shells) see it as one paste, not typed
  *  keystrokes. Used for dropping a file/folder from Finder onto the pane. */
 export function pasteIntoSession(id: string, text: string) {
   sessions.get(id)?.term.paste(text);
+}
+
+export function sessionUsesAlternateBuffer(id: string): boolean {
+  return sessions.get(id)?.term.buffer.active.type === "alternate";
+}
+
+export function sessionLooksLikeAgentInput(id: string): boolean {
+  const session = sessions.get(id);
+  if (!session) return false;
+  if (session.term.buffer.active.type === "alternate") return true;
+
+  const buf = session.term.buffer.active;
+  const start = Math.max(0, buf.viewportY);
+  const end = Math.min(buf.length, start + session.term.rows);
+  const lines: string[] = [];
+  for (let y = start; y < end; y++) {
+    lines.push(buf.getLine(y)?.translateToString(true) ?? "");
+  }
+  return /\b(OpenAI Codex|Claude Code)\b|Use \/skills|\/model to change|bypass permissions/i.test(lines.join("\n"));
 }
 
 /** Permanently destroy a session — only when the user closes the pane/tab. */

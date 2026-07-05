@@ -1,7 +1,6 @@
+import { apiPath } from "../api";
 import { demoState, isDemo } from "../demo";
 import { useStore } from "./store";
-
-const API = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
 
 /**
  * True once the server has answered a state load. Saves are gated on this:
@@ -20,7 +19,7 @@ export async function waitForServer(timeoutMs = 12_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${API}/api/state`, { signal: AbortSignal.timeout(1000) });
+      const res = await fetch(apiPath("/api/state"), { signal: AbortSignal.timeout(1000) });
       if (res.ok) return true;
     } catch {
       /* not up yet */
@@ -42,7 +41,7 @@ export async function loadState(): Promise<void> {
     return;
   }
   try {
-    const res = await fetch(`${API}/api/state`);
+    const res = await fetch(apiPath("/api/state"));
     if (res.ok) {
       hydrated = true; // an empty-but-ok answer is a genuine fresh install
       const s = await res.json();
@@ -90,7 +89,7 @@ export function startStateSync(): void {
       // Never persist a layout we never loaded — see `hydrated`.
       if (!hydrated) return;
       const { workspaces, activeWorkspace, sidebarCollapsed } = useStore.getState();
-      fetch(`${API}/api/state`, {
+      fetch(apiPath("/api/state"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ workspaces, activeWorkspace, sidebarCollapsed }),

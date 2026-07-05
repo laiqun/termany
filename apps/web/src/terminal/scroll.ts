@@ -1,12 +1,6 @@
+import { apiPath } from "../api";
 import { isDemo } from "../demo";
 import { finalScreens, primeSnapshots } from "./manager";
-
-const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
-
-function apiUrl(): string {
-  const configured = import.meta.env.VITE_API_URL || WS_URL || "http://localhost:5174";
-  return configured.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
-}
 
 /**
  * Terminal history restore: the SERVER tails every session's raw PTY output
@@ -20,7 +14,7 @@ function apiUrl(): string {
 export async function loadSnapshots(): Promise<void> {
   if (isDemo) return; // nothing persisted, nothing to restore
   try {
-    const res = await fetch(`${apiUrl()}/api/scroll`);
+    const res = await fetch(apiPath("/api/scroll"));
     if (res.ok) primeSnapshots(await res.json());
   } catch {
     /* server unreachable — start with no restored scrollback */
@@ -39,7 +33,7 @@ export function startScrollSync(): void {
   if (isDemo) return;
   const flush = () => {
     const blob = new Blob([JSON.stringify({ screens: finalScreens() })], { type: "text/plain" });
-    navigator.sendBeacon?.(`${apiUrl()}/api/scroll/flush`, blob);
+    navigator.sendBeacon?.(apiPath("/api/scroll/flush"), blob);
   };
   window.addEventListener("pagehide", flush);
   document.addEventListener("visibilitychange", () => {
@@ -49,7 +43,7 @@ export function startScrollSync(): void {
   // interval — a lost race then costs at most the last few seconds of a TUI's
   // screen. Tiny payload (nulls unless a session is inside a fullscreen app).
   setInterval(() => {
-    fetch(`${apiUrl()}/api/scroll/flush`, {
+    fetch(apiPath("/api/scroll/flush"), {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify({ screens: finalScreens() }),

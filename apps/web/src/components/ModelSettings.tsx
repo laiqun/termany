@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
+import { apiPath } from "../api";
 import { CloseIcon, EditIcon, PlusIcon } from "./icons";
-
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:5174";
 
 type Kind = "anthropic" | "openai";
 
@@ -37,7 +36,7 @@ export function ModelSettings() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_URL}/api/models`)
+    fetch(apiPath("/api/models"))
       .then((r) => r.json())
       .then((cfg) => {
         setProviders(
@@ -130,7 +129,7 @@ export function ModelSettings() {
           kind: p.kind,
         })),
       };
-      const res = await fetch(`${API_URL}/api/models`, {
+      const res = await fetch(apiPath("/api/models"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),

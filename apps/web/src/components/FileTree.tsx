@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CodeEditor } from "./CodeEditor";
+import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
+import { apiUrl } from "../api";
 import { revealPath } from "../openExternal";
 import { activeHtab, findLeaf, useStore } from "../state/store";
-import { apiUrl, sendCommand } from "../terminal/manager";
+import { sendCommand } from "../terminal/manager";
 import {
   ChevronIcon,
   CollapseAllIcon,
   FileEntryIcon,
   FolderIcon,
+  PanelLeftCloseIcon,
+  PreviewIcon,
   RefreshIcon,
   RestoreExpandedIcon,
   RevealFolderIcon,
+  SourceIcon,
 } from "./icons";
 
 /** Base name only (Windows- and Unix-style separators both) — the preview
@@ -24,6 +29,138 @@ function basename(path: string): string {
  *  containing a literal `"` would need shell-specific escaping. */
 function quoteForShell(path: string): string {
   return `"${path.replace(/"/g, '\\"')}"`;
+}
+
+type MediaKind = "image" | "video" | "audio" | "pdf" | "docx" | "xlsx" | "pptx";
+
+function mediaKindForPath(path: string): MediaKind | null {
+  const ext = path.split(/[?#]/)[0].toLowerCase().match(/\.([^.\\/]+)$/)?.[1];
+  if (!ext) return null;
+  if (["apng", "avif", "bmp", "gif", "ico", "jpg", "jpeg", "png", "svg", "webp"].includes(ext)) return "image";
+  if (["m4v", "mov", "mp4", "ogv", "webm"].includes(ext)) return "video";
+  if (["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"].includes(ext)) return "audio";
+  if (ext === "pdf") return "pdf";
+  if (ext === "docx") return "docx";
+  if (ext === "xlsx" || ext === "xls") return "xlsx";
+  if (ext === "pptx") return "pptx";
+  return null;
+}
+
+function isMarkdownPath(path: string): boolean {
+  return /\.(md|markdown|mdown|mkd)$/i.test(path);
+}
+
+function isHtmlPath(path: string): boolean {
+  return /\.(html|htm)$/i.test(path);
+}
+
+function inlineMarkdown(text: string): Array<string | JSX.Element> {
+  const out: Array<string | JSX.Element> = [];
+  const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  let last = 0;
+  let i = 0;
+  for (const match of text.matchAll(re)) {
+    if (match.index > last) out.push(text.slice(last, match.index));
+    const token = match[0];
+    if (token.startsWith("`")) out.push(<code key={i++}>{token.slice(1, -1)}</code>);
+    else if (token.startsWith("**")) out.push(<strong key={i++}>{token.slice(2, -2)}</strong>);
+    else if (token.startsWith("*")) out.push(<em key={i++}>{token.slice(1, -1)}</em>);
+    else {
+      const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      out.push(
+        <a key={i++} href={link?.[2] ?? "#"} target="_blank" rel="noreferrer">
+          {link?.[1] ?? token}
+        </a>
+      );
+    }
+    last = match.index + token.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+function MarkdownPreview({ content }: { content: string }) {
+  const blocks: JSX.Element[] = [];
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  let paragraph: string[] = [];
+  let list: Array<{ ordered: boolean; text: string }> = [];
+  let code: string[] | null = null;
+  let codeKey = 0;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    blocks.push(<p key={`p-${blocks.length}`}>{inlineMarkdown(paragraph.join(" "))}</p>);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list.length) return;
+    const ordered = list[0].ordered;
+    const Tag = ordered ? "ol" : "ul";
+    blocks.push(
+      <Tag key={`l-${blocks.length}`}>
+        {list.map((item, idx) => (
+          <li key={idx}>{inlineMarkdown(item.text)}</li>
+        ))}
+      </Tag>
+    );
+    list = [];
+  };
+
+  for (const line of lines) {
+    if (code) {
+      if (/^```/.test(line)) {
+        blocks.push(<pre key={`c-${codeKey++}`}><code>{code.join("\n")}</code></pre>);
+        code = null;
+      } else code.push(line);
+      continue;
+    }
+    if (/^```/.test(line)) {
+      flushParagraph();
+      flushList();
+      code = [];
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      const Tag = `h${level}` as keyof JSX.IntrinsicElements;
+      blocks.push(<Tag key={`h-${blocks.length}`}>{inlineMarkdown(heading[2])}</Tag>);
+      continue;
+    }
+    if (/^\s*[-*_]{3,}\s*$/.test(line)) {
+      flushParagraph();
+      flushList();
+      blocks.push(<hr key={`hr-${blocks.length}`} />);
+      continue;
+    }
+    const quote = /^>\s?(.*)$/.exec(line);
+    if (quote) {
+      flushParagraph();
+      flushList();
+      blocks.push(<blockquote key={`q-${blocks.length}`}>{inlineMarkdown(quote[1])}</blockquote>);
+      continue;
+    }
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
+    const ordered = /^\s*\d+\.\s+(.*)$/.exec(line);
+    if (bullet || ordered) {
+      flushParagraph();
+      list.push({ ordered: !!ordered, text: (bullet ?? ordered)![1] });
+      continue;
+    }
+    paragraph.push(line.trim());
+  }
+  if (code) blocks.push(<pre key={`c-${codeKey++}`}><code>{code.join("\n")}</code></pre>);
+  flushParagraph();
+  flushList();
+
+  return <div className="markdown-preview">{blocks}</div>;
 }
 
 interface FsEntry {
@@ -156,10 +293,21 @@ interface Selected {
  * caller, so switching files always gets a fresh instance (and with it, a
  * fresh CodeEditor + reset save/dirty state) rather than reusing stale state.
  */
-function FilePreview({ selected, dark }: { selected: Selected; dark: boolean }) {
+function FilePreview({
+  selected,
+  dark,
+  treeCollapsed,
+  onToggleTree,
+}: {
+  selected: Selected;
+  dark: boolean;
+  treeCollapsed: boolean;
+  onToggleTree: () => void;
+}) {
   const [dirty, setDirty] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [markdownSource, setMarkdownSource] = useState(false);
 
   // Reveal (not open) — opening a file with the OS default app needs a Tauri
   // permission (opener:allow-open-path) this app doesn't grant, and revealing
@@ -187,10 +335,22 @@ function FilePreview({ selected, dark }: { selected: Selected; dark: boolean }) 
 
   const header = (
     <div className="file-tree-head">
+      <button className="pane-btn" title={treeCollapsed ? "Show file tree" : "Collapse file tree"} onClick={onToggleTree}>
+        <PanelLeftCloseIcon />
+      </button>
       <span className="file-tree-path" title={selected.path}>
         {dirty && <span className="file-preview-dirty" title="Unsaved changes" />}
         {basename(selected.path)}
       </span>
+      {selected.status === "text" && (isMarkdownPath(selected.path) || isHtmlPath(selected.path)) && (
+        <button
+          className="pane-btn"
+          title={markdownSource ? "Show rendered preview" : "Show source"}
+          onClick={() => setMarkdownSource((v) => !v)}
+        >
+          {markdownSource ? <PreviewIcon /> : <SourceIcon />}
+        </button>
+      )}
       <button className="pane-btn" title="Reveal in Finder" onClick={() => revealInFinder(selected.path)}>
         <RevealFolderIcon />
       </button>
@@ -206,10 +366,34 @@ function FilePreview({ selected, dark }: { selected: Selected; dark: boolean }) 
   }
 
   if (selected.status === "binary") {
+    const mediaKind = mediaKindForPath(selected.path);
+    const mediaSrc = `${apiUrl()}/api/fs/media?${new URLSearchParams({ path: selected.path })}`;
+    if (mediaKind) {
+      return (
+        <div className="file-preview-panel">
+          {header}
+          <div className={`file-media-preview ${mediaKind}`}>
+            {mediaKind === "image" && <img src={mediaSrc} alt={basename(selected.path)} />}
+            {mediaKind === "video" && <video src={mediaSrc} controls playsInline />}
+            {mediaKind === "audio" && <audio src={mediaSrc} controls />}
+            {mediaKind === "pdf" && <iframe src={mediaSrc} title={basename(selected.path)} />}
+            {mediaKind === "docx" && <DocxPreview src={mediaSrc} />}
+            {mediaKind === "xlsx" && <XlsxPreview src={mediaSrc} />}
+            {mediaKind === "pptx" && <PptxPreview src={mediaSrc} />}
+          </div>
+          {openError && <div className="file-tree-message file-preview-error">{openError}</div>}
+        </div>
+      );
+    }
     return (
       <div className="file-preview-panel">
         {header}
-        <div className="file-tree-message">Binary file — can't preview it here. Use "Reveal in Finder" to open it yourself.</div>
+        <div className="file-unsupported-preview">
+          <FileEntryIcon />
+          <button className="file-open-finder-btn" onClick={() => revealInFinder(selected.path)}>
+            Reveal in Finder
+          </button>
+        </div>
         {openError && <div className="file-tree-message file-preview-error">{openError}</div>}
       </div>
     );
@@ -235,14 +419,25 @@ function FilePreview({ selected, dark }: { selected: Selected; dark: boolean }) 
       )}
       {saveError && <div className="file-tree-message file-preview-error">Save failed: {saveError}</div>}
       {openError && <div className="file-tree-message file-preview-error">{openError}</div>}
-      <CodeEditor
-        path={selected.path}
-        content={selected.content ?? ""}
-        dark={dark}
-        readOnly={!!selected.truncated}
-        onDirtyChange={setDirty}
-        onSave={(text) => save(selected.path, text)}
-      />
+      {isMarkdownPath(selected.path) && !markdownSource && !selected.truncated ? (
+        <MarkdownPreview content={selected.content ?? ""} />
+      ) : isHtmlPath(selected.path) && !markdownSource && !selected.truncated ? (
+        <iframe
+          className="html-preview"
+          title={basename(selected.path)}
+          sandbox=""
+          srcDoc={selected.content ?? ""}
+        />
+      ) : (
+        <CodeEditor
+          path={selected.path}
+          content={selected.content ?? ""}
+          dark={dark}
+          readOnly={!!selected.truncated}
+          onDirtyChange={setDirty}
+          onSave={(text) => save(selected.path, text)}
+        />
+      )}
     </div>
   );
 }
@@ -285,6 +480,8 @@ const stateCache = new Map<string, FileTreeState>();
 export function FileTree({
   sessionId,
   initialCwdFrom,
+  explicitRoot,
+  explicitSelected,
 }: {
   sessionId: string;
   /** A files-view pane has no PTY session of its own to resolve a live cwd
@@ -294,9 +491,12 @@ export function FileTree({
    *  EXISTING terminal pane to its file-tree view (which does have a live
    *  session) still opens rooted at that same pane's own cwd, as before. */
   initialCwdFrom?: string;
+  explicitRoot?: string;
+  explicitSelected?: string;
 }) {
   const isMaximized = useStore((s) => activeHtab(s)?.maximized === sessionId);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
+  const clearPathInPane = useStore((s) => s.clearPathInPane);
   // Read once per render — cheap, and the editor only needs it at creation
   // anyway (see CodeEditor's own comment on why it doesn't react to changes).
   const dark = document.documentElement.dataset.appearance !== "light";
@@ -313,6 +513,9 @@ export function FileTree({
   // while not maximized means this is the remount from Restore (exiting
   // fullscreen) or a fresh pane, either way the preview shouldn't reappear.
   const [selected, setSelected] = useState(isMaximized ? initial.selected : null);
+  const [treeWidth, setTreeWidth] = useState(360);
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
+  const splitRef = useRef<HTMLDivElement>(null);
 
   // The address bar's own draft text — separate from `root` so typing
   // doesn't take effect until Enter, and doesn't get clobbered by a
@@ -366,6 +569,30 @@ export function FileTree({
       .catch((e) => setRootError(e instanceof Error ? e.message : String(e)));
   }, []);
 
+  const openExplicitRoot = useCallback((path: string, selectedFile?: string) => {
+    setRootError(null);
+    fetch(`${apiUrl()}/api/fs/list?${new URLSearchParams({ path })}`)
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+        const nextSelected: Selected | null = selectedFile ? { path: selectedFile, status: "loading" } : null;
+        setRoot(body.path);
+        setDirs({ [body.path]: { status: "loaded", entries: body.entries } });
+        setExpanded(new Set());
+        setCollapsedFrom(null);
+        setSelected(nextSelected);
+        stateCache.set(sessionId, {
+          root: body.path,
+          rootError: null,
+          dirs: { [body.path]: { status: "loaded", entries: body.entries } },
+          expanded: new Set(),
+          collapsedFrom: null,
+          selected: nextSelected,
+        });
+      })
+      .catch((e) => setRootError(e instanceof Error ? e.message : String(e)));
+  }, [sessionId]);
+
   // Resolve root from the pane's LIVE session cwd. Called every time this
   // component (re)mounts — including the maximize-triggered remount AND a
   // terminal<->files view switch, which look identical from in here (both
@@ -410,6 +637,7 @@ export function FileTree({
   // restored. resolveRootFromSession() runs on EVERY mount regardless (see
   // its own doc comment for why that's the right call for both remount cases).
   const lastSessionId = useRef<string>();
+  const lastExplicitRoot = useRef<string>();
   useEffect(() => {
     if (lastSessionId.current !== undefined && lastSessionId.current !== sessionId) {
       const cached = stateCache.get(sessionId) ?? emptyFileTreeState();
@@ -421,12 +649,22 @@ export function FileTree({
       setSelected(isMaximized ? cached.selected : null);
     }
     lastSessionId.current = sessionId;
-    resolveRootFromSession();
+    if (explicitRoot && explicitRoot !== lastExplicitRoot.current) {
+      lastExplicitRoot.current = explicitRoot;
+      openExplicitRoot(explicitRoot, explicitSelected);
+      clearPathInPane(sessionId);
+    } else if (!explicitRoot) {
+      if (lastExplicitRoot.current) {
+        lastExplicitRoot.current = undefined;
+        return;
+      }
+      resolveRootFromSession();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
     // NOT keyed on isMaximized: that would re-run this on every maximize
     // toggle, re-resolving (and possibly resetting) state we want to leave
     // alone outside of an actual remount.
-  }, [sessionId, resolveRootFromSession]);
+  }, [sessionId, explicitRoot, explicitSelected, resolveRootFromSession, openExplicitRoot, clearPathInPane]);
 
   // The other half of keeping the tree and the terminal in sync: leaving
   // files view for terminal should `cd` the shell to wherever the tree
@@ -601,15 +839,50 @@ export function FileTree({
     </>
   );
 
-  // Default: just the tree, full width. The preview column only exists while
-  // a file is open (which is also when the pane is maximized) — see the
-  // module doc comment above for why.
-  if (!selected) return <div className="file-tree">{treeUi}</div>;
+  // Default: just the tree, full width. Keep `selected` cached so restoring
+  // maximize can reopen the preview, but only mount the preview panel while
+  // this pane is actually maximized.
+  if (!selected || !isMaximized) return <div className="file-tree">{treeUi}</div>;
+
+  const startTreeResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const split = splitRef.current;
+    if (!split) return;
+    const rect = split.getBoundingClientRect();
+    const onMove = (ev: PointerEvent) => {
+      const max = Math.max(220, rect.width * 0.7);
+      setTreeWidth(Math.min(max, Math.max(180, ev.clientX - rect.left)));
+      setTreeCollapsed(false);
+    };
+    const onUp = () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
 
   return (
-    <div className="file-tree-split">
-      <div className="file-tree">{treeUi}</div>
-      <FilePreview key={selected.path} selected={selected} dark={dark} />
+    <div className={`file-tree-split ${treeCollapsed ? "tree-collapsed" : ""}`} ref={splitRef}>
+      {!treeCollapsed && (
+        <>
+          <div className="file-tree" style={{ flexBasis: treeWidth }}>{treeUi}</div>
+          <div className="file-tree-resizer" onPointerDown={startTreeResize} />
+        </>
+      )}
+      <FilePreview
+        key={selected.path}
+        selected={selected}
+        dark={dark}
+        treeCollapsed={treeCollapsed}
+        onToggleTree={() => setTreeCollapsed((v) => !v)}
+      />
     </div>
   );
 }

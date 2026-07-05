@@ -10,13 +10,21 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   ChevronUp,
+  Code2,
+  Eye,
   File,
   Folder,
   FolderOpen,
   FolderTree,
+  Globe,
+  ExternalLink,
+  ArrowLeft,
+  ArrowRight,
+  Bot,
   Maximize2,
   Minimize2,
   PanelLeft,
+  PanelLeftClose,
   PanelRight,
   Pencil,
   Plus,
@@ -32,6 +40,21 @@ const base = { size: 16, strokeWidth: 1.75 };
 
 export function PanelIcon() {
   return <PanelLeft {...base} />;
+}
+
+/** Hide/show the file tree beside a preview. */
+export function PanelLeftCloseIcon() {
+  return <PanelLeftClose {...base} />;
+}
+
+/** Rendered preview mode. */
+export function PreviewIcon() {
+  return <Eye {...base} />;
+}
+
+/** Source/code mode. */
+export function SourceIcon() {
+  return <Code2 {...base} />;
 }
 
 /** Collapse/expand the right quick-action rail — mirrors PanelIcon. */
@@ -80,6 +103,26 @@ export function GearIcon() {
 /** Terminal in a rounded square — the per-pane header marker. */
 export function TerminalIcon() {
   return <SquareTerminal {...base} />;
+}
+
+export function WebIcon() {
+  return <Globe {...base} />;
+}
+
+export function AgentIcon() {
+  return <Bot {...base} />;
+}
+
+export function ExternalOpenIcon() {
+  return <ExternalLink {...base} />;
+}
+
+export function BackIcon() {
+  return <ArrowLeft {...base} />;
+}
+
+export function ForwardIcon() {
+  return <ArrowRight {...base} />;
 }
 
 /** Collapse-all glyph (sidebar tree). */

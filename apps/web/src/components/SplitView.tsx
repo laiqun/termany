@@ -2,12 +2,12 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import { focusSession } from "../terminal/manager";
 import { FileTree } from "./FileTree";
-import { CloseIcon, FilesIcon, MaximizeIcon, RestoreIcon, TerminalIcon } from "./icons";
+import { CloseIcon, FilesIcon, MaximizeIcon, RestoreIcon, TerminalIcon, WebIcon } from "./icons";
 import { TerminalPane } from "./TerminalPane";
-
-const PANE_MIME = "application/x-termany-pane";
+import { WebBrowserPane } from "./WebBrowserPane";
 
 type Leaf = Pane & { kind: "leaf" };
+type PaneDropTarget = { id: string; edge: DropEdge } | null;
 
 function findLeaf(pane: Pane, id: string): Leaf | undefined {
   if (pane.kind === "leaf") return pane.id === id ? pane : undefined;
@@ -27,24 +27,30 @@ function edgeFor(rect: DOMRect, x: number, y: number): DropEdge {
 }
 
 /** The header bar of a pane: drag handle, editable name, magnify + close. */
-function PaneHeader({ leaf, solo }: { leaf: Leaf; solo: boolean }) {
+function PaneHeader({
+  leaf,
+  solo,
+  onPointerDown,
+}: {
+  leaf: Leaf;
+  solo: boolean;
+  onPointerDown: (e: React.PointerEvent) => void;
+}) {
   const renamePane = useStore((s) => s.renamePane);
   const closePane = useStore((s) => s.closePane);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
-  const togglePaneView = useStore((s) => s.togglePaneView);
+  const setPaneView = useStore((s) => s.setPaneView);
   const [editing, setEditing] = useState(false);
   const showingFiles = leaf.view === "files";
+  const showingWeb = leaf.view === "web";
+  const nextView = showingFiles ? "terminal" : "files";
 
   return (
     <div
       className="pane-head"
-      draggable={!editing}
-      onDragStart={(e) => {
-        e.dataTransfer.setData(PANE_MIME, leaf.id);
-        e.dataTransfer.effectAllowed = "move";
-      }}
+      onPointerDown={editing ? undefined : onPointerDown}
     >
-      <span className="pane-head-icon">{showingFiles ? <FilesIcon /> : <TerminalIcon />}</span>
+      <span className="pane-head-icon">{showingFiles ? <FilesIcon /> : showingWeb ? <WebIcon /> : <TerminalIcon />}</span>
       {editing ? (
         <input
           className="pane-head-rename"
@@ -67,13 +73,15 @@ function PaneHeader({ leaf, solo }: { leaf: Leaf; solo: boolean }) {
         </span>
       )}
       <div className="pane-head-actions">
-        <button
-          className="pane-btn"
-          title={showingFiles ? "Show terminal" : "Show file tree"}
-          onClick={() => togglePaneView(leaf.id)}
-        >
-          {showingFiles ? <TerminalIcon /> : <FilesIcon />}
-        </button>
+        {!showingWeb && (
+          <button
+            className="pane-btn"
+            title={showingFiles ? "Show terminal" : "Show file tree"}
+            onClick={() => setPaneView(leaf.id, nextView)}
+          >
+            {showingFiles ? <TerminalIcon /> : <FilesIcon />}
+          </button>
+        )}
         <button
           className="pane-btn"
           title={solo ? "Restore" : "Maximize"}
@@ -90,12 +98,22 @@ function PaneHeader({ leaf, solo }: { leaf: Leaf; solo: boolean }) {
 }
 
 /** One terminal pane: header + terminal, click-to-focus, drag-drop target. */
-function PaneSlot({ leaf, showFocus, solo }: { leaf: Leaf; showFocus: boolean; solo: boolean }) {
+function PaneSlot({
+  leaf,
+  showFocus,
+  solo,
+  dropTarget,
+  onPaneDragStart,
+}: {
+  leaf: Leaf;
+  showFocus: boolean;
+  solo: boolean;
+  dropTarget: PaneDropTarget;
+  onPaneDragStart: (id: string, e: React.PointerEvent) => void;
+}) {
   const focused = useStore((s) => activeHtab(s)?.focused === leaf.id);
   const setFocusedPane = useStore((s) => s.setFocusedPane);
-  const movePane = useStore((s) => s.movePane);
-  const [dropEdge, setDropEdge] = useState<DropEdge | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
+  const dropEdge = dropTarget?.id === leaf.id ? dropTarget.edge : null;
 
   useEffect(() => {
     if (focused) focusSession(leaf.id);
@@ -103,29 +121,21 @@ function PaneSlot({ leaf, showFocus, solo }: { leaf: Leaf; showFocus: boolean; s
 
   return (
     <div
-      ref={ref}
+      data-pane-id={leaf.id}
       className={`pane-slot ${showFocus && focused ? "focused" : ""}`}
       onMouseDown={() => setFocusedPane(leaf.id)}
-      onDragOver={(e) => {
-        if (solo || !e.dataTransfer.types.includes(PANE_MIME) || !ref.current) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        setDropEdge(edgeFor(ref.current.getBoundingClientRect(), e.clientX, e.clientY));
-      }}
-      onDragLeave={() => setDropEdge(null)}
-      onDrop={(e) => {
-        if (solo) return;
-        e.preventDefault();
-        const edge = dropEdge;
-        setDropEdge(null);
-        const dragId = e.dataTransfer.getData(PANE_MIME);
-        if (dragId && edge) movePane(dragId, leaf.id, edge);
-      }}
     >
-      <PaneHeader leaf={leaf} solo={solo} />
+      <PaneHeader leaf={leaf} solo={solo} onPointerDown={(e) => onPaneDragStart(leaf.id, e)} />
       <div className="pane-body">
         {leaf.view === "files" ? (
-          <FileTree sessionId={leaf.id} initialCwdFrom={leaf.cwdFrom} />
+          <FileTree
+            sessionId={leaf.id}
+            initialCwdFrom={leaf.cwdFrom}
+            explicitRoot={leaf.filesRoot}
+            explicitSelected={leaf.filesSelected}
+          />
+        ) : leaf.view === "web" ? (
+          <WebBrowserPane id={leaf.id} />
         ) : (
           <TerminalPane id={leaf.id} />
         )}
@@ -152,15 +162,29 @@ function SplitTree({
   pane,
   showFocus,
   path,
+  dropTarget,
+  onPaneDragStart,
 }: {
   pane: Pane;
   showFocus: boolean;
   path: number[];
+  dropTarget: PaneDropTarget;
+  onPaneDragStart: (id: string, e: React.PointerEvent) => void;
 }) {
   const resizeSplit = useStore((s) => s.resizeSplit);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  if (pane.kind === "leaf") return <PaneSlot leaf={pane} showFocus={showFocus} solo={false} />;
+  if (pane.kind === "leaf") {
+    return (
+      <PaneSlot
+        leaf={pane}
+        showFocus={showFocus}
+        solo={false}
+        dropTarget={dropTarget}
+        onPaneDragStart={onPaneDragStart}
+      />
+    );
+  }
 
   const sizes = normalizeSizes(pane.sizes, pane.children.length);
   const horizontal = pane.dir === "row";
@@ -210,7 +234,13 @@ function SplitTree({
             />
           )}
           <div className="split-cell" style={{ flexGrow: sizes[i] }}>
-            <SplitTree pane={child} showFocus={showFocus} path={[...path, i]} />
+            <SplitTree
+              pane={child}
+              showFocus={showFocus}
+              path={[...path, i]}
+              dropTarget={dropTarget}
+              onPaneDragStart={onPaneDragStart}
+            />
           </div>
         </Fragment>
       ))}
@@ -224,7 +254,66 @@ function leafKey(pane: Pane): string {
 
 /** Top-level: render the magnified pane alone, or the full split tree. */
 export function SplitView({ htab }: { htab: HTab }) {
+  const movePane = useStore((s) => s.movePane);
+  const [dropTarget, setDropTarget] = useState<PaneDropTarget>(null);
+  const dropTargetRef = useRef<PaneDropTarget>(null);
+
+  const updateDropTarget = (next: PaneDropTarget) => {
+    dropTargetRef.current = next;
+    setDropTarget(next);
+  };
+
+  const startPaneDrag = (dragId: string, e: React.PointerEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button,input")) return;
+    e.preventDefault();
+
+    const onMove = (ev: PointerEvent) => {
+      const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-pane-id]");
+      const targetId = el?.dataset.paneId;
+      if (!el || !targetId || targetId === dragId) {
+        updateDropTarget(null);
+        return;
+      }
+      updateDropTarget({ id: targetId, edge: edgeFor(el.getBoundingClientRect(), ev.clientX, ev.clientY) });
+    };
+
+    const onUp = () => {
+      const target = dropTargetRef.current;
+      updateDropTarget(null);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      if (target) movePane(dragId, target.id, target.edge);
+    };
+
+    document.body.style.cursor = "grabbing";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  };
+
   const maxLeaf = htab.maximized ? findLeaf(htab.layout, htab.maximized) : undefined;
-  if (maxLeaf) return <PaneSlot leaf={maxLeaf} showFocus={false} solo />;
-  return <SplitTree pane={htab.layout} showFocus={paneCount(htab.layout) > 1} path={[]} />;
+  if (maxLeaf) {
+    return (
+      <PaneSlot
+        leaf={maxLeaf}
+        showFocus={false}
+        solo
+        dropTarget={dropTarget}
+        onPaneDragStart={startPaneDrag}
+      />
+    );
+  }
+  return (
+    <SplitTree
+      pane={htab.layout}
+      showFocus={paneCount(htab.layout) > 1}
+      path={[]}
+      dropTarget={dropTarget}
+      onPaneDragStart={startPaneDrag}
+    />
+  );
 }
