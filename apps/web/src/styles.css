@@ -1135,6 +1135,9 @@ html.tauri #root {
   height: 18px;
   flex: 0 0 18px;
   object-fit: contain;
+  border-radius: 4px;
+  /* Same reasoning as .agent-settings-icon: several logos are white-only. */
+  background: #161616;
 }
 .agent-menu-icon.fallback {
   display: inline-flex;
@@ -2072,7 +2075,10 @@ html.tauri #root {
   object-fit: contain;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg);
+  /* Fixed instead of var(--bg): several agent logos (OpenCode, Kilo Code,
+     Cursor) are plain white silhouettes with no color of their own, meant to
+     sit on a dark chip — on a light theme's background they'd be invisible. */
+  background: #161616;
   padding: 6px;
 }
 .agent-settings-icon.fallback {

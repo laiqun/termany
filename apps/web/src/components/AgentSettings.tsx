@@ -23,7 +23,7 @@ function AgentAvatar({ agent }: { agent: AgentConfig }) {
 export function AgentSettings() {
   const { t } = useI18n();
   const [agents, setAgents] = useState(loadAgentConfigs);
-  const [expanded, setExpanded] = useState<string | null>(agents[0]?.id ?? null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 

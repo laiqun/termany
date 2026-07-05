@@ -282,8 +282,14 @@ pub fn run() {
     // Dock click, "reopen windows" after a reboot, etc.) is redirected here
     // instead of spawning a second app + a second bundled server that would
     // just fight the first one for port 5174.
+    //
+    // Debug builds share the same bundle identifier (tauri.conf.json) as the
+    // installed release app, and this plugin locks by identifier alone — with
+    // it active in dev, `tauri dev` would detect the already-running installed
+    // Termany.app as "another instance" and exit immediately instead of
+    // opening a dev window. Only guard release builds, where this is needed.
     #[cfg(desktop)]
-    {
+    if !cfg!(debug_assertions) {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let paths: Vec<String> = argv
                 .into_iter()
@@ -315,6 +321,58 @@ pub fn run() {
             })));
             #[cfg(target_os = "macos")]
             macos_services::install(app.handle().clone());
+
+            // Tauri auto-creates a default macOS menu bar when none is set,
+            // and two of its predefined items actively fight this app:
+            //   - "Quit" calls exit() directly, bypassing RunEvent::ExitRequested
+            //     entirely (tauri-apps/tauri#3124), so the quit-confirm dialog
+            //     wired up below never gets a chance to run.
+            //   - "Close Window" binds ⌘W at the OS menu layer, intercepting the
+            //     keystroke before it ever reaches the webview — silently eating
+            //     the app's own ⌘W "close pane" shortcut.
+            // Replacing it with our own menu fixes both: a custom Quit item
+            // routes through the same "quit-requested" event as Dock → Quit,
+            // and Window simply has no Close item so ⌘W falls through as a
+            // normal keydown for the frontend to handle.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+
+                let quit = MenuItemBuilder::new("Quit Termany")
+                    .id("quit")
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(app)?;
+                let app_menu = SubmenuBuilder::new(app, "Termany")
+                    .about(None)
+                    .separator()
+                    .services()
+                    .separator()
+                    .hide()
+                    .hide_others()
+                    .show_all()
+                    .separator()
+                    .item(&quit)
+                    .build()?;
+                let edit_menu = SubmenuBuilder::new(app, "Edit")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
+                let window_menu = SubmenuBuilder::new(app, "Window").minimize().build()?;
+                let menu = MenuBuilder::new(app)
+                    .items(&[&app_menu, &edit_menu, &window_menu])
+                    .build()?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app_handle, event| {
+                    if event.id() == "quit" {
+                        let _ = app_handle.emit_to("main", "quit-requested", ());
+                    }
+                });
+            }
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(

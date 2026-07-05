@@ -6,6 +6,7 @@ import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { apiUrl } from "../api";
 import { DemoBackend, demoInteracted, isDemo } from "../demo";
+import { ACTIONS, loadKeybindings, matchChord } from "../keybindings";
 import { openExternal } from "../openExternal";
 import { registerLocalPathLinks } from "./localLinks";
 
@@ -248,6 +249,21 @@ function getSession(id: string): Session {
 
   const fit = new FitAddon();
   term.loadAddon(fit);
+
+  // xterm swallows every keydown it decides to handle (preventDefault +
+  // stopPropagation) before it can bubble up to App.tsx's window-level
+  // shortcut listener — so with a terminal focused (the common case, since
+  // typing IS the terminal), app shortcuts like ⌘W silently did nothing.
+  // Step aside for any key that matches a live user shortcut binding so it
+  // reaches the app instead of being typed into the shell.
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type !== "keydown") return true;
+    const keybindings = loadKeybindings();
+    for (const action of ACTIONS) {
+      if (matchChord(event, keybindings[action.id] ?? action.default)) return false;
+    }
+    return true;
+  });
 
   // Replay the previous run's output tail (server-captured, sanitized) ABOVE
   // the fresh shell, so a reopened pane shows where it left off. The raw replay

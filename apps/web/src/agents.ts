@@ -4,8 +4,10 @@ import claudeIcon from "./assets/agents/claudecode.svg?url";
 import codexIcon from "./assets/agents/codex.svg?url";
 import cursorIcon from "./assets/agents/cursor.svg?url";
 import geminiIcon from "./assets/agents/gemini.svg?url";
+import hermesIcon from "./assets/agents/hermes.webp?url";
 import kilocodeIcon from "./assets/agents/kilocode.svg?url";
 import kimiIcon from "./assets/agents/kimi.svg?url";
+import ompIcon from "./assets/agents/omp.svg?url";
 import openClawIcon from "./assets/agents/openclaw.svg?url";
 import opencodeIcon from "./assets/agents/opencode.svg?url";
 
@@ -52,6 +54,15 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     builtIn: true,
   },
   {
+    id: "gemini",
+    name: "Gemini",
+    command: "gemini",
+    args: "--yolo",
+    enabled: false,
+    icon: geminiIcon,
+    builtIn: true,
+  },
+  {
     id: "openclaw",
     name: "OpenClaw",
     command: "openclaw",
@@ -61,21 +72,21 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     builtIn: true,
   },
   {
+    id: "hermes",
+    name: "Hermes",
+    command: "hermes",
+    args: "",
+    enabled: false,
+    icon: hermesIcon,
+    builtIn: true,
+  },
+  {
     id: "opencode",
     name: "OpenCode",
     command: "opencode",
     args: "",
     enabled: false,
     icon: opencodeIcon,
-    builtIn: true,
-  },
-  {
-    id: "gemini",
-    name: "Gemini",
-    command: "gemini",
-    args: "--yolo",
-    enabled: false,
-    icon: geminiIcon,
     builtIn: true,
   },
   {
@@ -111,6 +122,7 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     command: "omp",
     args: "",
     enabled: false,
+    icon: ompIcon,
     builtIn: true,
   },
 ];
