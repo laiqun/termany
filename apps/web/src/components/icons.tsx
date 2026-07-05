@@ -8,13 +8,20 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronsDownUp,
+  ChevronsUpDown,
   ChevronUp,
   File,
+  Folder,
+  FolderOpen,
+  FolderTree,
   Maximize2,
   Minimize2,
   PanelLeft,
+  PanelRight,
   Pencil,
   Plus,
+  RotateCw,
+  Search,
   Settings,
   SquareTerminal,
   X,
@@ -25,6 +32,11 @@ const base = { size: 16, strokeWidth: 1.75 };
 
 export function PanelIcon() {
   return <PanelLeft {...base} />;
+}
+
+/** Collapse/expand the right quick-action rail — mirrors PanelIcon. */
+export function PanelRightIcon() {
+  return <PanelRight {...base} />;
 }
 
 export function ChevronIcon({ dir = "right" }: { dir?: "left" | "right" | "up" | "down" }) {
@@ -73,4 +85,39 @@ export function TerminalIcon() {
 /** Collapse-all glyph (sidebar tree). */
 export function CollapseAllIcon() {
   return <ChevronsDownUp {...base} />;
+}
+
+/** Magnifying glass — quick search / command palette. */
+export function SearchIcon() {
+  return <Search {...base} />;
+}
+
+/** Branching folder glyph — toggle a pane between terminal and file-tree view. */
+export function FilesIcon() {
+  return <FolderTree {...base} />;
+}
+
+/** Closed folder — a directory row in the file tree. */
+export function FolderIcon() {
+  return <Folder {...base} />;
+}
+
+/** File row in the file tree (plain document glyph). */
+export function FileEntryIcon() {
+  return <File {...base} />;
+}
+
+/** Refresh the current directory listing. */
+export function RefreshIcon() {
+  return <RotateCw {...base} />;
+}
+
+/** Restore the rows that were expanded before a collapse-all. */
+export function RestoreExpandedIcon() {
+  return <ChevronsUpDown {...base} />;
+}
+
+/** Open folder glyph — reveal a file or directory in Finder/Explorer. */
+export function RevealFolderIcon() {
+  return <FolderOpen {...base} />;
 }

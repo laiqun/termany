@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { isTauri } from "../env";
 import { useStore, activeNode, HTAB_DRAG_MIME } from "../state/store";
-import { ChevronIcon, CloseIcon, PanelIcon, PlusIcon } from "./icons";
+import { ChevronIcon, CloseIcon, PanelIcon, PanelRightIcon, PlusIcon } from "./icons";
 
 /**
  * Top tab strip. Notion-style, the workspace controls sit at the very left,
@@ -16,6 +16,8 @@ export function HTabBar() {
   const renameHTab = useStore((s) => s.renameHTab);
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const railCollapsed = useStore((s) => s.railCollapsed);
+  const toggleRail = useStore((s) => s.toggleRail);
   const prevWorkspace = useStore((s) => s.prevWorkspace);
   const nextWorkspace = useStore((s) => s.nextWorkspace);
   const solo = useStore((s) => s.workspaces.length < 2);
@@ -104,6 +106,13 @@ export function HTabBar() {
           <PlusIcon />
         </button>
       )}
+      <button
+        className="bar-btn rail-toggle"
+        title={railCollapsed ? "Show panel" : "Hide panel"}
+        onClick={toggleRail}
+      >
+        <PanelRightIcon />
+      </button>
     </div>
   );
 }

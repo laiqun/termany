@@ -40,13 +40,17 @@ export const ACTIONS: ActionDef[] = [
   { id: "closePane", label: "Close pane / tab", group: "Tabs & panes", default: { code: "KeyW", meta: true } },
   { id: "splitRight", label: "Split right", group: "Tabs & panes", default: { code: "KeyD", meta: true } },
   { id: "splitDown", label: "Split down", group: "Tabs & panes", default: { code: "KeyD", meta: true, shift: true } },
+  { id: "toggleMaximize", label: "Maximize / restore pane", group: "Tabs & panes", default: { code: "KeyM", meta: true } },
+  { id: "clearScreen", label: "Clear terminal", group: "Tabs & panes", default: { code: "KeyK", meta: true } },
   { id: "newPage", label: "New page", group: "Navigation", default: { code: "KeyN", meta: true } },
   { id: "newChildPage", label: "New child page", group: "Navigation", default: { code: "Enter", meta: true } },
   { id: "newWorkspace", label: "New workspace", group: "Navigation", default: { code: "KeyN", meta: true, shift: true } },
   { id: "previousTheme", label: "Previous theme", group: "Appearance", default: { code: "Comma", meta: true, alt: true } },
   { id: "nextTheme", label: "Next theme", group: "Appearance", default: { code: "Period", meta: true, alt: true } },
   { id: "toggleSidebar", label: "Toggle sidebar", group: "General", default: { code: "KeyB", meta: true } },
+  { id: "toggleRail", label: "Toggle quick-action panel", group: "General", default: { code: "KeyJ", meta: true, shift: true } },
   { id: "openSettings", label: "Open settings", group: "General", default: { code: "Comma", meta: true } },
+  { id: "search", label: "Search pages, tabs & panels", group: "General", default: { code: "KeyP", meta: true } },
 ];
 
 /** Codes that are modifiers themselves — never a valid chord on their own. */

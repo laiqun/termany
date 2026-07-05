@@ -18,7 +18,7 @@ export interface ITerminalBackend {
   /** Tell the PTY the new viewport size. */
   resize(cols: number, rows: number): void;
   /** Register a callback for when the underlying session ends. */
-  onExit(cb: () => void): void;
+  onExit(cb: (reason?: string) => void): void;
   /** Tear down the connection / session. */
   dispose(): void;
 }

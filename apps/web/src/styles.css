@@ -413,6 +413,134 @@ html.tauri #root {
   width: 20px;
 }
 
+/* Search palette (⌘K quick-find across pages, tabs, panels) */
+.search-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.search-palette {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 88vw);
+  max-height: min(420px, 60vh);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.search-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.search-input-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+  flex-shrink: 0;
+}
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 15px;
+  line-height: 20px;
+  outline: none;
+}
+.search-results {
+  overflow-y: auto;
+  padding: 6px;
+}
+.search-empty {
+  padding: 20px 12px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.search-row.active {
+  background: var(--accent-soft);
+}
+.search-row-ico {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.search-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.search-row-label {
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-row-breadcrumb {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.search-row-kind {
+  flex-shrink: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+/* Non-interactive ancestor-page row — placed only to show real tree context
+   for a match nested underneath it (the page title itself didn't match). */
+.search-context-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-right: 10px;
+  color: var(--fg-dim);
+  font-size: 12.5px;
+}
+.search-context-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Create / edit workspace dialog */
 .ws-dialog-backdrop {
   position: fixed;
@@ -873,6 +1001,12 @@ html.tauri #root {
   background: var(--bg-3);
   color: var(--fg);
 }
+/* Pinned to the far right of the strip, mirroring .htab-controls on the left —
+   stays put regardless of how many tabs are open (they scroll/wrap, this doesn't). */
+.rail-toggle {
+  align-self: center;
+  margin-left: auto;
+}
 .bar-btn:disabled {
   opacity: 0.35;
   cursor: default;
@@ -900,6 +1034,45 @@ html.tauri #root {
   border-radius: var(--pane-radius);
   overflow: hidden;
   box-shadow: var(--pane-shadow);
+}
+
+/* Right quick-action rail — full window height, mirrors .sidebar on the
+   left (own background, border on its inner edge). A sibling of .sidebar and
+   .main in .app, not nested in .pane-area, so it stays put whichever tab or
+   pane layout is showing. Each button creates a NEW pane via addPane(); it
+   doesn't switch an existing pane's view (that's the per-pane header button,
+   togglePaneView). Collapsed from HTabBar's right-edge button, like the left
+   sidebar's PanelIcon toggle. */
+.side-rail {
+  width: 40px;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-left: var(--sidebar-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  /* Top padding = .htabbar's height (36px, hardcoded there too — no shared
+     var) + .pane-area's padding, so the first button lines up with the tab
+     strip's bottom border/pane-card's top edge, same as .section-head does
+     below .ws-switcher on the left sidebar. */
+  padding: calc(36px + var(--pane-gap)) 6px 8px;
+}
+.side-rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.side-rail-btn:hover {
+  background: var(--bg-3);
+  color: var(--fg);
 }
 /* Split layout */
 .split {
@@ -1088,12 +1261,186 @@ html.tauri #root {
   inset: 0;
   padding: 8px;
 }
+/* Dragging a file/folder in from Finder — same accent-ring language as the
+   pane-rearrange drop indicator, so it reads as "dropping here does something". */
+.term-pane.drag-over::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  pointer-events: none;
+}
 .term-host {
   width: 100%;
   height: 100%;
 }
 .term-host .xterm {
   height: 100%;
+}
+
+/* Per-pane file tree — the pane's alternative body, toggled from its header.
+   Default: just the tree, filling the pane. Only while a file is open (which
+   also maximizes the pane) does a second, narrower column appear alongside a
+   fixed-width tree — see the two rules below. */
+.file-tree {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.file-tree-split {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.file-tree-split .file-tree {
+  position: static;
+  flex: 0 0 38%;
+  min-width: 200px;
+  max-width: 420px;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+.file-preview-panel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.file-tree-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.file-tree-head .pane-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.file-tree-head .pane-btn:disabled:hover {
+  background: transparent;
+  color: var(--fg-dim);
+}
+.file-tree-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-family: Menlo, monospace;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The tree's own path is editable — type a path, Enter navigates there. */
+.file-tree-path-input {
+  border: none;
+  background: transparent;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  cursor: text;
+}
+.file-tree-path-input:hover {
+  background: var(--bg-3);
+}
+.file-tree-path-input:focus {
+  outline: none;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.file-tree-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+.file-tree-list.loading {
+  opacity: 0.6;
+}
+.file-tree-message {
+  padding: 12px 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--fg-dim);
+  user-select: none;
+}
+.file-tree-row:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.file-tree-row.selected {
+  background: var(--active-row);
+  color: var(--fg);
+}
+.file-tree-twisty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.file-tree-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.file-tree-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+}
+.file-tree-size {
+  flex-shrink: 0;
+  width: 64px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.file-tree-date {
+  flex-shrink: 0;
+  width: 82px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+/* CodeMirror editor a clicked file opens into, in the preview panel. */
+.code-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.code-editor .cm-editor {
+  height: 100%;
+}
+.file-preview-dirty {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.file-preview-error {
+  color: #e5484d;
 }
 
 /* Sidebar footer: settings entry (bottom-left) */

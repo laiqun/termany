@@ -1,19 +1,24 @@
 import { useEffect, useState } from "react";
 import { HTabBar } from "./components/HTabBar";
 import { ResizeHandles } from "./components/ResizeHandles";
+import { SearchPalette } from "./components/SearchPalette";
 import { Settings } from "./components/Settings";
+import { SideRail } from "./components/SideRail";
 import { SplitView } from "./components/SplitView";
 import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, useStore } from "./state/store";
+import { clearSession } from "./terminal/manager";
 import { checkForUpdate } from "./updater";
 
 export function App() {
   const htab = useStore(activeHtab);
   const collapsed = useStore((s) => s.sidebarCollapsed);
+  const railCollapsed = useStore((s) => s.railCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   // Global shortcuts. Each action's chord is user-customizable (Settings →
   // Keyboard, persisted to localStorage); the catalog and defaults live in
@@ -26,6 +31,14 @@ export function App() {
       closePane: (s) => s.closeFocusedPane(),
       splitRight: (s) => s.splitFocused("row"),
       splitDown: (s) => s.splitFocused("col"),
+      toggleMaximize: (s) => {
+        const h = activeHtab(s);
+        if (h) s.toggleMaximize(h.focused);
+      },
+      clearScreen: (s) => {
+        const h = activeHtab(s);
+        if (h) clearSession(h.focused);
+      },
       newPage: (s) => s.addRootNode(),
       newChildPage: (s) => {
         const current = activeNode(s);
@@ -35,7 +48,9 @@ export function App() {
       previousTheme: (s) => s.prevTheme(),
       nextTheme: (s) => s.nextTheme(),
       toggleSidebar: (s) => s.toggleSidebar(),
+      toggleRail: (s) => s.toggleRail(),
       openSettings: () => setSettingsOpen(true),
+      search: () => setSearchOpen((o) => !o),
     };
 
     const onKey = (e: KeyboardEvent) => {
@@ -76,7 +91,9 @@ export function App() {
           <div className="pane-card">{htab && <SplitView key={htab.id} htab={htab} />}</div>
         </div>
       </div>
+      {!railCollapsed && <SideRail />}
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      {searchOpen && <SearchPalette onClose={() => setSearchOpen(false)} />}
     </div>
   );
 }

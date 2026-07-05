@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
@@ -78,7 +79,12 @@ function readBuffer(
  * keeping the PTY behind WebSocketBackend.
  */
 
-const PORT = Number(process.env.TERMANY_PORT ?? 5174);
+// Dev runs on 5175 so it never collides with an INSTALLED Termany.app, whose
+// bundled server owns 5174 — that collision used to kill the dev server
+// silently mid-`pnpm desktop`, leaving the dev app talking to the old binary.
+// `npm_lifecycle_event` is "dev" only when launched via the `dev` script.
+const DEFAULT_PORT = process.env.npm_lifecycle_event === "dev" ? 5175 : 5174;
+const PORT = Number(process.env.TERMANY_PORT ?? DEFAULT_PORT);
 const IS_WIN = os.platform() === "win32";
 const PASTE_DIR = process.env.TERMANY_PASTE_DIR ?? `${os.tmpdir()}/termany-pastes`;
 // Launch a LOGIN shell so it runs /etc/zprofile + ~/.zprofile (Homebrew's
@@ -98,19 +104,60 @@ function defaultShell(): string {
 }
 
 const SHELL = defaultShell();
-const SHELL_ARGS = IS_WIN ? ["-NoLogo"] : ["-l"];
+// Windows has no equivalent of /proc/pid/cwd or `lsof -d cwd` (see cwdForPid
+// below), so the shell's live directory is unknowable from OUTSIDE the
+// process. Instead we make PowerShell tell us: every time it draws a prompt,
+// this hook emits an OSC 7 escape (the same "report cwd" convention iTerm2/VS
+// Code/GNOME Terminal use) carrying a file:// URI of the current directory.
+// trackOscCwd() below watches the raw PTY stream for it. `-NoProfile` means
+// there's no user `prompt` function to preserve, so overwriting it outright
+// is safe.
+const OSC7_PS_HOOK = [
+  "function prompt {",
+  "  $u = [uri]::new((Get-Location).ProviderPath)",
+  "  $e = [char]27",
+  '  Write-Host -NoNewline ("$e]7;" + $u.AbsoluteUri + "$e\\")',
+  "  \"PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) \"",
+  "}",
+].join("\n");
+// Windows PowerShell profiles commonly initialize prompt tooling, package
+// managers, network drives, or Conda. In a headless packaged app that can turn
+// a new terminal into a minutes-long hang before the interactive prompt exists.
+const SHELL_ARGS = IS_WIN
+  ? ["-NoLogo", "-NoProfile", "-NoExit", "-Command", OSC7_PS_HOOK]
+  : ["-l"];
+
+// Populated from the PTY's own output (Windows only — see OSC7_PS_HOOK above),
+// keyed by pid so cwdForPid() can serve it the same way it serves the native
+// lookups on Linux/macOS. Cleared as sessions exit in wireSession() below.
+const oscCwdByPid = new Map<number, string>();
+const OSC7_RE = /\x1b\]7;file:\/\/[^/\x07\x1b]*(\/[^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+
+/** Scan a chunk of raw PTY output for an OSC 7 cwd report and cache the latest. */
+function trackOscCwd(pid: number, data: string): void {
+  let last: string | undefined;
+  for (const match of data.matchAll(OSC7_RE)) last = match[1];
+  if (!last) return;
+  try {
+    let decoded = decodeURIComponent(last);
+    // file:///C:/Users/... — strip the URI's leading slash before the drive letter.
+    if (/^\/[A-Za-z]:\//.test(decoded)) decoded = decoded.slice(1);
+    oscCwdByPid.set(pid, decoded);
+  } catch {
+    /* malformed percent-encoding (e.g. a literal "%" in the path) — ignore */
+  }
+}
 
 type ClientMessage =
   | { type: "input"; data: string }
   | { type: "resize"; cols: number; rows: number };
 
 // --- scroll history ---------------------------------------------------------
-// The server tails every session's raw PTY output into a per-session ring
+// Every live session tails its raw PTY output into a per-session ring
 // (Wave-style: history survives restarts without the frontend serializing
-// anything). Memory: only sessions connected this run hold a ring, each capped
-// at SCROLL_CAP bytes. Disk: dirty rings flush to SQLite every 10s, on session
-// close, and on a pagehide beacon from the frontend (the app may SIGKILL us on
-// quit, so the timed flush alone isn't enough).
+// anything). Each ring is capped at SCROLL_CAP bytes and flushes to SQLite
+// every 10s, on detach, and on a pagehide beacon from the frontend (the app may
+// SIGKILL us on quit, so the timed flush alone isn't enough).
 
 const SCROLL_CAP = 512 * 1024; // raw bytes/session ≈ a few thousand visible lines
 
@@ -120,21 +167,10 @@ interface ScrollRing {
   dirty: boolean;
 }
 
-const scrollRings = new Map<string, ScrollRing>();
-
-/** The session's ring, seeded from its saved history so runs concatenate. */
-function ringFor(sessionId: string): ScrollRing {
-  let ring = scrollRings.get(sessionId);
-  if (!ring) {
-    const saved = getScroll(sessionId) ?? "";
-    ring = {
-      chunks: saved ? [saved] : [],
-      bytes: Buffer.byteLength(saved),
-      dirty: false,
-    };
-    scrollRings.set(sessionId, ring);
-  }
-  return ring;
+/** A fresh ring for `sessionId`, seeded from its saved history so runs concatenate. */
+function newRing(sessionId: string): ScrollRing {
+  const saved = getScroll(sessionId) ?? "";
+  return { chunks: saved ? [saved] : [], bytes: Buffer.byteLength(saved), dirty: false };
 }
 
 function ringAppend(ring: ScrollRing, data: string): void {
@@ -159,25 +195,6 @@ function ringAppend(ring: ScrollRing, data: string): void {
     ring.chunks[0] = ring.chunks[0].slice(nl + 1);
   }
 }
-
-/** Persist every dirty ring; coalesces each into one string as a side effect. */
-function flushScroll(): void {
-  const batch: Record<string, string> = {};
-  for (const [id, ring] of scrollRings) {
-    if (!ring.dirty) continue;
-    const data = ring.chunks.join("");
-    ring.chunks = [data]; // coalesce: fewer live string objects between flushes
-    ring.dirty = false;
-    batch[id] = data;
-  }
-  try {
-    setScrollBatch(batch);
-  } catch (err) {
-    console.error("[termany] scroll flush failed:", err);
-  }
-}
-
-setInterval(flushScroll, 10_000).unref();
 
 /**
  * Make raw PTY output safe to replay into a fresh terminal: strip sequences
@@ -252,6 +269,125 @@ async function savePastedImage(body: any): Promise<{ path: string }> {
   return writePastedImage(mime, Buffer.from(data, "base64"));
 }
 
+// --- PTY session registry ---------------------------------------------------
+// A session's shell now outlives its WebSocket: closing/reloading the webview
+// (or quitting and reopening the app, as long as this server process stays up
+// — see the desktop side's window/lifecycle handling) detaches the socket but
+// leaves the PTY running, so a reconnect resumes the SAME live process instead
+// of spawning a fresh one. Only two things actually end a session's PTY:
+//   - the shell exits on its own (user typed `exit`, process crashed)
+//   - the pane is explicitly closed (POST /api/forget) or it's been detached
+//     longer than DETACH_TTL_MS (a safety net against orphaned shells piling
+//     up forever if the app is never reopened)
+
+interface PtySession {
+  pty: ReturnType<typeof spawn>;
+  ring: ScrollRing;
+  ws: WebSocket | null;
+  detachedAt: number | null;
+}
+
+const ptySessions = new Map<string, PtySession>();
+// Connections without a session id (defensive fallback only — the frontend
+// always sends one) get no restore/reattach semantics: killed on disconnect,
+// same as every session used to behave before reattach existed.
+const ephemeralSessions = new Set<PtySession>();
+
+function isOpen(ws: WebSocket | null): ws is WebSocket {
+  return !!ws && ws.readyState === ws.OPEN;
+}
+
+/** Wire a freshly spawned pty's output into its ring + whatever ws is attached. */
+function wireSession(id: string | undefined, session: PtySession): void {
+  session.pty.onData((data) => {
+    if (isOpen(session.ws)) session.ws.send(data);
+    ringAppend(session.ring, data);
+    if (IS_WIN) trackOscCwd(session.pty.pid, data);
+  });
+  session.pty.onExit(({ exitCode, signal }) => {
+    oscCwdByPid.delete(session.pty.pid);
+    console.error(
+      `[termany] shell exited (pid: ${session.pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
+    );
+    if (isOpen(session.ws)) {
+      session.ws.send(
+        `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
+      );
+      session.ws.close();
+    }
+    if (id) {
+      // Natural exit — flush final history so it still restores as plain
+      // scrollback (cwd/history stay in the DB; only /api/forget wipes them).
+      if (session.ring.dirty) {
+        try {
+          setScrollBatch({ [id]: session.ring.chunks.join("") });
+        } catch {
+          /* best-effort */
+        }
+      }
+      ptySessions.delete(id);
+    } else {
+      ephemeralSessions.delete(session);
+    }
+  });
+}
+
+/** Kill a session's live process (if any), preserving its restore history. */
+function killSession(id: string): void {
+  const session = ptySessions.get(id);
+  if (!session) return;
+  if (session.ring.dirty) {
+    try {
+      setScrollBatch({ [id]: session.ring.chunks.join("") });
+    } catch {
+      /* best-effort */
+    }
+  }
+  try {
+    session.pty.kill();
+  } catch {
+    /* already gone */
+  }
+  ptySessions.delete(id);
+}
+
+// Safety net: a shell detached (app closed, never reopened) longer than this
+// is reaped so orphaned processes don't accumulate forever. Its restore
+// history is left in place — reopening later still shows the last output.
+const DETACH_TTL_MS = Number(process.env.TERMANY_DETACH_TTL_MS ?? 7 * 24 * 60 * 60 * 1000);
+
+function reapDetachedSessions(): void {
+  const now = Date.now();
+  for (const [id, session] of ptySessions) {
+    if (session.detachedAt !== null && now - session.detachedAt > DETACH_TTL_MS) {
+      console.log(
+        `[termany] reaping session ${id}, detached for over ${Math.round(DETACH_TTL_MS / 86_400_000)}d`
+      );
+      killSession(id);
+    }
+  }
+}
+setInterval(reapDetachedSessions, 60 * 60 * 1000).unref();
+
+/** Persist every dirty ring; coalesces each into one string as a side effect. */
+function flushScroll(): void {
+  const batch: Record<string, string> = {};
+  for (const [id, session] of ptySessions) {
+    if (!session.ring.dirty) continue;
+    const data = session.ring.chunks.join("");
+    session.ring.chunks = [data]; // coalesce: fewer live string objects between flushes
+    session.ring.dirty = false;
+    batch[id] = data;
+  }
+  try {
+    setScrollBatch(batch);
+  } catch (err) {
+    console.error("[termany] scroll flush failed:", err);
+  }
+}
+
+setInterval(flushScroll, 10_000).unref();
+
 // One HTTP server hosts both the WebSocket upgrade (PTY sessions) and a small
 // JSON API (POST /api/theme — AI theme generation, key stays server-side).
 const http = createServer((req, res) => {
@@ -273,6 +409,7 @@ const http = createServer((req, res) => {
     console.error("[termany] request failed:", msg);
     json(500, { error: msg });
   };
+  const reqUrl = new URL(req.url ?? "/", "http://localhost");
 
   // Model-provider settings (keys stored server-side, masked on read).
   if (req.method === "GET" && req.url === "/api/models") {
@@ -304,14 +441,14 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Terminal scroll history — the server tails each session's raw PTY output
-  // (see the ring machinery above), so restore is one sanitized read. Sessions
-  // that quit inside a TUI's alternate screen get their captured final screen
+  // Terminal scroll history — every live session tails its raw PTY output (see
+  // the ring machinery above), so restore is one sanitized read. Sessions that
+  // quit inside a TUI's alternate screen get their captured final screen
   // appended AFTER leaving the alt screen, so it survives as plain history
   // (the alt screen itself is discarded on replay, by terminal semantics).
   if (req.method === "GET" && req.url === "/api/scroll") {
     const merged = getAllScroll();
-    for (const [id, ring] of scrollRings) merged[id] = ring.chunks.join("");
+    for (const [id, session] of ptySessions) merged[id] = session.ring.chunks.join("");
     for (const id of Object.keys(merged)) merged[id] = sanitizeForReplay(merged[id]);
     for (const [id, text] of Object.entries(getAllScreens())) {
       merged[id] =
@@ -337,13 +474,141 @@ const http = createServer((req, res) => {
       .catch(fail);
     return;
   }
-  // Permanently drop restore data (cwd + scroll history) for closed panes.
+  // Permanently drop restore data (cwd + scroll history) for closed panes, and
+  // kill their live process if one is still running (detached or attached).
   if (req.method === "POST" && req.url === "/api/forget") {
     readJson(req)
       .then((body) => {
         const ids = Array.isArray(body?.ids) ? body.ids.map(String) : [];
+        for (const id of ids) killSession(id);
         forgetSessions(ids);
-        for (const id of ids) scrollRings.delete(id);
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Paths clicked in terminal output. Relative paths (compiler/test output
+  // like `src/foo.ts`) only mean something against the session shell's LIVE
+  // cwd, which only this process can see — resolve each candidate here, stat
+  // it, and hand back an absolute path (or null so the client draws no link).
+  if (req.method === "POST" && req.url === "/api/resolve-paths") {
+    readJson(req)
+      .then(async (body) => {
+        const sessionId = String(body?.session ?? "");
+        const paths = Array.isArray(body?.paths) ? body.paths.slice(0, 64).map(String) : [];
+        const pty = ptySessions.get(sessionId)?.pty;
+        const cwd =
+          (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
+          (await dirIfValid(getSessionCwd(sessionId) ?? undefined)) ??
+          os.homedir();
+        const resolved = await Promise.all(
+          paths.map(async (p: string) => {
+            let abs = p;
+            if (p === "~" || p.startsWith("~/")) abs = path.join(os.homedir(), p.slice(1));
+            else if (!path.isAbsolute(p)) abs = path.resolve(cwd, p);
+            try {
+              await fs.promises.stat(abs);
+              return abs;
+            } catch {
+              return null;
+            }
+          })
+        );
+        json(200, { resolved });
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Directory listing for the per-pane file tree. `session` anchors an empty
+  // `path` to that pane's shell's LIVE cwd (same resolution as resolve-paths);
+  // an explicit `path` just lists that directory instead.
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/list") {
+    (async () => {
+      const sessionId = reqUrl.searchParams.get("session") ?? "";
+      const requested = reqUrl.searchParams.get("path");
+      let dir = requested?.trim();
+      // Expand a leading "~" (bare, or "~/…") — typed manually into the file
+      // tree's address bar, this is the one place a user-facing path needs it.
+      if (dir === "~") dir = os.homedir();
+      else if (dir?.startsWith("~/")) dir = path.join(os.homedir(), dir.slice(2));
+      if (!dir) {
+        const pty = ptySessions.get(sessionId)?.pty;
+        dir =
+          (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
+          (await dirIfValid(getSessionCwd(sessionId) ?? undefined)) ??
+          os.homedir();
+      }
+      dir = path.resolve(dir);
+      const names = await fs.promises.readdir(dir, { withFileTypes: true });
+      const entries = await Promise.all(
+        names.map(async (d) => {
+          let isDir = d.isDirectory();
+          let size = 0;
+          let mtimeMs = 0;
+          try {
+            const st = await fs.promises.stat(path.join(dir!, d.name));
+            isDir = st.isDirectory();
+            size = st.size;
+            mtimeMs = st.mtimeMs;
+          } catch {
+            /* broken symlink or a race with a deleted entry — list it inert */
+          }
+          return { name: d.name, isDir, size, mtimeMs };
+        })
+      );
+      entries.sort((a, b) =>
+        a.isDir === b.isDir
+          ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+          : a.isDir
+            ? -1
+            : 1
+      );
+      const parent = path.dirname(dir);
+      json(200, { path: dir, parent: parent === dir ? null : parent, entries });
+    })().catch(fail);
+    return;
+  }
+
+  // Read a file's text for the in-pane viewer (double-click in the file tree).
+  // Capped and binary-sniffed — this is a preview, not a general file-serving
+  // endpoint — so huge or non-text files don't get read into memory whole.
+  const FILE_READ_CAP = 2 * 1024 * 1024;
+  if (req.method === "GET" && reqUrl.pathname === "/api/fs/read") {
+    (async () => {
+      const requested = reqUrl.searchParams.get("path");
+      if (!requested) throw new Error("path is required");
+      const abs = path.resolve(requested);
+      const stat = await fs.promises.stat(abs);
+      if (!stat.isFile()) throw new Error("not a file");
+      const readLen = Math.min(stat.size, FILE_READ_CAP);
+      const buf = Buffer.alloc(readLen);
+      const fd = await fs.promises.open(abs, "r");
+      try {
+        await fd.read(buf, 0, readLen, 0);
+      } finally {
+        await fd.close();
+      }
+      // A NUL byte anywhere in the sample means "not text" — same heuristic
+      // git/grep use to skip binary files.
+      if (buf.includes(0)) {
+        json(200, { binary: true, size: stat.size });
+        return;
+      }
+      json(200, { content: buf.toString("utf8"), truncated: stat.size > FILE_READ_CAP, size: stat.size });
+    })().catch(fail);
+    return;
+  }
+
+  // Save the in-pane editor's content back to disk (⌘S in the file preview).
+  if (req.method === "PUT" && reqUrl.pathname === "/api/fs/write") {
+    readJson(req)
+      .then(async (body) => {
+        const requested = String(body?.path ?? "");
+        if (!requested) throw new Error("path is required");
+        const content = String(body?.content ?? "");
+        await fs.promises.writeFile(path.resolve(requested), content, "utf8");
         json(200, { ok: true });
       })
       .catch(fail);
@@ -365,7 +630,6 @@ const http = createServer((req, res) => {
   // Clipboard image paste support. The browser cannot write directly to the
   // local filesystem, so the local server persists the blob and returns a path
   // that can be inserted into the active terminal prompt.
-  const reqUrl = new URL(req.url ?? "/", "http://localhost");
   if (req.method === "POST" && reqUrl.pathname === "/api/paste-image") {
     const contentType = normalizeImageType(
       reqUrl.searchParams.get("type") ||
@@ -387,8 +651,26 @@ const http = createServer((req, res) => {
   res.writeHead(404).end();
 });
 
+// A stale server (e.g. one this app is about to replace after a self-update)
+// may not have released the port yet by the time we try to bind it — retry
+// briefly before giving up, so the race doesn't fail the whole launch.
+const LISTEN_RETRY_MS = 300;
+const LISTEN_RETRY_ATTEMPTS = 5;
+let listenAttempts = 0;
+
+function tryListen(): void {
+  listenAttempts++;
+  http.listen(PORT, () => {
+    console.log(`[termany] PTY server listening on ws://localhost:${PORT}  (shell: ${SHELL})`);
+  });
+}
+
 http.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
+    if (listenAttempts < LISTEN_RETRY_ATTEMPTS) {
+      setTimeout(tryListen, LISTEN_RETRY_MS);
+      return;
+    }
     console.error(
       `[termany] port ${PORT} is already in use — another Termany server is ` +
         `probably running. Stop it (pkill -f "code/termany") and retry.`
@@ -401,8 +683,6 @@ http.on("error", (err: NodeJS.ErrnoException) => {
 const wss = new WebSocketServer({ server: http });
 
 let connCount = 0;
-const livePtys = new Set<ReturnType<typeof spawn>>();
-const ptysBySession = new Map<string, ReturnType<typeof spawn>>();
 
 async function cwdForPid(pid: number): Promise<string | undefined> {
   try {
@@ -420,7 +700,7 @@ async function cwdForPid(pid: number): Promise<string | undefined> {
   } catch {
     return undefined;
   }
-  return undefined;
+  return oscCwdByPid.get(pid);
 }
 
 /** Return `dir` if it's an existing directory, else undefined. */
@@ -441,7 +721,7 @@ async function dirIfValid(dir: string | undefined): Promise<string | undefined> 
 async function resolveSpawnCwd(cwdFrom: string | null, sessionId: string | null): Promise<string> {
   const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
   if (cwdFrom) {
-    const source = ptysBySession.get(cwdFrom);
+    const source = ptySessions.get(cwdFrom)?.pty;
     const live = await dirIfValid(source ? await cwdForPid(source.pid) : undefined);
     if (live) return live;
   }
@@ -458,8 +738,8 @@ async function resolveSpawnCwd(cwdFrom: string | null, sessionId: string | null)
  * be SIGKILLed on quit, so we can't rely on a shutdown hook) and once at exit.
  */
 async function sweepCwds(): Promise<void> {
-  for (const [id, pty] of ptysBySession) {
-    const cwd = await dirIfValid(await cwdForPid(pty.pid));
+  for (const [id, session] of ptySessions) {
+    const cwd = await dirIfValid(await cwdForPid(session.pty.pid));
     if (cwd) {
       try {
         setSessionCwd(id, cwd);
@@ -476,27 +756,74 @@ setInterval(() => {
 
 wss.on("connection", async (ws: WebSocket, req) => {
   const cid = ++connCount;
-  console.log(`[termany] client #${cid} connected`);
   // Disable Nagle's algorithm: without this, TCP coalesces small writes with a
   // ~40ms delay, which makes interactive terminal output feel sluggish/laggy.
   (ws as unknown as { _socket?: { setNoDelay: (enabled: boolean) => void } })._socket?.setNoDelay(true);
 
   const url = new URL(req.url ?? "/", "ws://localhost");
   const sessionId = url.searchParams.get("session");
+
+  // --- Reattach: the session's shell is still running (detached or stolen
+  // from a stale connection) — resume it instead of spawning a fresh one.
+  const existing = sessionId ? ptySessions.get(sessionId) : undefined;
+  if (existing) {
+    console.log(`[termany] client #${cid} reattached to session ${sessionId} (pid ${existing.pty.pid})`);
+    if (existing.ws && existing.ws !== ws) {
+      try {
+        existing.ws.close();
+      } catch {
+        /* already closing */
+      }
+    }
+    existing.ws = ws;
+    existing.detachedAt = null;
+
+    ws.on("message", (raw) => {
+      let msg: ClientMessage;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+      if (msg.type === "input") existing.pty.write(msg.data);
+      else if (msg.type === "resize") {
+        try {
+          existing.pty.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
+        } catch {
+          /* race during teardown */
+        }
+      }
+    });
+    ws.on("close", () => {
+      if (existing.ws !== ws) return; // a newer connection already replaced us
+      existing.ws = null;
+      existing.detachedAt = Date.now();
+      if (existing.ring.dirty) {
+        try {
+          setScrollBatch({ [sessionId!]: existing.ring.chunks.join("") });
+        } catch {
+          /* the 10s flush already saved most of it */
+        }
+      }
+    });
+    return;
+  }
+
+  console.log(`[termany] client #${cid} connected`);
   const pendingMessages: ClientMessage[] = [];
 
-  let pty: ReturnType<typeof spawn> | undefined;
+  let session: PtySession | undefined;
   let closed = false;
   const applyClientMessage = (msg: ClientMessage) => {
-    if (!pty) {
+    if (!session) {
       pendingMessages.push(msg);
       return;
     }
     if (msg.type === "input") {
-      pty.write(msg.data);
+      session.pty.write(msg.data);
     } else if (msg.type === "resize") {
       try {
-        pty.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
+        session.pty.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
       } catch {
         /* race during teardown */
       }
@@ -517,34 +844,36 @@ wss.on("connection", async (ws: WebSocket, req) => {
 
   ws.on("close", () => {
     closed = true;
-    // Persist and release this session's history ring — unless a newer
-    // connection has already adopted the session (window reload race).
-    if (sessionId && (!pty || ptysBySession.get(sessionId) === pty)) {
-      const ring = scrollRings.get(sessionId);
-      if (ring) {
-        if (ring.dirty) {
-          try {
-            setScrollBatch({ [sessionId]: ring.chunks.join("") });
-          } catch {
-            /* the 10s flush already saved most of it */
-          }
-        }
-        scrollRings.delete(sessionId);
+    if (!session) return;
+    if (!sessionId) {
+      // No session id to reattach by — kill immediately, as always.
+      ephemeralSessions.delete(session);
+      try {
+        session.pty.kill();
+      } catch {
+        /* already gone */
       }
+      return;
     }
-    if (!pty) return;
-    livePtys.delete(pty);
-    if (sessionId && ptysBySession.get(sessionId) === pty) ptysBySession.delete(sessionId);
-    try {
-      pty.kill();
-    } catch {
-      /* already gone */
+    // Detach: leave the shell running so a reconnect can resume it. Guard
+    // against the window-reload race, where a newer connection may already
+    // have taken over this session.
+    if (session.ws !== ws) return;
+    session.ws = null;
+    session.detachedAt = Date.now();
+    if (session.ring.dirty) {
+      try {
+        setScrollBatch({ [sessionId]: session.ring.chunks.join("") });
+      } catch {
+        /* the 10s flush already saved most of it */
+      }
     }
   });
 
   const cwd = await resolveSpawnCwd(url.searchParams.get("cwdFrom"), sessionId);
   if (closed) return;
 
+  let pty: ReturnType<typeof spawn>;
   try {
     pty = spawn(SHELL, SHELL_ARGS, {
       name: "xterm-256color",
@@ -564,50 +893,34 @@ wss.on("connection", async (ws: WebSocket, req) => {
     return;
   }
 
-  livePtys.add(pty);
-  if (sessionId) ptysBySession.set(sessionId, pty);
-  // Acquired AFTER registering the pty, so the reload race in ws.on("close")
-  // above can never delete a ring this connection is still appending to.
-  const ring = sessionId ? ringFor(sessionId) : undefined;
-
-  // PTY output -> client (raw text frames) + the session's history ring
-  const onData = pty.onData((data) => {
-    if (ws.readyState === ws.OPEN) ws.send(data);
-    if (ring) ringAppend(ring, data);
-  });
-
-  const onExit = pty.onExit(({ exitCode, signal }) => {
-    livePtys.delete(pty);
-    if (sessionId && ptysBySession.get(sessionId) === pty) ptysBySession.delete(sessionId);
-    console.error(
-      `[termany] shell exited (pid: ${pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
-    );
-    if (ws.readyState === ws.OPEN) {
-      ws.send(
-        `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
-      );
-    }
-    if (ws.readyState === ws.OPEN) ws.close();
-  });
+  session = { pty, ring: sessionId ? newRing(sessionId) : { chunks: [], bytes: 0, dirty: false }, ws, detachedAt: null };
+  if (sessionId) ptySessions.set(sessionId, session);
+  else ephemeralSessions.add(session);
+  wireSession(sessionId ?? undefined, session);
 
   pendingMessages.splice(0).forEach(applyClientMessage);
-
-  ws.on("close", () => {
-    onData.dispose();
-    onExit.dispose();
-  });
 });
 
-// Kill every spawned shell when the server is stopped, so dev restarts don't
-// leave a pile of orphaned interactive shells behind.
+// Kill every spawned shell when the server process itself is stopped (dev
+// Ctrl-C, an explicit `stop_server` before a self-update relaunch — see the
+// desktop side). An ordinary window/app close does NOT reach here: this
+// process is meant to keep running with its shells attached-or-detached so a
+// reopened app resumes them, rather than losing them like a plain restart.
 async function shutdown() {
   // Best-effort: capture the final working directories before the shells die, so
   // a clean quit restores them exactly. Bounded so we never hang the exit.
   await Promise.race([sweepCwds(), new Promise((r) => setTimeout(r, 800))]).catch(() => {});
   flushScroll();
-  for (const pty of livePtys) {
+  for (const session of ptySessions.values()) {
     try {
-      pty.kill();
+      session.pty.kill();
+    } catch {
+      /* already gone */
+    }
+  }
+  for (const session of ephemeralSessions) {
+    try {
+      session.pty.kill();
     } catch {
       /* already gone */
     }
@@ -617,6 +930,4 @@ async function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-http.listen(PORT, () => {
-  console.log(`[termany] PTY server listening on ws://localhost:${PORT}  (shell: ${SHELL})`);
-});
+tryListen();

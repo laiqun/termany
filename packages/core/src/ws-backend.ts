@@ -26,7 +26,7 @@ export class WebSocketBackend implements ITerminalBackend {
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private outbox: string[] = [];
   private dataCb?: (data: string) => void;
-  private exitCb?: () => void;
+  private exitCb?: (reason?: string) => void;
 
   constructor(url: string, params?: Record<string, string | undefined>) {
     const wsUrl = new URL(url);
@@ -56,7 +56,11 @@ export class WebSocketBackend implements ITerminalBackend {
         this.retryTimer = setTimeout(() => this.connect(), RETRY_DELAY_MS * this.attempts);
         return;
       }
-      this.exitCb?.();
+      this.exitCb?.(
+        this.everOpened
+          ? undefined
+          : `unable to connect to Termany PTY server at ${this.url.host}`
+      );
     };
   }
 
@@ -64,7 +68,7 @@ export class WebSocketBackend implements ITerminalBackend {
     this.dataCb = cb;
   }
 
-  onExit(cb: () => void) {
+  onExit(cb: (reason?: string) => void) {
     this.exitCb = cb;
   }
 

@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import { focusSession } from "../terminal/manager";
-import { CloseIcon, MaximizeIcon, RestoreIcon, TerminalIcon } from "./icons";
+import { FileTree } from "./FileTree";
+import { CloseIcon, FilesIcon, MaximizeIcon, RestoreIcon, TerminalIcon } from "./icons";
 import { TerminalPane } from "./TerminalPane";
 
 const PANE_MIME = "application/x-termany-pane";
@@ -30,7 +31,9 @@ function PaneHeader({ leaf, solo }: { leaf: Leaf; solo: boolean }) {
   const renamePane = useStore((s) => s.renamePane);
   const closePane = useStore((s) => s.closePane);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
+  const togglePaneView = useStore((s) => s.togglePaneView);
   const [editing, setEditing] = useState(false);
+  const showingFiles = leaf.view === "files";
 
   return (
     <div
@@ -41,9 +44,7 @@ function PaneHeader({ leaf, solo }: { leaf: Leaf; solo: boolean }) {
         e.dataTransfer.effectAllowed = "move";
       }}
     >
-      <span className="pane-head-icon">
-        <TerminalIcon />
-      </span>
+      <span className="pane-head-icon">{showingFiles ? <FilesIcon /> : <TerminalIcon />}</span>
       {editing ? (
         <input
           className="pane-head-rename"
@@ -66,6 +67,13 @@ function PaneHeader({ leaf, solo }: { leaf: Leaf; solo: boolean }) {
         </span>
       )}
       <div className="pane-head-actions">
+        <button
+          className="pane-btn"
+          title={showingFiles ? "Show terminal" : "Show file tree"}
+          onClick={() => togglePaneView(leaf.id)}
+        >
+          {showingFiles ? <TerminalIcon /> : <FilesIcon />}
+        </button>
         <button
           className="pane-btn"
           title={solo ? "Restore" : "Maximize"}
@@ -116,7 +124,11 @@ function PaneSlot({ leaf, showFocus, solo }: { leaf: Leaf; showFocus: boolean; s
     >
       <PaneHeader leaf={leaf} solo={solo} />
       <div className="pane-body">
-        <TerminalPane id={leaf.id} />
+        {leaf.view === "files" ? (
+          <FileTree sessionId={leaf.id} initialCwdFrom={leaf.cwdFrom} />
+        ) : (
+          <TerminalPane id={leaf.id} />
+        )}
         {dropEdge && <div className={`drop-ind drop-ind-${dropEdge}`} />}
       </div>
     </div>

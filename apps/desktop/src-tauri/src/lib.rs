@@ -59,9 +59,22 @@ fn kill_server(app: &tauri::AppHandle) {
     }
 }
 
+/// Explicitly stop the bundled server. Ordinary window/app close leaves it
+/// running (see `run` below) so terminal sessions survive quitting and
+/// reopening the app — but a self-update swaps the server binary underneath
+/// it, so the frontend calls this right before `relaunch()` to make sure the
+/// next launch starts a server that matches the new build instead of talking
+/// to a stale one. No-op in dev (no bundled server, no managed state).
+#[tauri::command]
+fn stop_server(app: tauri::AppHandle) {
+    kill_server(&app);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![stop_server]);
     // Self-update: version check + install (desktop only; mobile stores handle it).
     #[cfg(desktop)]
     {
@@ -83,16 +96,12 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                kill_server(window.app_handle());
-            }
-        })
+        // No window/app-exit server kill here on purpose: the bundled server
+        // (and the shells it holds) is meant to keep running across an
+        // ordinary quit + relaunch, so terminal sessions resume instead of
+        // being lost. It only ever stops via `stop_server` (self-update) or by
+        // the user killing the process directly.
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                kill_server(app);
-            }
-        });
+        .run(|_app, _event| {});
 }

@@ -29,7 +29,16 @@ import { applyTheme, loadThemeId, THEMES } from "../themes";
  * A leaf's `id` is the terminal session id in the registry.
  */
 export type Pane =
-  | { kind: "leaf"; id: string; title: string }
+  | {
+      kind: "leaf";
+      id: string;
+      title: string;
+      view?: "terminal" | "files";
+      /** For a files-view leaf created via addPane: whose live cwd the file
+       *  tree should open in, since this leaf has no PTY session of its own
+       *  to resolve a directory from. Unused once the tree is loaded. */
+      cwdFrom?: string;
+    }
   | {
       kind: "split";
       dir: "row" | "col";
@@ -94,6 +103,10 @@ interface State {
   sidebarCollapsed: boolean;
   toggleSidebar: () => void;
 
+  /** Whether the right quick-action rail is hidden. */
+  railCollapsed: boolean;
+  toggleRail: () => void;
+
   /** Version of an available desktop update (badges + About), or null. */
   updateVersion: string | null;
   setUpdateVersion: (v: string | null) => void;
@@ -120,6 +133,17 @@ interface State {
   /** Collapse every node in the active workspace's tree. */
   collapseAll: () => void;
   setActiveNode: (id: string) => void;
+  /**
+   * Jump straight to a page (and optionally a specific tab/pane within it),
+   * expanding every collapsed ancestor along the way so the sidebar reveals
+   * the path — used by the search palette (⌘K).
+   */
+  jumpToResult: (target: {
+    workspaceId: string;
+    nodeId: string;
+    tabId?: string;
+    paneId?: string;
+  }) => void;
   renameNode: (id: string, title: string) => void;
   deleteNode: (id: string) => void;
   /**
@@ -147,6 +171,10 @@ interface State {
   closeFocusedPane: () => void;
   setFocusedPane: (leafId: string) => void;
   renamePane: (leafId: string, title: string) => void;
+  /** Toggle a pane's body between its terminal and a file-tree browser. */
+  togglePaneView: (leafId: string) => void;
+  /** Split the focused pane, creating a new leaf that opens directly in `view`. */
+  addPane: (view: "terminal" | "files") => void;
   /** Close a specific pane; closes the whole tab if it was the last pane. */
   closePane: (leafId: string) => void;
   /** Toggle magnify on a pane (show it alone, filling the tab). */
@@ -158,6 +186,11 @@ interface State {
 }
 
 const id = () => crypto.randomUUID();
+
+// Beyond this, each column gets too narrow to be useful — cap pane-creating
+// actions (splitFocused, addPane) rather than let a tab grow without bound.
+// Rearranging (movePane) doesn't change the count, so it isn't gated by this.
+const MAX_PANES_PER_TAB = 6;
 
 function makeLeaf(title = "terminal"): Pane & { kind: "leaf" } {
   return { kind: "leaf", id: id(), title };
@@ -178,7 +211,7 @@ function firstLeaf(pane: Pane): string {
   return pane.kind === "leaf" ? pane.id : firstLeaf(pane.children[0]);
 }
 
-function findLeaf(pane: Pane, leafId: string): (Pane & { kind: "leaf" }) | undefined {
+export function findLeaf(pane: Pane, leafId: string): (Pane & { kind: "leaf" }) | undefined {
   if (pane.kind === "leaf") return pane.id === leafId ? pane : undefined;
   for (const c of pane.children) {
     const hit = findLeaf(c, leafId);
@@ -221,6 +254,23 @@ function splitPane(pane: Pane, targetId: string, dir: "row" | "col", newLeaf: Pa
     }
   }
   return { ...pane, children: pane.children.map((c) => splitPane(c, targetId, dir, newLeaf)) };
+}
+
+/**
+ * Append `leaf` as a new full-height column at the FAR RIGHT of the whole
+ * layout — used by the side rail's "new pane" buttons, which always add
+ * alongside everything else rather than splitting whatever happens to be
+ * focused (that's splitFocused/splitPane's job, for the split-this-pane
+ * gesture). Merges into an existing top-level row split same as splitPane;
+ * otherwise wraps the whole tree in a new one, so the existing layout keeps
+ * its full height on the left and the new leaf gets its own full-height
+ * column on the right regardless of what's nested inside.
+ */
+function appendColumn(pane: Pane, leaf: Pane): Pane {
+  if (pane.kind === "split" && pane.dir === "row") {
+    return { ...pane, children: [...pane.children, leaf], sizes: undefined };
+  }
+  return { kind: "split", dir: "row", children: [pane, leaf] };
 }
 
 /** Remove a leaf; collapses splits that drop to a single child. Null = empty. */
@@ -315,6 +365,15 @@ function findNode(nodes: TreeNode[], nodeId: string): TreeNode | undefined {
   return undefined;
 }
 
+/** Expand every ancestor of `nodeId` (not the node itself) so it's visible in the tree. */
+function expandAncestorsOf(nodes: TreeNode[], nodeId: string): TreeNode[] {
+  return nodes.map((n) => {
+    if (n.id === nodeId) return n;
+    if (!findNode(n.children, nodeId)) return n;
+    return { ...n, expanded: true, children: expandAncestorsOf(n.children, nodeId) };
+  });
+}
+
 /** Every terminal session id under a node (incl. descendants) — for cleanup. */
 function subtreeLeafIds(node: TreeNode): string[] {
   return [
@@ -395,6 +454,9 @@ export const useStore = create<State>((set) => ({
 
   sidebarCollapsed: false,
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+
+  railCollapsed: false,
+  toggleRail: () => set((s) => ({ railCollapsed: !s.railCollapsed })),
 
   updateVersion: null,
   setUpdateVersion: (v) => set({ updateVersion: v }),
@@ -478,6 +540,30 @@ export const useStore = create<State>((set) => ({
 
   setActiveNode: (nodeId) =>
     set((s) => ({ workspaces: inActiveWs(s, (ws) => ({ ...ws, activeNode: nodeId })) })),
+
+  jumpToResult: ({ workspaceId, nodeId, tabId, paneId }) =>
+    set((s) => ({
+      activeWorkspace: workspaceId,
+      workspaces: s.workspaces.map((ws) => {
+        if (ws.id !== workspaceId) return ws;
+        let roots = expandAncestorsOf(ws.roots, nodeId);
+        if (tabId) {
+          roots = updateNode(roots, nodeId, (n) => {
+            if (!n.htabs.some((h) => h.id === tabId)) return n;
+            return {
+              ...n,
+              activeHTab: tabId,
+              htabs: paneId
+                ? n.htabs.map((h) =>
+                    h.id === tabId ? { ...h, focused: paneId, maximized: undefined } : h
+                  )
+                : n.htabs,
+            };
+          });
+        }
+        return { ...ws, roots, activeNode: nodeId };
+      }),
+    })),
 
   renameNode: (nodeId, title) =>
     set((s) => ({
@@ -605,7 +691,7 @@ export const useStore = create<State>((set) => ({
         roots: updateNode(ws.roots, ws.activeNode, (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
-            if (h.id !== n.activeHTab) return h;
+            if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
             const leaf = makeLeaf();
             inheritSessionCwd(leaf.id, h.focused);
             return {
@@ -653,6 +739,51 @@ export const useStore = create<State>((set) => ({
                   : p
                 : { ...p, children: p.children.map(rename) };
             return { ...h, layout: rename(h.layout) };
+          }),
+        })),
+      })),
+    })),
+
+  togglePaneView: (leafId) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const flip = (p: Pane): Pane =>
+              p.kind === "leaf"
+                ? p.id === leafId
+                  ? { ...p, view: p.view === "files" ? "terminal" : "files" }
+                  : p
+                : { ...p, children: p.children.map(flip) };
+            return { ...h, layout: flip(h.layout) };
+          }),
+        })),
+      })),
+    })),
+
+  addPane: (view) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
+            // A files-view leaf gets no PTY session of its own (TerminalPane
+            // never mounts for it), so it can't resolve "my own live cwd" the
+            // way a terminal pane does — instead it opens rooted at whatever
+            // pane was focused when created (see FileTree's initialCwdFrom).
+            const leaf = { ...makeLeaf(view), view, cwdFrom: view === "files" ? h.focused : undefined };
+            inheritSessionCwd(leaf.id, h.focused);
+            return {
+              ...h,
+              layout: appendColumn(h.layout, leaf),
+              focused: leaf.id,
+              maximized: undefined,
+            };
           }),
         })),
       })),

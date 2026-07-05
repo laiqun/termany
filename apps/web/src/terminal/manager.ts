@@ -6,6 +6,7 @@ import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { DemoBackend, demoInteracted, isDemo } from "../demo";
 import { openExternal } from "../openExternal";
+import { registerLocalPathLinks } from "./localLinks";
 
 /**
  * The terminal session registry.
@@ -21,7 +22,7 @@ import { openExternal } from "../openExternal";
 
 const WS_URL = import.meta.env.VITE_PTY_URL ?? "ws://localhost:5174";
 
-function apiUrl(): string {
+export function apiUrl(): string {
   const configured = import.meta.env.VITE_API_URL || WS_URL || "http://localhost:5174";
   return configured.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/+$/, "");
 }
@@ -297,6 +298,26 @@ function getSession(id: string): Session {
       void openExternal(uri);
     })
   );
+  // Local file paths (including relative ones like `src/foo.ts`) are verified
+  // and resolved by the server against this shell's live cwd. If the server
+  // can't answer (demo mode, old server), fall back to trusting absolute
+  // paths unverified so links don't disappear entirely.
+  registerLocalPathLinks(term, async (paths) => {
+    const fallback = () => paths.map((p) => (/^(?:\/|~\/|[A-Za-z]:[\\/])/.test(p) ? p : null));
+    if (isDemo) return fallback();
+    try {
+      const res = await fetch(`${apiUrl()}/api/resolve-paths`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: id, paths }),
+      });
+      if (!res.ok) return fallback();
+      const payload = await readJsonResponse(res);
+      return Array.isArray(payload.resolved) ? payload.resolved : fallback();
+    } catch {
+      return fallback();
+    }
+  });
 
   const backend: ITerminalBackend = isDemo
     ? new DemoBackend(id)
@@ -306,10 +327,33 @@ function getSession(id: string): Session {
       });
   pendingCwdFrom.delete(id);
   backend.onData((data) => {
-    if (replaying) pendingOutput.push(data);
-    else term.write(data);
+    if (replaying) {
+      pendingOutput.push(data);
+      return;
+    }
+    // xterm only auto-follows the bottom when a LINE FEED grows the buffer.
+    // TUIs that redraw in place (cursor up + rewrite, no new lines — codex,
+    // claude, most Ink-based UIs) don't trigger that, so once the viewport
+    // has drifted even ONE line off the bottom (trackpad momentum still
+    // ticking after the user's last deliberate scroll, a resize) their
+    // updates render below the fold until the user scrolls back or presses a
+    // key (xterm snaps to bottom on input, which is why typing "fixes" it).
+    // Restore the follow behavior for this case too. A small slack — rather
+    // than requiring EXACT bottom — is what makes this actually catch the
+    // momentum-drift case; a real deliberate scroll-up (reading scrollback)
+    // moves far more than this and correctly falls outside it, so it's left
+    // alone instead of being yanked back down.
+    const NEAR_BOTTOM_SLACK_LINES = 3;
+    const buf = term.buffer.active;
+    const nearBottom = buf.baseY - buf.viewportY <= NEAR_BOTTOM_SLACK_LINES;
+    term.write(data, () => {
+      if (nearBottom) term.scrollToBottom();
+    });
   });
-  backend.onExit(() => term.write("\r\n\x1b[2m[session ended]\x1b[0m\r\n"));
+  backend.onExit((reason) => {
+    const message = reason ? `[session ended: ${reason}]` : "[session ended]";
+    term.write(`\r\n\x1b[2m${message}\x1b[0m\r\n`);
+  });
   term.onData((data) => {
     if (IME_DEBUG) imeLog(`→PTY ${JSON.stringify(data)}`);
     backend.write(data);
@@ -482,9 +526,43 @@ export function focusSession(id: string) {
   sessions.get(id)?.term.focus();
 }
 
+/**
+ * Clear the screen (⌘K) by sending Ctrl+L (0x0c) to the PTY, the same as a
+ * real terminal — NOT `term.clear()`. That call unilaterally keeps only the
+ * cursor's current row and discards the rest of xterm's buffer, which desyncs
+ * any program that tracks its own layout for relative-cursor redraws (shells'
+ * multi-line prompts, and especially full-screen-ish TUIs like claude/codex
+ * that repaint via "move cursor up N, erase, redraw" — see incident where
+ * this broke mid-conversation rendering). Ctrl+L instead asks whatever's
+ * actually running to redraw itself, so it can never get out of sync with
+ * what's really on screen: readline's clear-screen for a plain shell, or the
+ * TUI's own repaint if one is in front.
+ */
+export function clearSession(id: string) {
+  sessions.get(id)?.backend.write("\x0c");
+}
+
 /** Ask the server to start a not-yet-created session in another session's cwd. */
 export function inheritSessionCwd(id: string, fromId: string) {
   if (!sessions.has(id)) pendingCwdFrom.set(id, fromId);
+}
+
+/**
+ * Type a command into the session's shell and press Enter, as if the user
+ * had. Used to `cd` an existing terminal to wherever the file tree navigated
+ * to when switching back from it — a no-op (and safe) if `id` has no live
+ * session yet, same as clearSession above.
+ */
+export function sendCommand(id: string, command: string) {
+  sessions.get(id)?.backend.write(`${command}\r`);
+}
+
+/** Insert text at the cursor via xterm's paste pipeline — same path clipboard
+ *  image paste uses (see the `paste` listener above), so apps with bracketed
+ *  paste on (vim, claude, modern shells) see it as one paste, not typed
+ *  keystrokes. Used for dropping a file/folder from Finder onto the pane. */
+export function pasteIntoSession(id: string, text: string) {
+  sessions.get(id)?.term.paste(text);
 }
 
 /** Permanently destroy a session — only when the user closes the pane/tab. */

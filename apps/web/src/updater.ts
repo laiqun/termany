@@ -45,6 +45,12 @@ export async function installUpdate(onProgress: (pct: number) => void): Promise<
 
 /** Restart into the freshly installed version. */
 export async function relaunchApp(): Promise<void> {
+  // Terminal sessions otherwise survive an ordinary quit + relaunch (the
+  // bundled server keeps running across it — see the desktop lib.rs). An
+  // update swaps the server binary itself, so stop the old one explicitly
+  // here; otherwise the new app build would reconnect to stale server code.
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("stop_server").catch(() => {});
   const { relaunch } = await import("@tauri-apps/plugin-process");
   await relaunch();
 }
