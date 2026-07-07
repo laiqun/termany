@@ -30,11 +30,211 @@ export interface Session {
   fit: FitAddon;
   backend: ITerminalBackend;
   opened: boolean;
+  followOutput: boolean;
 }
+
+export type TerminalScrollState = {
+  hasOverflow: boolean;
+  atTop: boolean;
+  atBottom: boolean;
+};
 
 const sessions = new Map<string, Session>();
 const pendingCwdFrom = new Map<string, string>();
 const pendingCommands = new Map<string, string[]>();
+const scrollListeners = new Map<string, Set<(state: TerminalScrollState) => void>>();
+
+export type AgentActivityStatus = "working" | "done" | "error";
+
+export type AgentActivity = {
+  status: AgentActivityStatus;
+  agent?: "claude" | "codex";
+  updatedAt: number;
+};
+
+const agentActivities = new Map<string, AgentActivity>();
+const agentActivityListeners = new Set<() => void>();
+
+const AGENT_RE = /\b(OpenAI Codex|Codex CLI|Claude Code)\b|Use \/skills|\/model to change|bypass permissions/i;
+const CODEX_RE = /\b(OpenAI Codex|Codex CLI)\b/i;
+const CLAUDE_RE = /\bClaude Code\b/i;
+const AGENT_COMMAND_RE = /^\s*(claude|codex)(?:\s|$)/i;
+const ERROR_RE =
+  /\b(error|failed|failure|exception|fatal|panic|permission denied|timed out|rate limit|quota|authentication|unauthorized|forbidden|command not found)\b/i;
+const BENIGN_ERROR_RE = /\b(no errors?|0 errors?|without errors?)\b/i;
+const DONE_RE =
+  /(?:^|\b)(done|completed|complete|finished|success|succeeded)(?:\b|$)|all checks passed|task complete|changes? applied|implementation complete/i;
+const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|building|testing|installing|searching|reading)\b/i;
+const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
+const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
+const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
+const DONE_ACTIVITY_TTL_MS = 30_000;
+const ERROR_ACTIVITY_TTL_MS = 5 * 60_000;
+const WORKING_ACTIVITY_STALE_MS = 2 * 60_000;
+let agentActivityPruneTimer: number | null = null;
+
+function notifyAgentActivity() {
+  for (const listener of agentActivityListeners) listener();
+}
+
+function pruneExpiredAgentActivities() {
+  const now = Date.now();
+  let changed = false;
+  for (const [id, activity] of agentActivities) {
+    const ttl =
+      activity.status === "done"
+        ? DONE_ACTIVITY_TTL_MS
+        : activity.status === "error"
+          ? ERROR_ACTIVITY_TTL_MS
+          : WORKING_ACTIVITY_STALE_MS;
+    if (ttl && now - activity.updatedAt >= ttl) {
+      agentActivities.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) notifyAgentActivity();
+  scheduleAgentActivityPrune();
+}
+
+function scheduleAgentActivityPrune() {
+  if (agentActivityPruneTimer !== null) {
+    window.clearTimeout(agentActivityPruneTimer);
+    agentActivityPruneTimer = null;
+  }
+  let nextDelay = Infinity;
+  const now = Date.now();
+  for (const activity of agentActivities.values()) {
+    const ttl =
+      activity.status === "done"
+        ? DONE_ACTIVITY_TTL_MS
+        : activity.status === "error"
+          ? ERROR_ACTIVITY_TTL_MS
+          : WORKING_ACTIVITY_STALE_MS;
+    if (!ttl) continue;
+    nextDelay = Math.min(nextDelay, Math.max(0, ttl - (now - activity.updatedAt)));
+  }
+  if (Number.isFinite(nextDelay)) {
+    agentActivityPruneTimer = window.setTimeout(pruneExpiredAgentActivities, nextDelay + 25);
+  }
+}
+
+function stripTerminalControls(data: string): string {
+  return data
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[()][A-Za-z0-9]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+
+function detectAgent(text: string): AgentActivity["agent"] | undefined {
+  if (CLAUDE_RE.test(text)) return "claude";
+  if (CODEX_RE.test(text)) return "codex";
+  return undefined;
+}
+
+function setAgentActivity(id: string, status: AgentActivityStatus, agent?: AgentActivity["agent"]) {
+  const prev = agentActivities.get(id);
+  const next = {
+    status,
+    agent: agent ?? prev?.agent,
+    updatedAt: Date.now(),
+  };
+  if (prev && prev.status === next.status && prev.agent === next.agent && Date.now() - prev.updatedAt < 1000) {
+    return;
+  }
+  agentActivities.set(id, next);
+  notifyAgentActivity();
+  scheduleAgentActivityPrune();
+}
+
+function visibleScreenLooksIdle(id: string): boolean {
+  const text = sessionVisibleText(id);
+  if (!text.trim()) return false;
+  const tail = text
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim())
+    .slice(-4)
+    .join("\n");
+  return AGENT_IDLE_PROMPT_RE.test(tail) || SHELL_PROMPT_RE.test(tail);
+}
+
+function completeAgentActivityIfIdle(id: string) {
+  const activity = agentActivities.get(id);
+  if (activity?.status === "working" && visibleScreenLooksIdle(id)) {
+    setAgentActivity(id, "done", activity.agent);
+  }
+}
+
+function updateAgentActivityFromOutput(id: string, data: string) {
+  const text = stripTerminalControls(data);
+  if (!text.trim()) return;
+  const prev = agentActivities.get(id);
+  const agent = detectAgent(text);
+  const isAgentOutput = !!prev || !!agent || AGENT_RE.test(text);
+  if (!isAgentOutput) return;
+
+  if (ERROR_RE.test(text) && !BENIGN_ERROR_RE.test(text)) {
+    setAgentActivity(id, "error", agent);
+    return;
+  }
+  if (DONE_RE.test(text)) {
+    setAgentActivity(id, "done", agent);
+    return;
+  }
+  if (prev?.status === "working" && (ALT_SCREEN_EXIT_RE.test(data) || SHELL_PROMPT_RE.test(text) || AGENT_IDLE_PROMPT_RE.test(text))) {
+    setAgentActivity(id, "done", agent);
+    return;
+  }
+  if (!prev || prev.status === "working" || WORKING_RE.test(text)) {
+    setAgentActivity(id, "working", agent);
+  }
+}
+
+function noteAgentInput(id: string, data: string) {
+  if (!data.includes("\r")) return;
+  const session = sessions.get(id);
+  if (!session) return;
+  if (agentActivities.has(id) || AGENT_RE.test(sessionVisibleText(id))) {
+    setAgentActivity(id, "working");
+  }
+}
+
+export function subscribeAgentActivity(listener: () => void): () => void {
+  agentActivityListeners.add(listener);
+  return () => agentActivityListeners.delete(listener);
+}
+
+export function agentActivitySnapshot(ids: string[]): string {
+  return ids.map((id) => {
+    const activity = agentActivities.get(id);
+    return activity ? `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}` : `${id}:`;
+  }).join("|");
+}
+
+export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
+  let best: AgentActivity | null = null;
+  const rank: Record<AgentActivityStatus, number> = { error: 3, working: 2, done: 1 };
+  for (const id of ids) {
+    const activity = agentActivities.get(id);
+    if (!activity) continue;
+    if (
+      !best ||
+      rank[activity.status] > rank[best.status] ||
+      (rank[activity.status] === rank[best.status] && activity.updatedAt > best.updatedAt)
+    ) {
+      best = activity;
+    }
+  }
+  return best;
+}
+
+export function agentActivityTitle(activity: AgentActivity): string {
+  const who = activity.agent === "claude" ? "Claude" : activity.agent === "codex" ? "Codex" : "Agent";
+  if (activity.status === "error") return `${who} reported an error`;
+  if (activity.status === "done") return `${who} completed`;
+  return `${who} is working`;
+}
 
 /**
  * Lines of scrollback xterm keeps in memory per terminal. Sized to hold the
@@ -56,6 +256,58 @@ export function primeSnapshots(snapshots: Record<string, string>) {
   for (const [id, data] of Object.entries(snapshots)) {
     if (data) restoreSnapshots.set(id, data);
   }
+}
+
+function readScrollState(term: Terminal): TerminalScrollState {
+  const buf = term.buffer.active;
+  return {
+    hasOverflow: buf.baseY > 0,
+    atTop: buf.viewportY <= 0,
+    atBottom: buf.viewportY >= buf.baseY,
+  };
+}
+
+function notifyScrollState(id: string) {
+  const session = sessions.get(id);
+  const listeners = scrollListeners.get(id);
+  if (!session || !listeners?.size) return;
+  const state = readScrollState(session.term);
+  for (const listener of listeners) listener(state);
+}
+
+function settleSessionAtBottom(id: string, focus = false) {
+  const session = sessions.get(id);
+  if (!session) return;
+  session.term.scrollToBottom();
+  if (focus) session.term.focus();
+  // Some terminal UIs redraw prompts via cursor moves/repaints instead of new
+  // lines. Let xterm commit the write/render first, then pin the viewport again
+  // so "bottom" means the live input area, not the previous scrollback edge.
+  requestAnimationFrame(() => {
+    const latest = sessions.get(id);
+    if (!latest) return;
+    latest.term.scrollToBottom();
+    latest.term.refresh(0, latest.term.rows - 1);
+    notifyScrollState(id);
+  });
+}
+
+export function subscribeTerminalScrollState(
+  id: string,
+  listener: (state: TerminalScrollState) => void
+): () => void {
+  let listeners = scrollListeners.get(id);
+  if (!listeners) {
+    listeners = new Set();
+    scrollListeners.set(id, listeners);
+  }
+  listeners.add(listener);
+  const session = sessions.get(id);
+  if (session) listener(readScrollState(session.term));
+  return () => {
+    listeners?.delete(listener);
+    if (listeners?.size === 0) scrollListeners.delete(id);
+  };
 }
 
 /**
@@ -339,36 +591,30 @@ function getSession(id: string): Session {
         cwdFrom: pendingCwdFrom.get(id),
       });
   pendingCwdFrom.delete(id);
+  const session: Session = { el, term, fit, backend, opened: false, followOutput: true };
+  sessions.set(id, session);
+
   backend.onData((data) => {
+    updateAgentActivityFromOutput(id, data);
     if (replaying) {
       pendingOutput.push(data);
       return;
     }
-    // xterm only auto-follows the bottom when a LINE FEED grows the buffer.
-    // TUIs that redraw in place (cursor up + rewrite, no new lines — codex,
-    // claude, most Ink-based UIs) don't trigger that, so once the viewport
-    // has drifted even ONE line off the bottom (trackpad momentum still
-    // ticking after the user's last deliberate scroll, a resize) their
-    // updates render below the fold until the user scrolls back or presses a
-    // key (xterm snaps to bottom on input, which is why typing "fixes" it).
-    // Restore the follow behavior for this case too. A small slack — rather
-    // than requiring EXACT bottom — is what makes this actually catch the
-    // momentum-drift case; a real deliberate scroll-up (reading scrollback)
-    // moves far more than this and correctly falls outside it, so it's left
-    // alone instead of being yanked back down.
-    const NEAR_BOTTOM_SLACK_LINES = 3;
-    const buf = term.buffer.active;
-    const nearBottom = buf.baseY - buf.viewportY <= NEAR_BOTTOM_SLACK_LINES;
+    const shouldFollow = session.followOutput;
     term.write(data, () => {
-      if (nearBottom) term.scrollToBottom();
+      completeAgentActivityIfIdle(id);
+      if (shouldFollow) settleSessionAtBottom(id);
+      else notifyScrollState(id);
     });
   });
   backend.onExit((reason) => {
+    if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
     const message = reason ? `[session ended: ${reason}]` : "[session ended]";
     term.write(`\r\n\x1b[2m${message}\x1b[0m\r\n`);
   });
   term.onData((data) => {
     if (IME_DEBUG) imeLog(`→PTY ${JSON.stringify(data)}`);
+    noteAgentInput(id, data);
     backend.write(data);
   });
 
@@ -421,8 +667,6 @@ function getSession(id: string): Session {
     true
   );
 
-  const session: Session = { el, term, fit, backend, opened: false };
-  sessions.set(id, session);
   return session;
 }
 
@@ -490,6 +734,54 @@ function fixWebkitImeDirectInsert(term: Terminal) {
   );
 }
 
+/**
+ * macOS IME fix: switching input source mid-composition (e.g. Pinyin → ABC,
+ * often bound to a bare Shift press) abandons the pending syllable without
+ * reliably firing `compositionend` first. xterm's CompositionHelper is left
+ * thinking composition is still open, so when the very next ordinary keydown
+ * arrives (the first English letter typed after the switch), it "finalizes"
+ * the stale composition immediately — see CompositionHelper.keydown(), which
+ * flushes `textarea.value.substring(start, end)` straight to the PTY. On
+ * WebKit that leftover slice is often just a bare space (macOS's TSM commits
+ * an empty marked-text run as one space rather than nothing), which lands in
+ * the shell as a real, untyped character — Backspace looks broken because the
+ * cursor position the user expects and the one the phantom char sits at have
+ * already diverged by the time they notice it.
+ *
+ * xterm's own comment on that immediate-finalize branch says it exists
+ * "mainly... for the case where enter is pressed" (commit before the command
+ * runs) — so any OTHER real key hitting that branch while still marked as
+ * composing is the abandoned-composition bug, not a legitimate flow. Wipe the
+ * textarea just before xterm reads it so the flush sends nothing instead of
+ * the stale leftover. Registered on `document` (an ancestor of the textarea)
+ * so it runs before xterm's own capture-phase listener on the textarea
+ * itself — capture-phase listeners on ancestors always run first, regardless
+ * of attach order.
+ */
+function fixAbandonedImeFinalize(term: Terminal) {
+  const ua = navigator.userAgent;
+  const isPureWebKit = ua.includes("AppleWebKit") && !/Chrome|Chromium|Edg\//.test(ua);
+  if (!isPureWebKit || !term.textarea) return;
+  const ta = term.textarea;
+  const MODIFIERS = new Set([16, 17, 18, 91, 93]); // shift ctrl alt meta(L/R)
+  let composing = false;
+
+  ta.addEventListener("compositionstart", () => (composing = true), true);
+  ta.addEventListener("compositionend", () => (composing = false), true);
+
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (!composing || e.target !== ta) return;
+      composing = false;
+      if (e.keyCode === 229 || MODIFIERS.has(e.keyCode) || e.key === "Enter") return;
+      imeLog(`fix:drop-abandoned-composition before ${JSON.stringify(e.key)} ta=${JSON.stringify(ta.value)}`);
+      ta.value = "";
+    },
+    true
+  );
+}
+
 /** Attach the session's element into `host` and open the terminal (once). */
 export function attachSession(id: string, host: HTMLElement) {
   const s = getSession(id);
@@ -507,7 +799,13 @@ export function attachSession(id: string, host: HTMLElement) {
       /* no WebGL available — DOM renderer still works */
     }
     fixWebkitImeDirectInsert(s.term);
+    fixAbandonedImeFinalize(s.term);
     traceImeEvents(s.term);
+    s.term.onScroll(() => {
+      const scrollState = readScrollState(s.term);
+      s.followOutput = scrollState.atBottom;
+      notifyScrollState(id);
+    });
     s.opened = true;
   }
   fitSession(id);
@@ -519,6 +817,21 @@ export function attachSession(id: string, host: HTMLElement) {
       for (const command of queued) sendCommand(id, command);
     }, 50);
   }
+}
+
+export function scrollSessionToTop(id: string) {
+  const session = sessions.get(id);
+  if (!session) return;
+  session.followOutput = false;
+  session.term.scrollToTop();
+  notifyScrollState(id);
+}
+
+export function scrollSessionToBottom(id: string) {
+  const session = sessions.get(id);
+  if (!session) return;
+  session.followOutput = true;
+  settleSessionAtBottom(id, true);
 }
 
 /** Detach from the DOM but keep the session (and its shell) alive. */
@@ -574,6 +887,8 @@ export function inheritSessionCwd(id: string, fromId: string) {
  * session yet, same as clearSession above.
  */
 export function sendCommand(id: string, command: string) {
+  const agent = AGENT_COMMAND_RE.exec(command)?.[1]?.toLowerCase() as AgentActivity["agent"] | undefined;
+  if (agent) setAgentActivity(id, "working", agent);
   sessions.get(id)?.backend.write(`${command}\r`);
 }
 
@@ -601,7 +916,12 @@ export function sessionLooksLikeAgentInput(id: string): boolean {
   const session = sessions.get(id);
   if (!session) return false;
   if (session.term.buffer.active.type === "alternate") return true;
+  return AGENT_RE.test(sessionVisibleText(id));
+}
 
+function sessionVisibleText(id: string): string {
+  const session = sessions.get(id);
+  if (!session) return "";
   const buf = session.term.buffer.active;
   const start = Math.max(0, buf.viewportY);
   const end = Math.min(buf.length, start + session.term.rows);
@@ -609,7 +929,7 @@ export function sessionLooksLikeAgentInput(id: string): boolean {
   for (let y = start; y < end; y++) {
     lines.push(buf.getLine(y)?.translateToString(true) ?? "");
   }
-  return /\b(OpenAI Codex|Claude Code)\b|Use \/skills|\/model to change|bypass permissions/i.test(lines.join("\n"));
+  return lines.join("\n");
 }
 
 /** Permanently destroy a session — only when the user closes the pane/tab. */
@@ -620,6 +940,7 @@ export function disposeSession(id: string) {
   s.term.dispose();
   s.el.remove();
   sessions.delete(id);
+  if (agentActivities.delete(id)) notifyAgentActivity();
   restoreSnapshots.delete(id);
   if (isDemo) return;
   // Drop its persisted restore data — a closed pane should not come back.

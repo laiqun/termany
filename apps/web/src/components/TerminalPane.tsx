@@ -1,8 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { attachSession, detachSession, fitSession, focusSession } from "../terminal/manager";
+import {
+  attachSession,
+  detachSession,
+  fitSession,
+  focusSession,
+  scrollSessionToBottom,
+  scrollSessionToTop,
+  subscribeTerminalScrollState,
+  type TerminalScrollState,
+} from "../terminal/manager";
 import { subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
 import { activeHtab, useStore } from "../state/store";
 import { openLocalPathsInSession } from "../terminal/openLocalPath";
+import { ChevronIcon } from "./icons";
 
 function fileUrlToPath(url: string): string | null {
   if (!url.startsWith("file://")) return null;
@@ -47,12 +57,21 @@ function extractDroppedPaths(dt: DataTransfer): string[] {
  */
 export function TerminalPane({ id }: { id: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const scrollJumpTimer = useRef<number | null>(null);
+  const sawInitialScrollState = useRef(false);
   const [dragOver, setDragOver] = useState(false);
+  const [showScrollJump, setShowScrollJump] = useState(false);
+  const [scrollState, setScrollState] = useState<TerminalScrollState>({
+    hasOverflow: false,
+    atTop: true,
+    atBottom: true,
+  });
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     attachSession(id, host);
+    const unsubscribeScrollState = subscribeTerminalScrollState(id, setScrollState);
 
     // Coalesce resize bursts (window/split-drag fires RO every frame) to ONE fit
     // per animation frame — fit.fit() measures + reflows the grid and sends a PTY
@@ -70,9 +89,35 @@ export function TerminalPane({ id }: { id: string }) {
     return () => {
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
+      unsubscribeScrollState();
       detachSession(id, host);
     };
   }, [id]);
+
+  const revealScrollJump = () => {
+    if (!scrollState.hasOverflow) return;
+    setShowScrollJump(true);
+    if (scrollJumpTimer.current) window.clearTimeout(scrollJumpTimer.current);
+    scrollJumpTimer.current = window.setTimeout(() => {
+      setShowScrollJump(false);
+      scrollJumpTimer.current = null;
+    }, 1400);
+  };
+
+  useEffect(() => {
+    if (!scrollState.hasOverflow) {
+      setShowScrollJump(false);
+      return;
+    }
+    if (!sawInitialScrollState.current) {
+      sawInitialScrollState.current = true;
+      return;
+    }
+    revealScrollJump();
+    return () => {
+      if (scrollJumpTimer.current) window.clearTimeout(scrollJumpTimer.current);
+    };
+  }, [scrollState.atBottom, scrollState.atTop, scrollState.hasOverflow]);
 
   useEffect(() => {
     const containsPoint = (point: { x: number; y: number }) => {
@@ -103,23 +148,48 @@ export function TerminalPane({ id }: { id: string }) {
   }, [id]);
 
   return (
-    <div
-      className={`term-pane ${dragOver ? "drag-over" : ""}`}
-      ref={hostRef}
-      onMouseDown={() => focusSession(id)}
-      onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes("Files")) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-        setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragOver(false);
-        const paths = extractDroppedPaths(e.dataTransfer);
-        void openLocalPathsInSession(id, paths);
-      }}
-    />
+    <div className={`term-pane ${dragOver ? "drag-over" : ""}`}>
+      <div
+        className="term-pane-host"
+        ref={hostRef}
+        onMouseDown={() => focusSession(id)}
+        onWheel={revealScrollJump}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes("Files")) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const paths = extractDroppedPaths(e.dataTransfer);
+          void openLocalPathsInSession(id, paths);
+        }}
+      />
+      {scrollState.hasOverflow && (
+        <div className={`term-scroll-jump ${showScrollJump ? "visible" : ""}`}>
+          <button
+            className="term-scroll-btn"
+            title="Scroll to top"
+            disabled={scrollState.atTop}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => scrollSessionToTop(id)}
+          >
+            <ChevronIcon dir="up" />
+          </button>
+          <button
+            className="term-scroll-btn"
+            title="Scroll to bottom"
+            disabled={scrollState.atBottom}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => scrollSessionToBottom(id)}
+          >
+            <ChevronIcon dir="down" />
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

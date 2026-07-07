@@ -1,13 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { agentCommand, type AgentConfig, useAgentConfigs } from "../agents";
 import { useI18n } from "../i18n";
-import { useStore } from "../state/store";
+import { useStore, type PaneView } from "../state/store";
 import { queueCommand } from "../terminal/manager";
 import { AgentIcon, FilesIcon, GearIcon, TerminalIcon, WebIcon } from "./icons";
 
-/** One entry per pane kind this rail can quick-create. Add web/sysinfo/process
- *  here later — each just needs an icon and a `view` the store understands. */
-const RAIL_ITEMS: Array<{ view: "terminal" | "files" | "web"; label: string; icon: () => JSX.Element }> = [
+/** One entry per pane kind this rail can quick-create. */
+const RAIL_ITEMS: Array<{ view: PaneView; label: string; icon: () => JSX.Element }> = [
   { view: "terminal", label: "terminal", icon: TerminalIcon },
   { view: "files", label: "files", icon: FilesIcon },
   { view: "web", label: "web", icon: WebIcon },
@@ -23,36 +22,39 @@ const RAIL_ITEMS: Array<{ view: "terminal" | "files" | "web"; label: string; ico
  * regardless of how many quick-create buttons sit above it.
  */
 export function SideRail({
+  agentsOpen,
+  onAgentsOpenChange,
   onOpenSettings,
   onOpenAgentsSettings,
 }: {
+  agentsOpen: boolean;
+  onAgentsOpenChange: (open: boolean) => void;
   onOpenSettings: () => void;
   onOpenAgentsSettings: () => void;
 }) {
   const addPane = useStore((s) => s.addPane);
   const { t } = useI18n();
   const agents = useAgentConfigs().filter((agent) => agent.enabled);
-  const [agentsOpen, setAgentsOpen] = useState(false);
   const agentsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!agentsOpen) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!agentsRef.current?.contains(event.target as Node)) setAgentsOpen(false);
+    const onClick = (event: MouseEvent) => {
+      if (!agentsRef.current?.contains(event.target as Node)) onAgentsOpenChange(false);
     };
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [agentsOpen]);
+    window.addEventListener("click", onClick);
+    return () => window.removeEventListener("click", onClick);
+  }, [agentsOpen, onAgentsOpenChange]);
 
   const runAgent = (agent: AgentConfig) => {
     const paneId = addPane("terminal", agent.id);
     const command = agentCommand(agent);
     if (paneId && command) queueCommand(paneId, command);
-    setAgentsOpen(false);
+    onAgentsOpenChange(false);
   };
 
   const openAgentSettings = () => {
-    setAgentsOpen(false);
+    onAgentsOpenChange(false);
     onOpenAgentsSettings();
   };
 
@@ -67,7 +69,7 @@ export function SideRail({
         <button
           className={`side-rail-btn ${agentsOpen ? "active" : ""}`}
           title="Run agent"
-          onClick={() => setAgentsOpen((open) => !open)}
+          onClick={() => onAgentsOpenChange(!agentsOpen)}
         >
           <AgentIcon />
         </button>

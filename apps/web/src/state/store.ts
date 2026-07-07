@@ -28,12 +28,14 @@ import { applyTheme, loadThemeId, THEMES } from "../themes";
  *
  * A leaf's `id` is the terminal session id in the registry.
  */
+export type PaneView = "terminal" | "files" | "web";
+
 export type Pane =
   | {
       kind: "leaf";
       id: string;
       title: string;
-      view?: "terminal" | "files" | "web";
+      view?: PaneView;
       /** For a files-view leaf created via addPane: whose live cwd the file
        *  tree should open in, since this leaf has no PTY session of its own
        *  to resolve a directory from. Unused once the tree is loaded. */
@@ -186,19 +188,21 @@ interface State {
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
-  setPaneView: (leafId: string, view: "terminal" | "files" | "web") => void;
+  setPaneView: (leafId: string, view: PaneView) => void;
   /** Open a dropped local path in this pane's files view. */
   openPathInPane: (leafId: string, root: string, selectedFile?: string) => void;
   /** Forget a one-shot dropped file/tree target after it no longer applies. */
   clearPathInPane: (leafId: string) => void;
   /** Split the focused pane, creating a new leaf that opens directly in `view`. */
-  addPane: (view: "terminal" | "files" | "web", title?: string) => string | null;
+  addPane: (view: PaneView, title?: string) => string | null;
   /** Close a specific pane; closes the whole tab if it was the last pane. */
   closePane: (leafId: string) => void;
   /** Toggle magnify on a pane (show it alone, filling the tab). */
   toggleMaximize: (leafId: string) => void;
   /** Drag-rearrange: move `dragId` to the given edge of `targetId`. */
   movePane: (dragId: string, targetId: string, edge: DropEdge) => void;
+  /** Move a pane from the active tab into another tab on the same page. */
+  movePaneToHTab: (dragId: string, targetHTabId: string) => void;
   /** Set the child fractions of the split node at `path` (child-index trail). */
   resizeSplit: (path: number[], sizes: number[]) => void;
 }
@@ -969,6 +973,48 @@ export const useStore = create<State>((set) => ({
             };
           }),
         })),
+      })),
+    })),
+
+  movePaneToHTab: (dragId, targetHTabId) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+          if (n.activeHTab === targetHTabId) return n;
+          const source = n.htabs.find((h) => h.id === n.activeHTab);
+          const target = n.htabs.find((h) => h.id === targetHTabId);
+          const dragged = source ? findLeaf(source.layout, dragId) : undefined;
+          if (!source || !target || !dragged) return n;
+          const without = removeLeaf(source.layout, dragId);
+          return {
+            ...n,
+            activeHTab: targetHTabId,
+            htabs: n.htabs.map((h) => {
+              if (h.id === source.id) {
+                if (!without) {
+                  const replacement = makeLeaf();
+                  return { ...h, layout: replacement, focused: replacement.id, maximized: undefined };
+                }
+                return {
+                  ...h,
+                  layout: without,
+                  focused: h.focused === dragId ? firstLeaf(without) : h.focused,
+                  maximized: h.maximized === dragId ? undefined : h.maximized,
+                };
+              }
+              if (h.id === target.id) {
+                return {
+                  ...h,
+                  layout: appendColumn(h.layout, dragged),
+                  focused: dragged.id,
+                  maximized: undefined,
+                };
+              }
+              return h;
+            }),
+          };
+        }),
       })),
     })),
 

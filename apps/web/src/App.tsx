@@ -21,10 +21,11 @@ export function App() {
   const railCollapsed = useStore((s) => s.railCollapsed);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
 
   useEffect(() => {
-    const suppressed = settingsOpen || searchOpen;
+    const suppressed = settingsOpen || searchOpen || agentsOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -35,7 +36,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen]);
+  }, [settingsOpen, searchOpen, agentsOpen]);
 
   // Global shortcuts. Each action's chord is user-customizable (Settings →
   // Keyboard, persisted to localStorage); the catalog and defaults live in
@@ -73,6 +74,13 @@ export function App() {
       openSettings: () => setSettingsSection("appearance"),
       search: () => setSearchOpen((o) => !o),
     };
+    for (let i = 1; i <= 9; i++) {
+      handlers[`switchTab${i}`] = (s) => {
+        const node = activeNode(s);
+        const htab = node?.htabs[i - 1];
+        if (htab) s.setActiveHTab(htab.id);
+      };
+    }
 
     const onKey = (e: KeyboardEvent) => {
       const s = useStore.getState();
@@ -146,6 +154,8 @@ export function App() {
       </div>
       {!railCollapsed && (
         <SideRail
+          agentsOpen={agentsOpen}
+          onAgentsOpenChange={setAgentsOpen}
           onOpenSettings={() => setSettingsSection("appearance")}
           onOpenAgentsSettings={() => setSettingsSection("agents")}
         />

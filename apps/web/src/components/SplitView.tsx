@@ -44,34 +44,51 @@ function PaneHeader({
   const showingFiles = leaf.view === "files";
   const showingWeb = leaf.view === "web";
   const nextView = showingFiles ? "terminal" : "files";
+  const renameWidth = `${Math.max(8, leaf.title.length + 1)}ch`;
+
+  // Double-clicking the header zooms the pane, same as the maximize button —
+  // but not while renaming, and not when the dblclick lands on the title
+  // (renames instead) or an action button.
+  const onHeaderDoubleClick = (e: React.MouseEvent) => {
+    if (editing) return;
+    if ((e.target as HTMLElement).closest(".pane-head-title,.pane-head-actions")) return;
+    toggleMaximize(leaf.id);
+  };
 
   return (
     <div
       className="pane-head"
       onPointerDown={editing ? undefined : onPointerDown}
+      onDoubleClick={onHeaderDoubleClick}
     >
-      <span className="pane-head-icon">{showingFiles ? <FilesIcon /> : showingWeb ? <WebIcon /> : <TerminalIcon />}</span>
-      {editing ? (
-        <input
-          className="pane-head-rename"
-          autoFocus
-          defaultValue={leaf.title}
-          onClick={(e) => e.stopPropagation()}
-          onBlur={(e) => {
-            renamePane(leaf.id, e.target.value.trim() || leaf.title);
-            setEditing(false);
-          }}
-          onKeyDown={(e) => {
-            if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            else if (e.key === "Escape") setEditing(false);
-          }}
-        />
-      ) : (
-        <span className="pane-head-title" onDoubleClick={() => setEditing(true)}>
-          {leaf.title}
-        </span>
-      )}
+      <span className="pane-head-icon">
+        {showingFiles ? <FilesIcon /> : showingWeb ? <WebIcon /> : <TerminalIcon />}
+      </span>
+      <span className="pane-head-name">
+        {editing ? (
+          <input
+            className="pane-head-rename"
+            style={{ width: renameWidth }}
+            autoFocus
+            defaultValue={leaf.title}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={(e) => {
+              renamePane(leaf.id, e.target.value.trim() || leaf.title);
+              setEditing(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              else if (e.key === "Escape") setEditing(false);
+            }}
+          />
+        ) : (
+          <span className="pane-head-title" onDoubleClick={() => setEditing(true)}>
+            {leaf.title}
+          </span>
+        )}
+      </span>
+      <span className="pane-head-spacer" />
       <div className="pane-head-actions">
         {!showingWeb && (
           <button
@@ -255,8 +272,10 @@ function leafKey(pane: Pane): string {
 /** Top-level: render the magnified pane alone, or the full split tree. */
 export function SplitView({ htab }: { htab: HTab }) {
   const movePane = useStore((s) => s.movePane);
+  const movePaneToHTab = useStore((s) => s.movePaneToHTab);
   const [dropTarget, setDropTarget] = useState<PaneDropTarget>(null);
   const dropTargetRef = useRef<PaneDropTarget>(null);
+  const htabDropTargetRef = useRef<string | null>(null);
 
   const updateDropTarget = (next: PaneDropTarget) => {
     dropTargetRef.current = next;
@@ -267,7 +286,24 @@ export function SplitView({ htab }: { htab: HTab }) {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button,input")) return;
     e.preventDefault();
 
+    const clearTabHover = () => {
+      document
+        .querySelectorAll(".htab.pane-drop-target")
+        .forEach((el) => el.classList.remove("pane-drop-target"));
+    };
+
     const onMove = (ev: PointerEvent) => {
+      clearTabHover();
+      const tab = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-htab-id]");
+      const targetHTabId = tab?.dataset.htabId ?? null;
+      if (tab && targetHTabId && targetHTabId !== htab.id) {
+        htabDropTargetRef.current = targetHTabId;
+        tab.classList.add("pane-drop-target");
+        updateDropTarget(null);
+        return;
+      }
+      htabDropTargetRef.current = null;
+
       const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-pane-id]");
       const targetId = el?.dataset.paneId;
       if (!el || !targetId || targetId === dragId) {
@@ -279,12 +315,19 @@ export function SplitView({ htab }: { htab: HTab }) {
 
     const onUp = () => {
       const target = dropTargetRef.current;
+      const targetHTabId = htabDropTargetRef.current;
+      htabDropTargetRef.current = null;
       updateDropTarget(null);
+      clearTabHover();
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
+      if (targetHTabId) {
+        movePaneToHTab(dragId, targetHTabId);
+        return;
+      }
       if (target) movePane(dragId, target.id, target.edge);
     };
 
