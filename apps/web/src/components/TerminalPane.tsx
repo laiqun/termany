@@ -4,6 +4,7 @@ import {
   detachSession,
   fitSession,
   focusSession,
+  noteManualScroll,
   scrollSessionToBottom,
   scrollSessionToTop,
   subscribeTerminalScrollState,
@@ -153,7 +154,10 @@ export function TerminalPane({ id }: { id: string }) {
         className="term-pane-host"
         ref={hostRef}
         onMouseDown={() => focusSession(id)}
-        onWheel={revealScrollJump}
+        onWheel={() => {
+          noteManualScroll(id);
+          revealScrollJump();
+        }}
         onDragOver={(e) => {
           if (!e.dataTransfer.types.includes("Files")) return;
           e.preventDefault();

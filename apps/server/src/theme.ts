@@ -78,6 +78,49 @@ function slug(name: string): string {
   );
 }
 
+function fallbackName(prompt: string): string {
+  return prompt
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 32) || "Theme";
+}
+
+function requireObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`model returned invalid theme: ${label} is missing`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`model returned invalid theme: ${label} is missing`);
+  }
+  return value;
+}
+
+function validateTheme(theme: Record<string, unknown>, prompt: string): Record<string, unknown> & { name: string } {
+  const name = typeof theme.name === "string" && theme.name.trim() ? theme.name.trim() : fallbackName(prompt);
+  if (theme.appearance !== "dark" && theme.appearance !== "light") {
+    throw new Error("model returned invalid theme: appearance is missing");
+  }
+
+  const colors = requireObject(theme.colors, "colors");
+  for (const key of ["bg", "bg2", "bg3", "border", "fg", "fgDim", "accent", "accentSoft"]) {
+    requireString(colors[key], `colors.${key}`);
+  }
+
+  const radius = requireObject(theme.radius, "radius");
+  for (const key of ["sm", "md", "lg"]) requireString(radius[key], `radius.${key}`);
+
+  const term = requireObject(theme.term, "term");
+  for (const key of ["background", "foreground", "cursor", "selectionBackground"]) {
+    requireString(term[key], `term.${key}`);
+  }
+
+  return { ...theme, name };
+}
+
 export async function generateTheme(prompt: string): Promise<unknown> {
   const cfg = loadConfig();
   const slash = cfg.defaultModel.indexOf("/");
@@ -95,12 +138,16 @@ export async function generateTheme(prompt: string): Promise<unknown> {
   // (or add prose around it) — extract the outermost object before parsing.
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
-  let theme: { name: string; id?: string };
+  let parsed: unknown;
   try {
-    theme = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw);
+    parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw);
   } catch {
     throw new Error("model returned invalid theme JSON — try again or switch the default model");
   }
+  const theme = validateTheme(requireObject(parsed, "theme"), prompt) as Record<string, unknown> & {
+    name: string;
+    id?: string;
+  };
   theme.id = `ai-${slug(theme.name)}-${Math.random().toString(36).slice(2, 6)}`;
   return theme;
 }

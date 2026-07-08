@@ -1264,7 +1264,9 @@ html.tauri #root {
   bottom: -3px;
 }
 .split-gutter:hover {
-  background: var(--accent);
+  /* Themes can mute this via vars: { "--split-gutter-hover": ... } (falls
+     back to --accent) — same escape hatch as --pane-focus-ring. */
+  background: var(--split-gutter-hover, var(--accent));
 }
 .pane-slot {
   position: absolute;
@@ -1283,7 +1285,10 @@ html.tauri #root {
   content: "";
   position: absolute;
   inset: 0;
-  border: 1px solid var(--accent);
+  /* Themes can mute/hide this via vars: { "--pane-focus-ring": ... } (falls
+     back to --accent) — e.g. a flat, borderless theme that'd rather rely on
+     the pane-head-title's dimmed/full-opacity contrast as the focus cue. */
+  border: 1px solid var(--pane-focus-ring, var(--accent));
   border-radius: calc(var(--pane-radius) - 1px);
   pointer-events: none;
   z-index: 6;
@@ -1554,6 +1559,13 @@ html.tauri #root {
 }
 .web-status-error {
   color: var(--fg);
+}
+/* Shown while the native webview is briefly hidden so an in-app popover (e.g.
+   the agent menu) can render on top of it — Tauri's OS-level webview always
+   paints above the DOM otherwise. A plain --bg fill would look identical to a
+   blank/broken page, so it gets a distinct shade instead. */
+.web-status-suppressed {
+  background: var(--bg-2);
 }
 .web-status-detail {
   max-width: 520px;
@@ -2777,6 +2789,9 @@ html.tauri #root {
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s;
+}
+.theme-export-btn {
+  right: 32px;
 }
 .theme-preview-wrap:hover .theme-edit-btn,
 .theme-edit-btn:focus-visible {

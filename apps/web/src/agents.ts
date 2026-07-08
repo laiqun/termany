@@ -3,6 +3,7 @@ import { apiPath } from "./api";
 import claudeIcon from "./assets/agents/claudecode.svg?url";
 import codexIcon from "./assets/agents/codex.svg?url";
 import cursorIcon from "./assets/agents/cursor.svg?url";
+import droidIcon from "./assets/agents/droid.svg?url";
 import geminiIcon from "./assets/agents/gemini.svg?url";
 import hermesIcon from "./assets/agents/hermes.webp?url";
 import kilocodeIcon from "./assets/agents/kilocode.svg?url";
@@ -114,6 +115,15 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     args: "",
     enabled: false,
     icon: kimiIcon,
+    builtIn: true,
+  },
+  {
+    id: "droid",
+    name: "Droid",
+    command: "droid",
+    args: "",
+    enabled: false,
+    icon: droidIcon,
     builtIn: true,
   },
   {

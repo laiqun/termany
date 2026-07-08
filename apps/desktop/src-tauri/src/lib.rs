@@ -1,6 +1,9 @@
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "macos")]
@@ -96,6 +99,20 @@ struct ServerProcess(Mutex<Option<Child>>);
 /// loop below can give up instead of spinning forever if the binary is broken.
 struct ServerRestartAttempts(AtomicU32);
 const MAX_AUTO_RESTARTS: u32 = 3;
+const SERVER_PORT: u16 = 5174;
+
+/// Set once the user confirms the quit-confirm dialog, so the `ExitRequested`
+/// handler below can tell that apart from the original OS/menu request that
+/// triggered it — `AppHandle::exit()` itself raises another `ExitRequested`,
+/// and without this flag that second one gets intercepted just like the
+/// first, so confirming Quit silently reopens the same dialog forever.
+struct QuitState(AtomicBool);
+
+#[tauri::command]
+fn confirm_quit(app: tauri::AppHandle, quitting: tauri::State<'_, QuitState>) {
+    quitting.0.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
 
 struct OpenPathState(Mutex<OpenPathStateInner>);
 
@@ -119,7 +136,119 @@ fn frontend_ready_for_open_paths(state: tauri::State<'_, OpenPathState>) -> Vec<
 /// app launches the bundled Node server itself (PTY over ws://localhost:5174 +
 /// the /api/* endpoints). In dev (`debug_assertions`) the concurrently-run dev
 /// server already owns that port, so we don't spawn — we'd just collide.
+fn existing_server_responds() -> bool {
+    let Ok(mut addrs) = ("127.0.0.1", SERVER_PORT).to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(250)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    if stream
+        .write_all(b"GET /api/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    matches!(stream.read(&mut buf), Ok(n) if std::str::from_utf8(&buf[..n]).is_ok_and(|s| s.starts_with("HTTP/1.1 200") || s.starts_with("HTTP/1.0 200")))
+}
+
+fn server_port_is_open() -> bool {
+    let Ok(mut addrs) = ("127.0.0.1", SERVER_PORT).to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+}
+
+#[cfg(unix)]
+fn listening_pids_on_server_port() -> Vec<String> {
+    let Ok(output) = Command::new("lsof")
+        .args([
+            "-nP",
+            "-a",
+            "-iTCP:5174",
+            "-sTCP:LISTEN",
+            "-Fp",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix('p'))
+        .filter(|pid| pid.chars().all(|c| c.is_ascii_digit()))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[cfg(unix)]
+fn command_for_pid(pid: &str) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", pid, "-o", "command="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn is_termany_server_command(command: &str) -> bool {
+    command.contains("server.cjs")
+        && (command.contains("/Termany.app/")
+            || command.contains("/termany/")
+            || command.contains("\\Termany\\")
+            || command.contains("\\termany\\"))
+}
+
+#[cfg(unix)]
+fn kill_unresponsive_termany_server() {
+    if !server_port_is_open() {
+        return;
+    }
+
+    for pid in listening_pids_on_server_port() {
+        let Some(command) = command_for_pid(&pid) else {
+            continue;
+        };
+        if !is_termany_server_command(&command) {
+            eprintln!("[termany] localhost:{SERVER_PORT} is occupied by a non-Termany process: {command}");
+            continue;
+        }
+        eprintln!("[termany] killing unresponsive PTY server pid {pid}: {command}");
+        let _ = Command::new("kill").arg(&pid).status();
+    }
+
+    for _ in 0..20 {
+        if !server_port_is_open() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_unresponsive_termany_server() {}
+
 fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
+    if existing_server_responds() {
+        eprintln!("[termany] reusing existing PTY server on localhost:{SERVER_PORT}");
+        return None;
+    }
+    kill_unresponsive_termany_server();
+
     let resource_dir = match app.path().resource_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -304,7 +433,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             stop_server,
             frontend_ready_for_open_paths,
-            webview_history
+            webview_history,
+            confirm_quit
         ]);
     // Self-update: version check + install (desktop only; mobile stores handle it).
     #[cfg(desktop)]
@@ -319,21 +449,25 @@ pub fn run() {
                 pending: Vec::new(),
                 frontend_ready: false,
             })));
+            app.manage(QuitState(AtomicBool::new(false)));
             #[cfg(target_os = "macos")]
             macos_services::install(app.handle().clone());
 
             // Tauri auto-creates a default macOS menu bar when none is set,
-            // and two of its predefined items actively fight this app:
+            // and three of its predefined items actively fight this app:
             //   - "Quit" calls exit() directly, bypassing RunEvent::ExitRequested
             //     entirely (tauri-apps/tauri#3124), so the quit-confirm dialog
             //     wired up below never gets a chance to run.
             //   - "Close Window" binds ⌘W at the OS menu layer, intercepting the
             //     keystroke before it ever reaches the webview — silently eating
             //     the app's own ⌘W "close pane" shortcut.
-            // Replacing it with our own menu fixes both: a custom Quit item
+            //   - "Minimize" binds ⌘M the same way, eating the app's own ⌘M
+            //     "maximize/restore pane" shortcut.
+            // Replacing it with our own menu fixes all three: a custom Quit item
             // routes through the same "quit-requested" event as Dock → Quit,
-            // and Window simply has no Close item so ⌘W falls through as a
-            // normal keydown for the frontend to handle.
+            // Window has no Close item so ⌘W falls through as a normal keydown,
+            // and Minimize is rebuilt without a keyEquivalent (still works from
+            // the menu, click-only) so ⌘M falls through the same way.
             #[cfg(target_os = "macos")]
             {
                 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -362,7 +496,8 @@ pub fn run() {
                     .paste()
                     .select_all()
                     .build()?;
-                let window_menu = SubmenuBuilder::new(app, "Window").minimize().build()?;
+                let minimize = MenuItemBuilder::new("Minimize").id("minimize").build(app)?;
+                let window_menu = SubmenuBuilder::new(app, "Window").item(&minimize).build()?;
                 let menu = MenuBuilder::new(app)
                     .items(&[&app_menu, &edit_menu, &window_menu])
                     .build()?;
@@ -370,6 +505,10 @@ pub fn run() {
                 app.on_menu_event(|app_handle, event| {
                     if event.id() == "quit" {
                         let _ = app_handle.emit_to("main", "quit-requested", ());
+                    } else if event.id() == "minimize" {
+                        if let Some(window) = app_handle.get_webview_window("main") {
+                            let _ = window.minimize();
+                        }
                     }
                 });
             }
@@ -399,11 +538,16 @@ pub fn run() {
                 // Always intercept the OS quit request (⌘Q, Dock → Quit, closing
                 // the last window) and hand the decision to the frontend instead
                 // of exiting immediately — guards against an accidental ⌘Q. The
-                // frontend calls the process plugin's `exit()` itself once the
-                // user confirms, which is a real exit and doesn't loop back here.
+                // frontend calls `confirm_quit` once the user confirms, which
+                // sets `QuitState` before calling `AppHandle::exit()` — that
+                // itself raises another `ExitRequested`, so this check is what
+                // lets that second one through instead of re-prompting forever.
                 tauri::RunEvent::ExitRequested { api, .. } => {
-                    api.prevent_exit();
-                    let _ = app_handle.emit_to("main", "quit-requested", ());
+                    let quitting = app_handle.state::<QuitState>();
+                    if !quitting.0.load(Ordering::SeqCst) {
+                        api.prevent_exit();
+                        let _ = app_handle.emit_to("main", "quit-requested", ());
+                    }
                 }
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Opened { urls } => {

@@ -5,7 +5,10 @@ import { isTauri } from "../env";
  * Confirms before the app actually quits. The Rust side always intercepts
  * the OS quit request (⌘Q, Dock → Quit, or closing the last window),
  * prevents it, and emits "quit-requested" instead — this dialog is what
- * decides whether to finish the quit (via the process plugin's exit()).
+ * decides whether to finish the quit (via the `confirm_quit` command, which
+ * flags the exit as user-confirmed before calling `AppHandle::exit()` —
+ * that call raises its own `ExitRequested`, so without the flag the Rust
+ * side would intercept that one too and silently reopen this same dialog).
  */
 export function QuitConfirm() {
   const [open, setOpen] = useState(false);
@@ -38,7 +41,7 @@ export function QuitConfirm() {
   if (!open) return null;
 
   const quit = () => {
-    void import("@tauri-apps/plugin-process").then(({ exit }) => exit(0));
+    void import("@tauri-apps/api/core").then(({ invoke }) => invoke("confirm_quit"));
   };
 
   return (

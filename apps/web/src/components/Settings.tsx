@@ -1,5 +1,5 @@
-import { Bot, Brain, Info, Keyboard, Palette } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Bot, Brain, Download, Info, Keyboard, Palette, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { isTauri } from "../env";
 import { useI18n, type Language } from "../i18n";
@@ -8,12 +8,12 @@ import { useStore } from "../state/store";
 import { checkForUpdate, installUpdate, relaunchApp } from "../updater";
 import { registerTheme, THEMES, type Theme } from "../themes";
 import { AgentSettings } from "./AgentSettings";
-import { CloseIcon, EditIcon } from "./icons";
+import { CloseIcon, EditIcon, GearIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
 import { ThemeEditor } from "./ThemeEditor";
 
-export type SettingsSection = "appearance" | "models" | "agents" | "keyboard" | "about";
+export type SettingsSection = "general" | "appearance" | "models" | "agents" | "keyboard" | "about";
 
 /**
  * App-wide settings, shown as an in-app overlay (works in both web and the
@@ -21,7 +21,7 @@ export type SettingsSection = "appearance" | "models" | "agents" | "keyboard" | 
  * content, mirroring the familiar terminal-settings layout. MVP: Appearance.
  */
 export function Settings({
-  initialSection = "appearance",
+  initialSection = "general",
   onClose,
 }: {
   initialSection?: SettingsSection;
@@ -36,6 +36,8 @@ export function Settings({
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [version, setVersion] = useState("0.1.0");
   const [aboutError, setAboutError] = useState<string | null>(null);
 
@@ -87,20 +89,21 @@ export function Settings({
       .catch(() => {});
   }, []);
 
-  // Esc closes. Bubble phase (not capture) so the Keyboard section can intercept
-  // Esc during a rebind — its capture-phase listener stops propagation first.
-  // Skipped while the theme editor is open: both listeners sit on `window`,
-  // so stopPropagation here wouldn't stop ThemeEditor's own Esc handler from
-  // also firing — this guard is what keeps Esc closing just the editor.
+  // Esc closes. Capture on `document` so the terminal/xterm cannot swallow the
+  // key before this overlay sees it. Keyboard rebinding still wins because it
+  // listens on `window` capture; the theme editor is allowed to handle its own
+  // Esc in bubble phase.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (editingTheme) return;
+        e.preventDefault();
         e.stopPropagation();
-        if (!editingTheme) onClose();
+        onClose();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [onClose, editingTheme]);
 
   async function generate() {
@@ -126,6 +129,35 @@ export function Settings({
     }
   }
 
+  async function importThemeFile(file: File | undefined) {
+    if (!file) return;
+    setImportError(null);
+    try {
+      const parsed = JSON.parse(await file.text());
+      // Re-imported exports (already "custom-"/"ai-") update in place; anything
+      // else (a shared built-in, a hand-authored file) gets a fresh custom id
+      // so it persists as the user's own theme instead of silently vanishing —
+      // registerTheme() only persists ids with those prefixes (see themes/index.ts).
+      if (typeof parsed?.id !== "string" || !/^(custom|ai)-/.test(parsed.id)) {
+        parsed.id = `custom-${crypto.randomUUID()}`;
+      }
+      const created = registerTheme(parsed);
+      setTheme(created.id);
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function exportThemeFile(t: Theme) {
+    const blob = new Blob([JSON.stringify(t, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${t.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="settings-backdrop" onClick={onClose}>
       <div
@@ -135,6 +167,15 @@ export function Settings({
         onClick={(e) => e.stopPropagation()}
       >
         <aside className="settings-nav">
+          <div
+            className={`settings-nav-item ${section === "general" ? "active" : ""}`}
+            onClick={() => setSection("general")}
+          >
+            <span className="settings-nav-icon">
+              <GearIcon />
+            </span>{" "}
+            {t("settings.general")}
+          </div>
           <div
             className={`settings-nav-item ${section === "appearance" ? "active" : ""}`}
             onClick={() => setSection("appearance")}
@@ -186,20 +227,23 @@ export function Settings({
           {section === "models" && <ModelSettings />}
           {section === "agents" && <AgentSettings />}
           {section === "keyboard" && <KeyboardSettings />}
+          {section === "general" && (
+            <>
+              <div className="settings-section-title">{t("settings.language.title")}</div>
+              <label className="language-setting">
+                <span>{t("settings.language.label")}</span>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value as Language)}
+                >
+                  <option value="en">{t("settings.language.en")}</option>
+                  <option value="zh-CN">{t("settings.language.zh")}</option>
+                </select>
+              </label>
+            </>
+          )}
           {section === "appearance" && (
           <>
-          <div className="settings-section-title">{t("settings.language.title")}</div>
-          <label className="language-setting">
-            <span>{t("settings.language.label")}</span>
-            <select
-              value={language}
-              onChange={(e) => setLanguage(e.target.value as Language)}
-            >
-              <option value="en">{t("settings.language.en")}</option>
-              <option value="zh-CN">{t("settings.language.zh")}</option>
-            </select>
-          </label>
-
           <div className="settings-section-title">GENERATE WITH AI</div>
           <div className="ai-theme">
             <input
@@ -223,9 +267,30 @@ export function Settings({
           </div>
           {error && <div className="ai-theme-error">{error}</div>}
 
-          <div className="settings-section-title" style={{ marginTop: 28 }}>
+          <div
+            className="settings-section-title"
+            style={{ marginTop: 28, display: "flex", alignItems: "center", justifyContent: "space-between" }}
+          >
             THEME
+            <button
+              className="ws-dialog-btn"
+              title="Import a theme JSON file"
+              onClick={() => importInputRef.current?.click()}
+            >
+              <Upload size={13} /> Import
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={(e) => {
+                void importThemeFile(e.target.files?.[0]);
+                e.target.value = "";
+              }}
+            />
           </div>
+          {importError && <div className="ai-theme-error">{importError}</div>}
           <div className="theme-grid">
             {THEMES.map((t) => (
               <div key={t.id} className={`theme-card ${t.id === theme ? "selected" : ""}`}>
@@ -247,6 +312,13 @@ export function Settings({
                   </button>
                   <button className="theme-edit-btn" title="Edit theme" onClick={() => setEditingTheme(t)}>
                     <EditIcon />
+                  </button>
+                  <button
+                    className="theme-edit-btn theme-export-btn"
+                    title="Export theme as JSON"
+                    onClick={() => exportThemeFile(t)}
+                  >
+                    <Download size={13} />
                   </button>
                 </div>
                 <span className="theme-card-name">{t.name}</span>

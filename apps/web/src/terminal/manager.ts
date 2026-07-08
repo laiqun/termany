@@ -31,6 +31,98 @@ export interface Session {
   backend: ITerminalBackend;
   opened: boolean;
   followOutput: boolean;
+  manualScrollUntil: number;
+  deferredOutput: string[];
+  deferredSince: number;
+  deferredFlushTimer: number | null;
+  spawnedAt: number;
+  restartAttempts: number;
+}
+
+/**
+ * The shell exiting on its own (typed `exit`, crashed) used to just leave the
+ * pane dead with a "[session ended]" message — the user had to close the tab
+ * and reopen a new one to keep working. Auto-respawning a fresh shell in the
+ * same pane instead makes that recoverable by default. Capped so a shell
+ * that dies instantly on every launch (bad rc file, missing binary) doesn't
+ * spin forever — the counter resets once a shell survives a little while, so
+ * this only kicks in for a tight crash loop, not e.g. someone repeatedly
+ * typing `exit`.
+ */
+const MAX_AUTO_RESTARTS = 5;
+const RESTART_HEALTHY_MS = 3000;
+
+/**
+ * A mouse-wheel scroll only moves xterm's DOM scroll container immediately;
+ * the row-based position it tracks internally for auto-follow (`ydisp`) is
+ * only updated once the resulting native `scroll` event round-trips back
+ * asynchronously. If a PTY write lands inside that gap, xterm's own core
+ * buffer logic (which advances `ydisp` alongside new content whenever
+ * `ydisp === ybase`, i.e. "was at the bottom") still sees the pre-scroll
+ * state and re-pins to the bottom on its own — no explicit scrollToBottom()
+ * call of ours involved, so gating just those calls (below) isn't enough.
+ * Under fast/continuous output the gap can be starved for a while (writes
+ * keep the main thread busy ahead of the queued scroll event), so instead
+ * PTY data arriving inside a short window after a wheel tick is held back
+ * from `term.write()` entirely, giving xterm's scroll round-trip a clear
+ * chance to land before any new content can trigger that internal re-pin.
+ */
+const MANUAL_SCROLL_COOLDOWN_MS = 500;
+/** Hard ceiling on how long output can be held back, even if the user keeps scrolling. */
+const MAX_DEFER_MS = 1500;
+
+export function noteManualScroll(id: string) {
+  const session = sessions.get(id);
+  if (!session) return;
+  session.manualScrollUntil = Date.now() + MANUAL_SCROLL_COOLDOWN_MS;
+}
+
+function writeSessionData(id: string, data: string) {
+  const session = sessions.get(id);
+  if (!session) return;
+  const now = Date.now();
+  const withinCooldown = now < session.manualScrollUntil;
+  const withinDeferCeiling = !session.deferredSince || now - session.deferredSince < MAX_DEFER_MS;
+  if (withinCooldown && withinDeferCeiling) {
+    if (!session.deferredOutput.length) session.deferredSince = now;
+    session.deferredOutput.push(data);
+    scheduleDeferredFlush(id);
+    return;
+  }
+  session.term.write(data, () => {
+    completeAgentActivityIfIdle(id);
+    if (session.followOutput && Date.now() >= session.manualScrollUntil) settleSessionAtBottom(id);
+    else notifyScrollState(id);
+  });
+}
+
+function scheduleDeferredFlush(id: string) {
+  const session = sessions.get(id);
+  if (!session || session.deferredFlushTimer !== null) return;
+  const delay = Math.max(0, session.manualScrollUntil - Date.now()) + 16;
+  session.deferredFlushTimer = window.setTimeout(() => {
+    const latest = sessions.get(id);
+    if (!latest) return;
+    latest.deferredFlushTimer = null;
+    flushDeferredOutput(id);
+  }, delay);
+}
+
+function flushDeferredOutput(id: string) {
+  const session = sessions.get(id);
+  if (!session || !session.deferredOutput.length) return;
+  const now = Date.now();
+  if (now < session.manualScrollUntil && now - session.deferredSince < MAX_DEFER_MS) {
+    scheduleDeferredFlush(id);
+    return;
+  }
+  const combined = session.deferredOutput.splice(0).join("");
+  session.deferredSince = 0;
+  session.term.write(combined, () => {
+    completeAgentActivityIfIdle(id);
+    if (session.followOutput && Date.now() >= session.manualScrollUntil) settleSessionAtBottom(id);
+    else notifyScrollState(id);
+  });
 }
 
 export type TerminalScrollState = {
@@ -285,7 +377,7 @@ function settleSessionAtBottom(id: string, focus = false) {
   // so "bottom" means the live input area, not the previous scrollback edge.
   requestAnimationFrame(() => {
     const latest = sessions.get(id);
-    if (!latest) return;
+    if (!latest || !latest.followOutput || Date.now() < latest.manualScrollUntil) return;
     latest.term.scrollToBottom();
     latest.term.refresh(0, latest.term.rows - 1);
     notifyScrollState(id);
@@ -559,6 +651,7 @@ function getSession(id: string): Session {
   // once this addon is loaded.)
   term.loadAddon(
     new WebLinksAddon((event, uri) => {
+      if (!event.metaKey) return;
       event.preventDefault();
       void openExternal(uri);
     })
@@ -584,38 +677,70 @@ function getSession(id: string): Session {
     }
   });
 
-  const backend: ITerminalBackend = isDemo
-    ? new DemoBackend(id)
-    : new WebSocketBackend(WS_URL, {
-        session: id,
-        cwdFrom: pendingCwdFrom.get(id),
-      });
+  // Reconnecting with the same session id spawns a fresh shell server-side
+  // once the old one has exited (see apps/server's ptySessions registry) —
+  // so "restart" just means opening a new backend for the same id.
+  const spawnBackend = (): ITerminalBackend =>
+    isDemo
+      ? new DemoBackend(id)
+      : new WebSocketBackend(WS_URL, { session: id, cwdFrom: pendingCwdFrom.get(id) });
+
+  const initialBackend = spawnBackend();
   pendingCwdFrom.delete(id);
-  const session: Session = { el, term, fit, backend, opened: false, followOutput: true };
+  const session: Session = {
+    el,
+    term,
+    fit,
+    backend: initialBackend,
+    opened: false,
+    followOutput: true,
+    manualScrollUntil: 0,
+    deferredOutput: [],
+    deferredSince: 0,
+    deferredFlushTimer: null,
+    spawnedAt: Date.now(),
+    restartAttempts: 0,
+  };
   sessions.set(id, session);
 
-  backend.onData((data) => {
-    updateAgentActivityFromOutput(id, data);
-    if (replaying) {
-      pendingOutput.push(data);
-      return;
-    }
-    const shouldFollow = session.followOutput;
-    term.write(data, () => {
-      completeAgentActivityIfIdle(id);
-      if (shouldFollow) settleSessionAtBottom(id);
-      else notifyScrollState(id);
+  const wireBackend = (b: ITerminalBackend) => {
+    b.onData((data) => {
+      updateAgentActivityFromOutput(id, data);
+      if (replaying) {
+        pendingOutput.push(data);
+        return;
+      }
+      writeSessionData(id, data);
     });
-  });
-  backend.onExit((reason) => {
-    if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
-    const message = reason ? `[session ended: ${reason}]` : "[session ended]";
-    term.write(`\r\n\x1b[2m${message}\x1b[0m\r\n`);
-  });
+    b.onExit((reason) => {
+      if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
+      // A truthy reason means the WebSocket itself couldn't connect, which
+      // already exhausted its own retry budget (see WebSocketBackend) before
+      // giving up — not worth immediately repeating that losing battle. Only
+      // a natural shell exit (no reason) is auto-respawned.
+      if (reason) {
+        term.write(`\r\n\x1b[2m[session ended: ${reason}]\x1b[0m\r\n`);
+        return;
+      }
+      if (Date.now() - session.spawnedAt > RESTART_HEALTHY_MS) session.restartAttempts = 0;
+      if (session.restartAttempts >= MAX_AUTO_RESTARTS) {
+        term.write(`\r\n\x1b[2m[session ended]\x1b[0m\r\n`);
+        return;
+      }
+      session.restartAttempts++;
+      term.write(`\r\n\x1b[2m[session ended — starting a new shell]\x1b[0m\r\n`);
+      const next = spawnBackend();
+      session.backend = next;
+      session.spawnedAt = Date.now();
+      wireBackend(next);
+    });
+  };
+  wireBackend(initialBackend);
+
   term.onData((data) => {
     if (IME_DEBUG) imeLog(`→PTY ${JSON.stringify(data)}`);
     noteAgentInput(id, data);
-    backend.write(data);
+    session.backend.write(data);
   });
 
   // Select-to-copy: when the mouse is released over a non-empty selection, copy
@@ -625,8 +750,10 @@ function getSession(id: string): Session {
     if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
   });
 
-  // Paste image blobs as local file paths, which keeps terminal input plain text
-  // while still making screenshots available to CLI tools that accept images.
+  // Paste image blobs as local file paths only when the active program looks
+  // like an agent/TUI that knows how to turn image paths into image chips.
+  // In a plain shell, inserting the temp path directly is surprising and easy
+  // to submit accidentally.
   // Duplicate-fire guard: swallow a second image paste while one is still
   // uploading or within a short cooldown — key auto-repeat on a held ⌘V (and
   // any double-dispatched event) otherwise inserts the same screenshot twice.
@@ -651,10 +778,18 @@ function getSession(id: string): Session {
           .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
           .map((result) => result.value);
         // Deliver through xterm's paste pipeline, NOT as raw keystrokes: apps
-        // with bracketed paste on (claude, vim, modern shells) then receive ONE
-        // paste event — Claude Code recognizes a pasted image path and shows
-        // just its [Image #N] chip instead of echoing the path as typed text.
-        if (paths.length) term.paste(`${paths.join(" ")} `);
+        // with bracketed paste on (claude, codex, vim, modern shells) then
+        // receive ONE paste event. Agent CLIs can recognize pasted image paths
+        // and render [Image #N] chips instead of echoing raw temp paths.
+        if (paths.length) {
+          if (sessionLooksLikeAgentInput(id)) {
+            term.paste(`${paths.join(" ")} `);
+          } else {
+            term.write(
+              `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — switch to an agent prompt to paste it as an image.\x1b[0m\r\n`
+            );
+          }
+        }
         if (!paths.length) {
           const reason = settled.find(
             (result): result is PromiseRejectedResult => result.status === "rejected"

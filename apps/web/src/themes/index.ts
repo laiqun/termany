@@ -1,5 +1,6 @@
 import { applyTermTheme } from "../terminal/manager";
 import { charcoal } from "./charcoal";
+import { codex } from "./codex";
 import { daylight } from "./daylight";
 import { defaultDark } from "./default-dark";
 import { meadow } from "./meadow";
@@ -23,6 +24,7 @@ export const THEMES: Theme[] = [
   meadow,
   snow,
   charcoal,
+  codex,
 ];
 
 export const DEFAULT_THEME_ID = "default-dark";
@@ -110,10 +112,17 @@ function withAlpha(color: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// Keys the escape-hatch `vars` loop set on the PREVIOUS applyThemeObject call —
+// cleared up front so a var a theme doesn't mention (e.g. Codex's
+// --pane-focus-ring) doesn't leak into the next theme applied after it.
+let lastCustomVarKeys: string[] = [];
+
 /** Apply a theme's CSS vars + terminal palette, without touching persistence. */
 function applyThemeObject(theme: Theme) {
   const root = document.documentElement;
   const { colors, radius } = theme;
+
+  for (const k of lastCustomVarKeys) root.style.removeProperty(k);
 
   root.style.setProperty("--bg", colors.bg);
   root.style.setProperty("--bg-2", colors.bg2);
@@ -156,6 +165,7 @@ function applyThemeObject(theme: Theme) {
     theme.chrome?.paneShadow ?? "0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04)"
   );
   // Escape hatch: arbitrary CSS-var overrides, applied last so they win.
+  lastCustomVarKeys = Object.keys(theme.vars ?? {}).map((k) => (k.startsWith("--") ? k : `--${k}`));
   for (const [k, v] of Object.entries(theme.vars ?? {})) {
     root.style.setProperty(k.startsWith("--") ? k : `--${k}`, v);
   }

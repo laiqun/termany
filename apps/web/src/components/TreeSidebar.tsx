@@ -1,4 +1,5 @@
 import { PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { withShortcut } from "../keybindings";
 import { activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
 import {
   aggregateAgentActivity,
@@ -334,7 +335,7 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
         <div className="section-actions">
           <button
             className="mini"
-            title="New page (⌘N)"
+            title={withShortcut("New page", "newPage")}
             onClick={(e) => {
               e.stopPropagation();
               addRootNode();

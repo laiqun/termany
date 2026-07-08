@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- Without this, macOS intercepts a held key (e.g. vim's j/k) after the
+       first repeat and pops the accent-character picker instead of letting
+       WKWebView's text input auto-repeat it — this is the same fix native
+       text editors ship to make held-key repeat work as expected. -->
+  <key>ApplePressAndHoldEnabled</key>
+  <false/>
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>

@@ -26,8 +26,8 @@ export const charcoal: Theme = {
     activeTab: "#3a3834",
     activeRow: "#3a3834",
     // Flat: terminals fill flush, only hairline split dividers.
-    paneGap: "0",
-    paneRadius: "0",
+    paneGap: "0px",
+    paneRadius: "0px",
     paneBorder: "transparent",
     paneShadow: "none",
   },

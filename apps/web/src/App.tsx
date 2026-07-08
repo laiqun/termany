@@ -24,8 +24,13 @@ export function App() {
   const [agentsOpen, setAgentsOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
 
+  // Settings and Search are full-panel overlays, so blanket-hiding every
+  // native webview in the workspace while either is open is correct. The
+  // SideRail agent-menu dropdown is small and floating, not full-panel — it
+  // registers its own rect via nativeViewOcclusion instead, so it only
+  // blanks the pane(s) it actually overlaps (see SideRail.tsx).
   useEffect(() => {
-    const suppressed = settingsOpen || searchOpen || agentsOpen;
+    const suppressed = settingsOpen || searchOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -36,7 +41,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen, agentsOpen]);
+  }, [settingsOpen, searchOpen]);
 
   // Global shortcuts. Each action's chord is user-customizable (Settings →
   // Keyboard, persisted to localStorage); the catalog and defaults live in
@@ -71,7 +76,7 @@ export function App() {
       nextTheme: (s) => s.nextTheme(),
       toggleSidebar: (s) => s.toggleSidebar(),
       toggleRail: (s) => s.toggleRail(),
-      openSettings: () => setSettingsSection("appearance"),
+      openSettings: () => setSettingsSection("general"),
       search: () => setSearchOpen((o) => !o),
     };
     for (let i = 1; i <= 9; i++) {
@@ -93,8 +98,8 @@ export function App() {
         }
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, []);
 
   // Desktop: check for a new release once, shortly after startup (stays quiet —
@@ -145,7 +150,7 @@ export function App() {
     <div className={`app${isTauri ? " tauri" : ""}`}>
       {isTauri && <WindowControls />}
       {isTauri && <ResizeHandles />}
-      {!collapsed && <TreeSidebar onOpenSettings={() => setSettingsSection("appearance")} />}
+      {!collapsed && <TreeSidebar onOpenSettings={() => setSettingsSection("general")} />}
       <div className="main">
         <HTabBar />
         <div className="pane-area">
@@ -156,7 +161,7 @@ export function App() {
         <SideRail
           agentsOpen={agentsOpen}
           onAgentsOpenChange={setAgentsOpen}
-          onOpenSettings={() => setSettingsSection("appearance")}
+          onOpenSettings={() => setSettingsSection("general")}
           onOpenAgentsSettings={() => setSettingsSection("agents")}
         />
       )}

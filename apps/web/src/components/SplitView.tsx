@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { withShortcut } from "../keybindings";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import { focusSession } from "../terminal/manager";
 import { FileTree } from "./FileTree";
@@ -101,12 +102,12 @@ function PaneHeader({
         )}
         <button
           className="pane-btn"
-          title={solo ? "Restore" : "Maximize"}
+          title={withShortcut(solo ? "Restore" : "Maximize", "toggleMaximize")}
           onClick={() => toggleMaximize(leaf.id)}
         >
           {solo ? <RestoreIcon /> : <MaximizeIcon />}
         </button>
-        <button className="pane-btn" title="Close pane" onClick={() => closePane(leaf.id)}>
+        <button className="pane-btn" title={withShortcut("Close pane", "closePane")} onClick={() => closePane(leaf.id)}>
           <CloseIcon />
         </button>
       </div>

@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { isTauri } from "../env";
+import { withShortcut } from "../keybindings";
 import { useStore, activeNode, type Pane } from "../state/store";
 import {
   aggregateAgentActivity,
@@ -51,7 +52,7 @@ export function HTabBar() {
     <div className="htab-controls">
       <button
         className="bar-btn"
-        title={collapsed ? "Show sidebar (⌘B)" : "Hide sidebar (⌘B)"}
+        title={withShortcut(collapsed ? "Show sidebar" : "Hide sidebar", "toggleSidebar")}
         onClick={toggleSidebar}
       >
         <PanelIcon />
@@ -175,7 +176,7 @@ export function HTabBar() {
                   <span className="htab-title">{h.title}</span>
                   <button
                     className="htab-close"
-                    title="Close (⌘W)"
+                    title={withShortcut("Close", "closePane")}
                     onClick={(e) => {
                       e.stopPropagation();
                       closeHTab(h.id);
@@ -190,13 +191,13 @@ export function HTabBar() {
         })()
       ))}
       {node && (
-        <button className="htab-add" title="New terminal tab (⌘T)" onClick={addHTab}>
+        <button className="htab-add" title={withShortcut("New terminal tab", "newTab")} onClick={addHTab}>
           <PlusIcon />
         </button>
       )}
       <button
         className="bar-btn rail-toggle"
-        title={railCollapsed ? "Show panel" : "Hide panel"}
+        title={withShortcut(railCollapsed ? "Show panel" : "Hide panel", "toggleRail")}
         onClick={toggleRail}
       >
         <PanelRightIcon />

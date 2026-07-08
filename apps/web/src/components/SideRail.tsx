@@ -1,9 +1,13 @@
 import { useEffect, useRef } from "react";
 import { agentCommand, type AgentConfig, useAgentConfigs } from "../agents";
 import { useI18n } from "../i18n";
-import { useStore, type PaneView } from "../state/store";
+import { withShortcut } from "../keybindings";
+import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
+import { activeHtab, useStore, type PaneView } from "../state/store";
 import { queueCommand } from "../terminal/manager";
 import { AgentIcon, FilesIcon, GearIcon, TerminalIcon, WebIcon } from "./icons";
+
+const AGENT_MENU_OCCLUDER_ID = "side-rail-agent-menu";
 
 /** One entry per pane kind this rail can quick-create. */
 const RAIL_ITEMS: Array<{ view: PaneView; label: string; icon: () => JSX.Element }> = [
@@ -33,9 +37,11 @@ export function SideRail({
   onOpenAgentsSettings: () => void;
 }) {
   const addPane = useStore((s) => s.addPane);
+  const setPaneView = useStore((s) => s.setPaneView);
   const { t } = useI18n();
   const agents = useAgentConfigs().filter((agent) => agent.enabled);
   const agentsRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!agentsOpen) return;
@@ -45,6 +51,21 @@ export function SideRail({
     window.addEventListener("click", onClick);
     return () => window.removeEventListener("click", onClick);
   }, [agentsOpen, onAgentsOpenChange]);
+
+  // Only blanks the web/office preview pane(s) this dropdown actually
+  // overlaps, not every native webview in the workspace (see nativeViewOcclusion).
+  useEffect(() => {
+    if (!agentsOpen) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const update = () => registerOccluder(AGENT_MENU_OCCLUDER_ID, el.getBoundingClientRect());
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      unregisterOccluder(AGENT_MENU_OCCLUDER_ID);
+    };
+  }, [agentsOpen]);
 
   const runAgent = (agent: AgentConfig) => {
     const paneId = addPane("terminal", agent.id);
@@ -58,10 +79,17 @@ export function SideRail({
     onOpenAgentsSettings();
   };
 
+  const openPane = (view: PaneView) => {
+    const paneId = addPane(view);
+    if (paneId) return;
+    const focused = activeHtab(useStore.getState())?.focused;
+    if (focused) setPaneView(focused, view);
+  };
+
   return (
     <div className="side-rail">
       {RAIL_ITEMS.map(({ view, label, icon: Icon }) => (
-        <button key={view} className="side-rail-btn" title={`New ${label} pane`} onClick={() => addPane(view)}>
+        <button key={view} className="side-rail-btn" title={`New ${label} pane`} onClick={() => openPane(view)}>
           <Icon />
         </button>
       ))}
@@ -74,7 +102,7 @@ export function SideRail({
           <AgentIcon />
         </button>
         {agentsOpen && (
-          <div className="agent-menu">
+          <div className="agent-menu" ref={menuRef}>
             {agents.map((agent) => (
               <button key={agent.id} className="agent-menu-item" onClick={() => runAgent(agent)}>
                 {agent.icon ? (
@@ -96,7 +124,11 @@ export function SideRail({
           </div>
         )}
       </div>
-      <button className="side-rail-btn side-rail-settings" title="Settings" onClick={onOpenSettings}>
+      <button
+        className="side-rail-btn side-rail-settings"
+        title={withShortcut("Settings", "openSettings")}
+        onClick={onOpenSettings}
+      >
         <GearIcon />
       </button>
     </div>

@@ -166,3 +166,13 @@ export function formatChord(c: Chord): string {
   if (c.meta) s += "⌘";
   return s + codeLabel(c.code);
 }
+
+/**
+ * "<label> (<chord>)" for a button's title/tooltip, reading the action's LIVE
+ * binding (so a rebind in Settings → Keyboard is reflected immediately,
+ * unlike a hardcoded shortcut string baked into the JSX).
+ */
+export function withShortcut(label: string, actionId: string): string {
+  const chord = loadKeybindings()[actionId];
+  return chord ? `${label} (${formatChord(chord)})` : label;
+}

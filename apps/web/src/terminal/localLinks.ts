@@ -173,7 +173,8 @@ export function registerLocalPathLinks(term: Terminal, resolvePaths: ResolvePath
                 end: { x: mapped.cols[last] + mapped.widths[last], y: bufferLineNumber },
               },
               text: candidate.text,
-              activate: async () => {
+              activate: async (event) => {
+                if (!event.metaKey) return;
                 const error = await revealPath(target);
                 if (error) console.warn("[termany] failed to reveal path:", error);
               },

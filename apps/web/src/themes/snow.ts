@@ -24,8 +24,8 @@ export const snow: Theme = {
     activeTab: "#ffffff",
     activeRow: "#f0f1f3",
     // Flat: terminals fill flush, separated only by the region hairlines.
-    paneGap: "0",
-    paneRadius: "0",
+    paneGap: "0px",
+    paneRadius: "0px",
     paneBorder: "transparent",
     paneShadow: "none",
   },
