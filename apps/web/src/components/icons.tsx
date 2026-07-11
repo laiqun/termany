@@ -32,6 +32,7 @@ import {
   Search,
   Settings,
   SquareTerminal,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -98,6 +99,11 @@ export function EditIcon() {
 /** Gear — settings. */
 export function GearIcon() {
   return <Settings {...base} />;
+}
+
+/** Trash can — delete action. */
+export function TrashIcon() {
+  return <Trash2 {...base} />;
 }
 
 /** Terminal in a rounded square — the per-pane header marker. */

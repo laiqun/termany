@@ -133,6 +133,8 @@ interface State {
   renameWorkspace: (id: string, title: string) => void;
   /** Set the workspace's emoji icon, or null to revert to the letter avatar. */
   setWorkspaceIcon: (id: string, icon: string | null) => void;
+  /** Delete a workspace and dispose every terminal session under it. No-op if it's the last workspace. */
+  deleteWorkspace: (id: string) => void;
 
   addRootNode: () => void;
   addChildNode: (parentId: string) => void;
@@ -528,6 +530,18 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, icon: icon ?? undefined } : w)),
     })),
+
+  deleteWorkspace: (wsId) =>
+    set((s) => {
+      if (s.workspaces.length <= 1) return s;
+      const target = s.workspaces.find((w) => w.id === wsId);
+      if (!target) return s;
+      target.roots.flatMap(subtreeLeafIds).forEach(disposeSession);
+      const workspaces = s.workspaces.filter((w) => w.id !== wsId);
+      const activeWorkspace =
+        s.activeWorkspace === wsId ? workspaces[0].id : s.activeWorkspace;
+      return { workspaces, activeWorkspace };
+    }),
 
   addRootNode: () =>
     set((s) => ({

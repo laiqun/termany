@@ -146,6 +146,7 @@ export type AgentActivity = {
 
 const agentActivities = new Map<string, AgentActivity>();
 const agentActivityListeners = new Set<() => void>();
+const agentSessionKinds = new Map<string, AgentActivity["agent"]>();
 
 const AGENT_RE = /\b(OpenAI Codex|Codex CLI|Claude Code)\b|Use \/skills|\/model to change|bypass permissions/i;
 const CODEX_RE = /\b(OpenAI Codex|Codex CLI)\b/i;
@@ -160,6 +161,7 @@ const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|build
 const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
 const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
 const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
+const AGENT_INPUT_PROMPT_RE = /(?:^|\n)\s*[›>]\s*[^\n]*$/;
 const DONE_ACTIVITY_TTL_MS = 30_000;
 const ERROR_ACTIVITY_TTL_MS = 5 * 60_000;
 const WORKING_ACTIVITY_STALE_MS = 2 * 60_000;
@@ -226,6 +228,7 @@ function detectAgent(text: string): AgentActivity["agent"] | undefined {
 
 function setAgentActivity(id: string, status: AgentActivityStatus, agent?: AgentActivity["agent"]) {
   const prev = agentActivities.get(id);
+  if (agent) agentSessionKinds.set(id, agent);
   const next = {
     status,
     agent: agent ?? prev?.agent,
@@ -1051,7 +1054,9 @@ export function sessionLooksLikeAgentInput(id: string): boolean {
   const session = sessions.get(id);
   if (!session) return false;
   if (session.term.buffer.active.type === "alternate") return true;
-  return AGENT_RE.test(sessionVisibleText(id));
+  const visible = sessionVisibleText(id);
+  if (AGENT_RE.test(visible)) return true;
+  return agentSessionKinds.has(id) && AGENT_INPUT_PROMPT_RE.test(visible);
 }
 
 function sessionVisibleText(id: string): string {
@@ -1076,6 +1081,7 @@ export function disposeSession(id: string) {
   s.el.remove();
   sessions.delete(id);
   if (agentActivities.delete(id)) notifyAgentActivity();
+  agentSessionKinds.delete(id);
   restoreSnapshots.delete(id);
   if (isDemo) return;
   // Drop its persisted restore data — a closed pane should not come back.

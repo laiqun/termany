@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../state/store";
 import { EmojiPicker } from "./EmojiPicker";
-import { ChevronIcon, EditIcon, GearIcon, PlusIcon } from "./icons";
+import { ChevronIcon, EditIcon, GearIcon, PlusIcon, TrashIcon } from "./icons";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 
 const initial = (t: string) => t.trim().charAt(0).toUpperCase() || "?";
@@ -20,12 +20,14 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
   const addWorkspace = useStore((s) => s.addWorkspace);
   const renameWorkspace = useStore((s) => s.renameWorkspace);
   const setWorkspaceIcon = useStore((s) => s.setWorkspaceIcon);
+  const deleteWorkspace = useStore((s) => s.deleteWorkspace);
 
   const updateVersion = useStore((s) => s.updateVersion);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
 
   const active = workspaces.find((w) => w.id === activeId) ?? workspaces[0];
 
@@ -87,6 +89,18 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
                 >
                   <EditIcon />
                 </button>
+                {workspaces.length > 1 && (
+                  <button
+                    className="ws-menu-edit ws-menu-delete"
+                    title="Delete workspace"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setDeleteTarget({ id: w.id, title: w.title });
+                    }}
+                  >
+                    <TrashIcon />
+                  </button>
+                )}
                 {w.id === activeId && <span className="ws-check">✓</span>}
               </div>
             ))}
@@ -142,6 +156,32 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
           }}
           onClose={() => setDialog(null)}
         />
+      )}
+
+      {deleteTarget && (
+        <div className="ws-dialog-backdrop" onClick={() => setDeleteTarget(null)}>
+          <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
+            <p className="quit-confirm-text">
+              Delete "{deleteTarget.title}"? All its pages, tabs, and terminal history will be
+              permanently deleted.
+            </p>
+            <div className="ws-dialog-actions">
+              <button className="ws-dialog-btn" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </button>
+              <button
+                className="ws-dialog-btn danger"
+                autoFocus
+                onClick={() => {
+                  deleteWorkspace(deleteTarget.id);
+                  setDeleteTarget(null);
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
