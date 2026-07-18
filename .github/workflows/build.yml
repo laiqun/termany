@@ -10,10 +10,14 @@ name: Build and Release
 #   macos-x64    → Termany_X.Y.Z_x64.dmg              (signed + notarized)
 #   windows-x64  → Termany_X.Y.Z_x64-setup.exe        (NSIS, unsigned)
 #   linux-x64    → Termany_X.Y.Z_amd64.AppImage/.deb  (unsigned)
+#
+# Runs on release tags only (plus manual dispatch) — the macOS jobs bill at
+# 10x and a per-push matrix burned the org's whole free Actions quota. To
+# ship: bump the version, then `git tag v<version> && git push origin v<version>`.
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 env:
