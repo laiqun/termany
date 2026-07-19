@@ -41,6 +41,9 @@ export const ACTIONS: ActionDef[] = [
   { id: "splitRight", label: "Split right", group: "Tabs & panes", default: { code: "KeyD", meta: true } },
   { id: "splitDown", label: "Split down", group: "Tabs & panes", default: { code: "KeyD", meta: true, shift: true } },
   { id: "toggleMaximize", label: "Maximize / restore pane", group: "Tabs & panes", default: { code: "KeyM", meta: true } },
+  { id: "zoomTerminalIn", label: "Increase terminal text size", group: "Appearance", default: { code: "Equal", meta: true, shift: true } },
+  { id: "zoomTerminalOut", label: "Decrease terminal text size", group: "Appearance", default: { code: "Minus", meta: true } },
+  { id: "resetTerminalZoom", label: "Reset terminal text size", group: "Appearance", default: { code: "Digit0", meta: true } },
   { id: "clearScreen", label: "Clear terminal", group: "Tabs & panes", default: { code: "KeyK", meta: true } },
   { id: "nextTab", label: "Next tab", group: "Tabs & panes", default: { code: "BracketRight", meta: true, shift: true } },
   { id: "prevTab", label: "Previous tab", group: "Tabs & panes", default: { code: "BracketLeft", meta: true, shift: true } },
@@ -110,11 +113,15 @@ export function saveKeybindings(map: Record<string, Chord>) {
 
 /** Does a keydown event satisfy this chord (exact modifier match)? */
 export function matchChord(e: KeyboardEvent, c: Chord): boolean {
+  // On macOS, the conventional ⌘+ shortcut is reported inconsistently as
+  // either ⌘⇧= or ⌘= depending on keyboard layout/webview. Treat those two
+  // event shapes as the same physical shortcut.
+  const shiftedPlusAlias = c.code === "Equal" && c.meta && c.shift && e.code === "Equal";
   return (
     e.code === c.code &&
     e.metaKey === !!c.meta &&
     e.ctrlKey === !!c.ctrl &&
-    e.shiftKey === !!c.shift &&
+    (shiftedPlusAlias || e.shiftKey === !!c.shift) &&
     e.altKey === !!c.alt
   );
 }
@@ -162,9 +169,12 @@ export function formatChord(c: Chord): string {
   let s = "";
   if (c.ctrl) s += "⌃";
   if (c.alt) s += "⌥";
-  if (c.shift) s += "⇧";
+  // The shifted Equal key is conventionally presented as "+" on macOS
+  // (⌘+), rather than exposing its physical-key implementation (⇧⌘=).
+  const shiftedPlus = c.shift && c.code === "Equal";
+  if (c.shift && !shiftedPlus) s += "⇧";
   if (c.meta) s += "⌘";
-  return s + codeLabel(c.code);
+  return s + (shiftedPlus ? "+" : codeLabel(c.code));
 }
 
 /**

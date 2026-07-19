@@ -764,6 +764,48 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Locally installed CodexThemes packages (~/.codexthemes/themes): list each
+  // package's manifest plus artwork/preview file paths, so Appearance can show
+  // a one-click gallery. Images are served through the existing /api/fs/media.
+  if (req.method === "GET" && req.url === "/api/codex-themes") {
+    (async () => {
+      const root = path.join(os.homedir(), ".codexthemes", "themes");
+      let dirs: fs.Dirent[] = [];
+      try {
+        dirs = (await fs.promises.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory());
+      } catch {
+        /* no ~/.codexthemes — an empty gallery, not an error */
+      }
+      const themes = [];
+      for (const d of dirs) {
+        try {
+          const dir = path.join(root, d.name);
+          const manifest = JSON.parse(await fs.promises.readFile(path.join(dir, "theme.json"), "utf8"));
+          const resolveAsset = (rel: unknown) => {
+            if (typeof rel !== "string" || !rel) return null;
+            const abs = path.join(dir, rel);
+            return fs.existsSync(abs) ? abs : null;
+          };
+          const artPath = resolveAsset(manifest.art);
+          // Prefer a shipped design preview (a full-app screenshot) for the card.
+          let previewPath: string | null = null;
+          try {
+            const previews = await fs.promises.readdir(path.join(dir, "previews"));
+            const img = previews.find((f) => /\.(png|jpe?g|webp|avif)$/i.test(f));
+            if (img) previewPath = path.join(dir, "previews", img);
+          } catch {
+            /* no previews dir */
+          }
+          themes.push({ manifest, artPath, previewPath: previewPath ?? artPath });
+        } catch {
+          /* not a readable theme package — skip it */
+        }
+      }
+      json(200, { themes });
+    })().catch(fail);
+    return;
+  }
+
   // AI theme generation — uses the configured default model.
   if (req.method === "POST" && req.url === "/api/theme") {
     readJson(req)

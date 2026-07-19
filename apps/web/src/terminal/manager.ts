@@ -444,6 +444,28 @@ let currentTermTheme: ITheme = {
   selectionBackground: "#2a3441",
 };
 
+const DEFAULT_FONT_SIZE = 13;
+const MIN_FONT_SIZE = 9;
+const MAX_FONT_SIZE = 32;
+
+function applyTerminalFontSize(id: string, next: number) {
+  const session = sessions.get(id);
+  if (!session) return;
+  const size = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, next));
+  if (session.term.options.fontSize === size) return;
+  session.term.options.fontSize = size;
+  requestAnimationFrame(() => fitSession(id));
+}
+
+export function adjustTerminalFontSize(id: string, delta: number) {
+  const current = sessions.get(id)?.term.options.fontSize ?? DEFAULT_FONT_SIZE;
+  applyTerminalFontSize(id, current + delta);
+}
+
+export function resetTerminalFontSize(id: string) {
+  applyTerminalFontSize(id, DEFAULT_FONT_SIZE);
+}
+
 const IMAGE_MIMES = new Set(["image/gif", "image/jpeg", "image/png", "image/tiff", "image/webp"]);
 const IMAGE_UTIS = new Map([
   ["public.jpeg", "image/jpeg"],
@@ -587,10 +609,13 @@ function getSession(id: string): Session {
 
   const term = new Terminal({
     fontFamily: 'Menlo, "SF Mono", Monaco, monospace',
-    fontSize: 13,
+    fontSize: DEFAULT_FONT_SIZE,
     scrollback: SCROLLBACK_LINES,
     cursorBlink: true,
     allowProposedApi: true,
+    // Lets art-forward themes use an rgba() terminal background so the window
+    // artwork shows through the pane veil; opaque themes render identically.
+    allowTransparency: true,
     theme: currentTermTheme,
   });
 

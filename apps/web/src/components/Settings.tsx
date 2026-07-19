@@ -6,7 +6,7 @@ import { useI18n, type Language } from "../i18n";
 import { openExternal } from "../openExternal";
 import { useStore } from "../state/store";
 import { checkForUpdate, installUpdate, relaunchApp } from "../updater";
-import { registerTheme, THEMES, type Theme } from "../themes";
+import { fromCodexTheme, isCodexTheme, registerTheme, THEMES, type Theme } from "../themes";
 import { AgentSettings } from "./AgentSettings";
 import { CloseIcon, EditIcon, GearIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
@@ -14,6 +14,13 @@ import { ModelSettings } from "./ModelSettings";
 import { ThemeEditor } from "./ThemeEditor";
 
 export type SettingsSection = "general" | "appearance" | "models" | "agents" | "keyboard" | "about";
+
+/** One locally installed CodexThemes package, as listed by /api/codex-themes. */
+type CodexListing = {
+  manifest: { id: string; displayName?: string; description?: string; mode?: string };
+  artPath: string | null;
+  previewPath: string | null;
+};
 
 /**
  * App-wide settings, shown as an in-app overlay (works in both web and the
@@ -38,6 +45,8 @@ export function Settings({
   const [error, setError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const [codexThemes, setCodexThemes] = useState<CodexListing[]>([]);
+  const [applyingCodex, setApplyingCodex] = useState<string | null>(null);
   const [version, setVersion] = useState("0.1.0");
   const [aboutError, setAboutError] = useState<string | null>(null);
 
@@ -129,19 +138,61 @@ export function Settings({
     }
   }
 
+  // The gallery of locally installed CodexThemes packages (~/.codexthemes),
+  // refetched each time Appearance opens so newly created packages show up.
+  useEffect(() => {
+    if (section !== "appearance") return;
+    fetch(apiPath("/api/codex-themes"))
+      .then((r) => r.json())
+      .then((d) => setCodexThemes(Array.isArray(d?.themes) ? d.themes : []))
+      .catch(() => setCodexThemes([]));
+  }, [section]);
+
+  /** One-click apply: same conversion as file import, artwork embedded. */
+  async function applyCodexTheme(item: CodexListing) {
+    setImportError(null);
+    setApplyingCodex(item.manifest.id);
+    try {
+      let art: { mimeType: string; base64: string } | undefined;
+      if (item.artPath) {
+        const res = await fetch(apiPath(`/api/fs/media?path=${encodeURIComponent(item.artPath)}`));
+        if (res.ok) {
+          const blob = await res.blob();
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(String(fr.result));
+            fr.onerror = () => reject(new Error("failed to read artwork"));
+            fr.readAsDataURL(blob);
+          });
+          art = { mimeType: blob.type || "image/jpeg", base64: dataUrl.slice(dataUrl.indexOf(",") + 1) };
+        }
+      }
+      const created = registerTheme(fromCodexTheme({ format: "codex-theme", manifest: item.manifest, art }));
+      setTheme(created.id);
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplyingCodex(null);
+    }
+  }
+
   async function importThemeFile(file: File | undefined) {
     if (!file) return;
     setImportError(null);
     try {
       const parsed = JSON.parse(await file.text());
+      // Codex themes (a theme.json manifest or a .codex-theme export) are
+      // converted to Termany's schema; the converter assigns a stable
+      // "custom-codex-…" id so re-imports update in place.
+      const candidate = isCodexTheme(parsed) ? fromCodexTheme(parsed) : parsed;
       // Re-imported exports (already "custom-"/"ai-") update in place; anything
       // else (a shared built-in, a hand-authored file) gets a fresh custom id
       // so it persists as the user's own theme instead of silently vanishing —
       // registerTheme() only persists ids with those prefixes (see themes/index.ts).
-      if (typeof parsed?.id !== "string" || !/^(custom|ai)-/.test(parsed.id)) {
-        parsed.id = `custom-${crypto.randomUUID()}`;
+      if (typeof candidate?.id !== "string" || !/^(custom|ai)-/.test(candidate.id)) {
+        candidate.id = `custom-${crypto.randomUUID()}`;
       }
-      const created = registerTheme(parsed);
+      const created = registerTheme(candidate);
       setTheme(created.id);
     } catch (e) {
       setImportError(e instanceof Error ? e.message : String(e));
@@ -274,7 +325,7 @@ export function Settings({
             THEME
             <button
               className="ws-dialog-btn"
-              title="Import a theme JSON file"
+              title="Import a theme JSON or .codex-theme file"
               onClick={() => importInputRef.current?.click()}
             >
               <Upload size={13} /> Import
@@ -282,7 +333,7 @@ export function Settings({
             <input
               ref={importInputRef}
               type="file"
-              accept="application/json,.json"
+              accept="application/json,.json,.codex-theme"
               hidden
               onChange={(e) => {
                 void importThemeFile(e.target.files?.[0]);
@@ -325,6 +376,54 @@ export function Settings({
               </div>
             ))}
           </div>
+
+          {codexThemes.length > 0 && (
+            <>
+              <div className="settings-section-title" style={{ marginTop: 28 }}>
+                CODEX THEMES <span className="codex-themes-hint">~/.codexthemes</span>
+              </div>
+              <div className="codex-theme-grid">
+                {codexThemes.map((item) => {
+                  const active = theme === `custom-codex-${item.manifest.id}`;
+                  const shot = item.previewPath ?? item.artPath;
+                  return (
+                    <div key={item.manifest.id} className={`codex-theme-card ${active ? "selected" : ""}`}>
+                      {shot && (
+                        <img
+                          className="codex-theme-shot"
+                          src={apiPath(`/api/fs/media?path=${encodeURIComponent(shot)}`)}
+                          alt=""
+                          loading="lazy"
+                        />
+                      )}
+                      <div className="codex-theme-body">
+                        <div className="codex-theme-title">
+                          <span className="codex-theme-name">{item.manifest.displayName ?? item.manifest.id}</span>
+                          <span className="codex-theme-mode">{item.manifest.mode === "dark" ? "Dark" : "Light"}</span>
+                        </div>
+                        {item.manifest.description && (
+                          <div className="codex-theme-desc">{item.manifest.description}</div>
+                        )}
+                        <div className="codex-theme-actions">
+                          {active ? (
+                            <span className="codex-theme-active">Active</span>
+                          ) : (
+                            <button
+                              className="ws-dialog-btn primary"
+                              disabled={applyingCodex !== null}
+                              onClick={() => void applyCodexTheme(item)}
+                            >
+                              {applyingCodex === item.manifest.id ? "Applying…" : "Apply"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
           </>
           )}
           {section === "about" && (

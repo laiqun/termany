@@ -10,6 +10,7 @@ import { solarizedDark } from "./solarized-dark";
 import type { Theme } from "./types";
 
 export type { Theme };
+export { fromCodexTheme, isCodexTheme } from "./codex-import";
 
 /**
  * The registry. To add a theme — built-in or AI-generated — author a Theme

@@ -11,7 +11,11 @@ import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, useStore } from "./state/store";
-import { clearSession } from "./terminal/manager";
+import {
+  adjustTerminalFontSize,
+  clearSession,
+  resetTerminalFontSize,
+} from "./terminal/manager";
 import { openLocalPathsInFocusedSession } from "./terminal/openLocalPath";
 import { checkForUpdate } from "./updater";
 
@@ -57,6 +61,18 @@ export function App() {
       toggleMaximize: (s) => {
         const h = activeHtab(s);
         if (h) s.toggleMaximize(h.focused);
+      },
+      zoomTerminalIn: (s) => {
+        const h = activeHtab(s);
+        if (h) adjustTerminalFontSize(h.focused, 1);
+      },
+      zoomTerminalOut: (s) => {
+        const h = activeHtab(s);
+        if (h) adjustTerminalFontSize(h.focused, -1);
+      },
+      resetTerminalZoom: (s) => {
+        const h = activeHtab(s);
+        if (h) resetTerminalFontSize(h.focused);
       },
       clearScreen: (s) => {
         const h = activeHtab(s);
