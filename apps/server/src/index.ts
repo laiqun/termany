@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
+import { readSystemStats } from "./systemStats.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
 import {
@@ -26,6 +27,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
+import { testProvider } from "./providerTest.js";
 import { generateTheme } from "./theme.js";
 
 /** Read a JSON request body (capped) into an object. */
@@ -121,6 +123,15 @@ function mediaTypeForPath(filePath: string): string | null {
 // `npm_lifecycle_event` is "dev" only when launched via the `dev` script.
 const DEFAULT_PORT = process.env.npm_lifecycle_event === "dev" ? 5175 : 5174;
 const PORT = Number(process.env.TERMANY_PORT ?? DEFAULT_PORT);
+/**
+ * Baked in at bundle time by scripts/bundle-server.mjs (esbuild --define) so a
+ * packaged server can report which build it belongs to. The desktop app rejects
+ * a running server whose version doesn't match its own — see
+ * existing_server_matches() in apps/desktop/src-tauri/src/lib.rs. Undefined when
+ * run from source (tsx), where "dev" never matches a release app on purpose.
+ */
+declare const __TERMANY_VERSION__: string | undefined;
+const SERVER_VERSION = typeof __TERMANY_VERSION__ === "string" ? __TERMANY_VERSION__ : "dev";
 const IS_WIN = os.platform() === "win32";
 const PASTE_DIR = process.env.TERMANY_PASTE_DIR ?? `${os.tmpdir()}/termany-pastes`;
 // Launch a LOGIN shell so it runs /etc/zprofile + ~/.zprofile (Homebrew's
@@ -497,6 +508,22 @@ const http = createServer((req, res) => {
       .catch(fail);
     return;
   }
+  // Connectivity check for a provider before it is saved. The key stays here:
+  // an edit can omit it and the stored one is resolved by provider id.
+  if (req.method === "POST" && req.url === "/api/models/test") {
+    readJson(req)
+      .then(async (body) =>
+        json(200, await testProvider({
+          kind: body?.kind === "anthropic" ? "anthropic" : "openai",
+          apiBase: String(body?.apiBase ?? ""),
+          apiKey: String(body?.apiKey ?? ""),
+          model: String(body?.model ?? ""),
+          providerId: body?.providerId ? String(body.providerId) : undefined,
+        }))
+      )
+      .catch(fail);
+    return;
+  }
 
   // Detect local agent CLIs using the same login-shell PATH that terminal panes use.
   if (req.method === "POST" && req.url === "/api/agents/detect") {
@@ -802,7 +829,9 @@ const http = createServer((req, res) => {
           /* not a readable theme package — skip it */
         }
       }
-      json(200, { themes });
+      // `root` lets Appearance offer a "reveal in Finder" button without the
+      // frontend having to guess the home directory.
+      json(200, { themes, root });
     })().catch(fail);
     return;
   }
@@ -819,9 +848,25 @@ const http = createServer((req, res) => {
   }
 
   // Daily per-agent/per-model token usage for the SideRail usage dashboard.
+  // Which build this server came from. The desktop app probes this on launch to
+  // decide whether an already-listening server is safe to reuse; keep it cheap
+  // and dependency-free so it answers even if everything else is broken.
+  if (req.method === "GET" && reqUrl.pathname === "/api/version") {
+    json(200, { version: SERVER_VERSION });
+    return;
+  }
+
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-usage") {
     (async () => {
       json(200, { rows: await listAgentUsage() });
+    })().catch(fail);
+    return;
+  }
+
+  // Whole-machine CPU/memory + top processes for the SideRail system monitor.
+  if (req.method === "GET" && reqUrl.pathname === "/api/system-stats") {
+    (async () => {
+      json(200, await readSystemStats());
     })().catch(fail);
     return;
   }

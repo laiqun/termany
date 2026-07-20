@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
+import { useI18n } from "../i18n";
 import { ChartIcon, ChevronIcon } from "./icons";
 
 interface UsageRow {
@@ -69,11 +70,12 @@ function tildify(p: string): string {
   return p.replace(/^\/(?:Users|home)\/[^/]+/, "~");
 }
 
+// "All" leads, matching the All agents / All projects dropdowns beside it.
 const RANGES = [
-  { key: "today", label: "Today" },
-  { key: "week", label: "This week" },
-  { key: "month", label: "This month" },
-  { key: "all", label: "All" },
+  { key: "all", labelKey: "usage.range.all" },
+  { key: "today", labelKey: "usage.range.today" },
+  { key: "week", labelKey: "usage.range.week" },
+  { key: "month", labelKey: "usage.range.month" },
 ] as const;
 
 type RangeKey = (typeof RANGES)[number]["key"];
@@ -172,8 +174,10 @@ function UsageSelect({
  * cards and cost but excluded from the chart — they'd dwarf everything else.
  */
 export function AgentUsage({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
   const agentConfigs = useAgentConfigs();
   const [rows, setRows] = useState<UsageRow[] | null | undefined>(undefined);
+  const [stale, setStale] = useState(false);
   const [range, setRange] = useState<RangeKey>("month");
   const [agent, setAgent] = useState("all");
   const [project, setProject] = useState("all");
@@ -185,8 +189,13 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
       .then((data) => {
         if (!cancelled) setRows(Array.isArray(data.rows) ? data.rows : []);
       })
-      .catch(() => {
-        if (!cancelled) setRows(null);
+      .catch((e: Error) => {
+        if (cancelled) return;
+        // A 404 on a route this build ships means the backend answering us is
+        // older than the UI — an upgrade left the previous release's server
+        // holding the port. Say so instead of blaming the data.
+        setStale(e.message === "404");
+        setRows(null);
       });
     return () => {
       cancelled = true;
@@ -303,31 +312,39 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
   const projects = useMemo(() => {
     const byProject = new Map<string, { project: string; tokens: number; cost: number }>();
     for (const r of filtered) {
-      const name = r.project ? tildify(r.project) : "(unknown)";
+      const name = r.project ? tildify(r.project) : t("usage.unknownProject");
       const p = byProject.get(name) ?? { project: name, tokens: 0, cost: 0 };
       p.tokens += r.input + r.output + r.cacheRead + r.cacheWrite;
       p.cost += rowCost(r) ?? 0;
       byProject.set(name, p);
     }
     return [...byProject.values()].sort((a, b) => b.tokens - a.tokens).slice(0, 12);
-  }, [filtered]);
+  }, [filtered, t]);
 
   const projectMax = Math.max(1, ...projects.map((p) => p.tokens));
   const totalTokens = totals.input + totals.output + totals.cacheRead + totals.cacheWrite;
 
   const cards = [
     {
-      label: "Est. cost",
+      key: "cost",
+      label: t("usage.card.cost"),
       value: formatCost(totals.cost),
-      note: totals.unpricedTokens > 0 ? `excl. ${formatTokens(totals.unpricedTokens)} unpriced` : null,
+      note:
+        totals.unpricedTokens > 0
+          ? t("usage.card.costNote", { n: formatTokens(totals.unpricedTokens) })
+          : null,
     },
-    { label: "Total tokens", value: formatTokens(totalTokens), note: null },
-    { label: "Input", value: formatTokens(totals.input), note: null },
-    { label: "Output", value: formatTokens(totals.output), note: null },
+    { key: "total", label: t("usage.card.total"), value: formatTokens(totalTokens), note: null },
+    { key: "input", label: t("usage.card.input"), value: formatTokens(totals.input), note: null },
+    { key: "output", label: t("usage.card.output"), value: formatTokens(totals.output), note: null },
     {
-      label: "Cache",
+      key: "cache",
+      label: t("usage.card.cache"),
       value: formatTokens(totals.cacheRead + totals.cacheWrite),
-      note: `${formatTokens(totals.cacheRead)} read · ${formatTokens(totals.cacheWrite)} write`,
+      note: t("usage.card.cacheNote", {
+        read: formatTokens(totals.cacheRead),
+        write: formatTokens(totals.cacheWrite),
+      }),
     },
   ];
 
@@ -337,7 +354,7 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
         <div className="usage-header">
           <span className="usage-title">
             <ChartIcon />
-            <span>Agent usage</span>
+            <span>{t("usage.title")}</span>
           </span>
           <div className="usage-filters">
             <UsageSelect
@@ -345,7 +362,7 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
               value={agent}
               onChange={setAgent}
               options={[
-                { value: "all", label: "All agents" },
+                { value: "all", label: t("usage.allAgents") },
                 ...agentIds.map((id) => ({ value: id, label: agentName(id) })),
               ]}
             />
@@ -354,7 +371,7 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
               value={project}
               onChange={setProject}
               options={[
-                { value: "all", label: "All projects" },
+                { value: "all", label: t("usage.allProjects") },
                 ...projectOptions.map((name) => ({ value: name, label: name })),
               ]}
             />
@@ -362,22 +379,24 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
               width={132}
               value={range}
               onChange={(v) => setRange(v as RangeKey)}
-              options={RANGES.map((r) => ({ value: r.key, label: r.label }))}
+              options={RANGES.map((r) => ({ value: r.key, label: t(r.labelKey) }))}
             />
           </div>
         </div>
 
-        {rows === undefined && <div className="search-empty">Loading usage…</div>}
-        {rows === null && <div className="search-empty">Could not load usage data.</div>}
+        {rows === undefined && <div className="search-empty">{t("usage.loading")}</div>}
+        {rows === null && (
+          <div className="search-empty">{t(stale ? "server.stale" : "usage.error")}</div>
+        )}
         {Array.isArray(rows) && filtered.length === 0 && (
-          <div className="search-empty">No usage recorded for this range.</div>
+          <div className="search-empty">{t("usage.empty")}</div>
         )}
 
         {Array.isArray(rows) && filtered.length > 0 && (
           <div className="usage-body">
             <div className="usage-cards">
               {cards.map((c) => (
-                <div key={c.label} className="usage-card">
+                <div key={c.key} className="usage-card">
                   <span className="usage-card-label">{c.label}</span>
                   <span className="usage-card-value">{c.value}</span>
                   {c.note && <span className="usage-card-note">{c.note}</span>}
@@ -387,11 +406,11 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
 
             <div className="usage-section">
               <div className="usage-section-head">
-                <span>Daily tokens</span>
+                <span>{t("usage.daily")}</span>
                 <span className="usage-legend">
-                  <i className="usage-swatch output" /> output
-                  <i className="usage-swatch input" /> input
-                  <span className="usage-legend-note">cache excluded</span>
+                  <i className="usage-swatch output" /> {t("usage.legend.output")}
+                  <i className="usage-swatch input" /> {t("usage.legend.input")}
+                  <span className="usage-legend-note">{t("usage.legend.note")}</span>
                 </span>
               </div>
               <div className="usage-chart">
@@ -399,7 +418,10 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
                   <div
                     key={d.date}
                     className="usage-bar-slot"
-                    title={`${d.date}\ninput ${formatTokens(d.input)} · output ${formatTokens(d.output)}`}
+                    title={`${d.date}\n${t("usage.chartTip", {
+                      input: formatTokens(d.input),
+                      output: formatTokens(d.output),
+                    })}`}
                   >
                     <div className="usage-bar">
                       <div
@@ -424,7 +446,7 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
 
             <div className="usage-section">
               <div className="usage-section-head">
-                <span>By model</span>
+                <span>{t("usage.byModel")}</span>
               </div>
               <div className="usage-models">
                 {models.map((m) => (
@@ -446,7 +468,7 @@ export function AgentUsage({ onClose }: { onClose: () => void }) {
 
             <div className="usage-section">
               <div className="usage-section-head">
-                <span>By project</span>
+                <span>{t("usage.byProject")}</span>
               </div>
               <div className="usage-models">
                 {projects.map((p) => (

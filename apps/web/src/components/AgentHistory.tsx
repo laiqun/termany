@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
+import { useI18n } from "../i18n";
 import { agentSessionPanes, useStore } from "../state/store";
 import { queueCommand } from "../terminal/manager";
 import { AgentIcon, HistoryIcon } from "./icons";
+
+type Translate = ReturnType<typeof useI18n>["t"];
 
 interface AgentSession {
   sessionId: string;
@@ -39,14 +42,14 @@ function tildify(p: string): string {
   return p.replace(/^\/(?:Users|home)\/[^/]+/, "~");
 }
 
-function relativeTime(mtimeMs: number): string {
+function relativeTime(mtimeMs: number, t: Translate): string {
   const mins = Math.floor((Date.now() - mtimeMs) / 60000);
-  if (mins < 1) return "now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return t("history.time.now");
+  if (mins < 60) return t("history.time.m", { n: mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return t("history.time.h", { n: hours });
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return t("history.time.d", { n: days });
   return new Date(mtimeMs).toLocaleDateString();
 }
 
@@ -66,6 +69,7 @@ function formatTokens(n: number): string {
  * resume command. Same modal skeleton and styles as SearchPalette.
  */
 export function AgentHistory({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
   const addPane = useStore((s) => s.addPane);
   const jumpToResult = useStore((s) => s.jumpToResult);
   const setPaneAgentSession = useStore((s) => s.setPaneAgentSession);
@@ -75,6 +79,7 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
   // agent id → fetched sessions; null = unsupported, undefined = not loaded.
   const [byAgent, setByAgent] = useState<Record<string, AgentSession[] | null>>({});
   const [error, setError] = useState(false);
+  const [stale, setStale] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -92,8 +97,11 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
       .then((data) => {
         if (!cancelled) setByAgent((m) => ({ ...m, [agentId]: data.sessions ?? null }));
       })
-      .catch(() => {
-        if (!cancelled) setError(true);
+      .catch((e: Error) => {
+        if (cancelled) return;
+        // See AgentUsage: a 404 here means an older server survived the upgrade.
+        setStale(e.message === "404");
+        setError(true);
       });
     return () => {
       cancelled = true;
@@ -165,7 +173,7 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
             autoCapitalize="off"
             spellCheck={false}
             value={query}
-            placeholder={`Search ${agentName} sessions…`}
+            placeholder={t("history.placeholder", { agent: agentName })}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing) return;
@@ -206,23 +214,27 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="search-results" ref={listRef}>
-          {error && <div className="search-empty">Could not load session history.</div>}
-          {!error && sessions === undefined && <div className="search-empty">Loading sessions…</div>}
+          {error && (
+            <div className="search-empty">{t(stale ? "server.stale" : "history.error")}</div>
+          )}
+          {!error && sessions === undefined && <div className="search-empty">{t("history.loading")}</div>}
           {!error && sessions === null && (
-            <div className="search-empty">Session history isn't supported for {agentName} yet.</div>
+            <div className="search-empty">{t("history.unsupported", { agent: agentName })}</div>
           )}
           {!error && Array.isArray(sessions) && rows.length === 0 && (
             <div className="search-empty">
-              {query.trim() ? `No sessions match "${query.trim()}".` : `No ${agentName} sessions found.`}
+              {query.trim()
+                ? t("history.noMatch", { query: query.trim() })
+                : t("history.empty", { agent: agentName })}
             </div>
           )}
           {rows.map((s, idx) => {
             const isOpen = openPanes.has(`${agentId}|${s.sessionId}`);
             const isLive = !isOpen && Date.now() - s.mtimeMs < ACTIVE_WINDOW_MS;
             const meta = [
-              relativeTime(s.mtimeMs),
-              s.totalTokens !== null ? `${formatTokens(s.totalTokens)} tokens` : null,
-              s.contextTokens !== null ? `${formatTokens(s.contextTokens)} ctx` : null,
+              relativeTime(s.mtimeMs, t),
+              s.totalTokens !== null ? t("history.meta.tokens", { n: formatTokens(s.totalTokens) }) : null,
+              s.contextTokens !== null ? t("history.meta.ctx", { n: formatTokens(s.contextTokens) }) : null,
               s.cwd ? tildify(s.cwd) : null,
             ].filter(Boolean);
             return (
@@ -234,17 +246,17 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
                 onClick={() => resume(s)}
               >
                 <span className="search-row-main">
-                  <span className="search-row-label">{s.preview || "(empty session)"}</span>
+                  <span className="search-row-label">{s.preview || t("history.emptySession")}</span>
                   <span className="search-row-breadcrumb">{meta.join(" · ")}</span>
                 </span>
                 {isOpen && (
-                  <span className="history-badge open" title="Already open — click to jump to its pane">
-                    open
+                  <span className="history-badge open" title={t("history.badge.openTitle")}>
+                    {t("history.badge.open")}
                   </span>
                 )}
                 {isLive && (
-                  <span className="history-badge live" title="Recently active — resuming forks a new conversation">
-                    active
+                  <span className="history-badge live" title={t("history.badge.activeTitle")}>
+                    {t("history.badge.active")}
                   </span>
                 )}
               </button>
