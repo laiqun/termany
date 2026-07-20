@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentHistory } from "./components/AgentHistory";
 import { FindBar } from "./components/FindBar";
+import { GitDiff } from "./components/GitDiff";
 import { AgentUsage } from "./components/AgentUsage";
 import { SystemMonitor } from "./components/SystemMonitor";
 import { HTabBar } from "./components/HTabBar";
@@ -82,6 +83,7 @@ export function App() {
   const [claudeHistoryOpen, setClaudeHistoryOpen] = useState(false);
   const [agentUsageOpen, setAgentUsageOpen] = useState(false);
   const [systemMonitorOpen, setSystemMonitorOpen] = useState(false);
+  const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
   const focusedPane = htab?.focused;
@@ -97,7 +99,12 @@ export function App() {
   // blanks the pane(s) it actually overlaps (see SideRail.tsx).
   useEffect(() => {
     const suppressed =
-      settingsOpen || searchOpen || claudeHistoryOpen || agentUsageOpen || systemMonitorOpen;
+      settingsOpen ||
+      searchOpen ||
+      claudeHistoryOpen ||
+      agentUsageOpen ||
+      systemMonitorOpen ||
+      gitDiffOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -108,7 +115,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, systemMonitorOpen]);
+  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, systemMonitorOpen, gitDiffOpen]);
 
   // What every bindable action DOES. The catalog itself (ids, labels, default
   // chords) lives in keybindings.ts; this is the other half. Two things drive
@@ -162,6 +169,7 @@ export function App() {
       toggleSidebar: (s) => s.toggleSidebar(),
       toggleRail: (s) => s.toggleRail(),
       openSettings,
+      showGitDiff: () => setGitDiffOpen(true),
       search: () => setSearchOpen((o) => !o),
       find: () => setFindOpen(true),
       findNext: (s) => {
@@ -321,6 +329,7 @@ export function App() {
           onOpenClaudeHistory={() => setClaudeHistoryOpen(true)}
           onOpenAgentUsage={() => setAgentUsageOpen(true)}
           onOpenSystemMonitor={() => setSystemMonitorOpen(true)}
+          onOpenGitDiff={() => setGitDiffOpen(true)}
         />
       )}
       {settingsOpen && (
@@ -338,6 +347,7 @@ export function App() {
       {claudeHistoryOpen && <AgentHistory onClose={() => setClaudeHistoryOpen(false)} />}
       {agentUsageOpen && <AgentUsage onClose={() => setAgentUsageOpen(false)} />}
       {systemMonitorOpen && <SystemMonitor onClose={() => setSystemMonitorOpen(false)} />}
+      {gitDiffOpen && <GitDiff session={focusedPane} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>
   );

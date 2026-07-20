@@ -3808,3 +3808,182 @@ html.tauri #root {
     transform: rotate(360deg);
   }
 }
+
+/* Git diff viewer (SideRail branch button) — reuses the usage-modal shell:
+   file list on the left, unified diff on the right. Add/delete colours are
+   mixed from the theme's own foreground/background rather than hard-coded, so
+   every theme (including generated ones) gets a diff that matches it. */
+.gitdiff-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.gitdiff-root {
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  /* Ellipsize the START — the tail of a path is what identifies it. `plaintext`
+     is load-bearing: rtl alone lets bidi reorder the neutral leading "/" to the
+     end ("/Users/x" renders as "Users/x/"); it makes each run take its own
+     natural direction while the box still truncates from the left. */
+  direction: rtl;
+  unicode-bidi: plaintext;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 46ch;
+}
+.gitdiff-refresh {
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.gitdiff-refresh:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.gitdiff-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) 1fr;
+}
+.gitdiff-files {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 6px 12px;
+  border-right: 1px solid var(--border);
+}
+.gitdiff-group + .gitdiff-group {
+  margin-top: 10px;
+}
+.gitdiff-group-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+.gitdiff-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.gitdiff-file:hover {
+  background: var(--bg-3);
+}
+.gitdiff-file.active {
+  background: var(--bg-3);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.gitdiff-status {
+  flex-shrink: 0;
+  width: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--fg-dim);
+}
+.gitdiff-status.s-A,
+.gitdiff-status.s-\? {
+  color: #6cc17f;
+}
+.gitdiff-status.s-D {
+  color: #e0806a;
+}
+.gitdiff-status.s-M,
+.gitdiff-status.s-R {
+  color: var(--accent);
+}
+/* The directory prefix is context, the basename is the answer — so the prefix
+   is what gives way when the row is too narrow, and the basename always stays
+   whole. (A single rtl-ellipsized string would do the same job but reorders
+   leading dots, turning ".gitignore" into "gitignore.".) */
+.gitdiff-path {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+.gitdiff-path em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: normal;
+  color: var(--fg-dim);
+}
+.gitdiff-path b {
+  flex-shrink: 0;
+  font-weight: inherit;
+}
+.gitdiff-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.gitdiff-code {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 0;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 4;
+}
+.gitdiff-line {
+  padding: 0 14px;
+  white-space: pre;
+  min-width: max-content;
+}
+.gitdiff-line.add {
+  background: color-mix(in srgb, #6cc17f 16%, transparent);
+  color: color-mix(in srgb, #6cc17f 60%, var(--fg));
+}
+.gitdiff-line.del {
+  background: color-mix(in srgb, #e0806a 16%, transparent);
+  color: color-mix(in srgb, #e0806a 60%, var(--fg));
+}
+.gitdiff-line.hunk {
+  margin: 6px 0 2px;
+  background: var(--bg-3);
+  color: var(--fg-dim);
+}
+.gitdiff-line.meta {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+.gitdiff-truncated {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+@media (max-width: 700px) {
+  .gitdiff-body {
+    grid-template-columns: minmax(120px, 160px) 1fr;
+  }
+  .gitdiff-root {
+    display: none;
+  }
+}

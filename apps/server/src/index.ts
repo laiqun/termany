@@ -27,6 +27,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
+import { gitDiff, gitStatus } from "./git.js";
 import { testProvider } from "./providerTest.js";
 import { generateTheme } from "./theme.js";
 
@@ -871,6 +872,39 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Working-tree status of the repo containing the focused pane's cwd. Returns
+  // { repo: false } rather than an error when that directory isn't in a repo —
+  // the viewer renders that as an empty state, not a failure.
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/status") {
+    (async () => {
+      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
+      json(200, await gitStatus(cwd));
+    })().catch(fail);
+    return;
+  }
+
+  // Unified diff for one file. `staged` picks the index-vs-HEAD side, and
+  // `untracked` means the file has no git history at all (synthesized as an
+  // all-additions hunk).
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/diff") {
+    (async () => {
+      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
+      const filePath = reqUrl.searchParams.get("path") ?? "";
+      if (!filePath) return json(400, { error: "path is required" });
+      json(
+        200,
+        await gitDiff({
+          cwd,
+          path: filePath,
+          oldPath: reqUrl.searchParams.get("oldPath") ?? undefined,
+          staged: reqUrl.searchParams.get("staged") === "1",
+          untracked: reqUrl.searchParams.get("untracked") === "1",
+        })
+      );
+    })().catch(fail);
+    return;
+  }
+
   // AI theme generation — uses the configured default model.
   if (req.method === "POST" && req.url === "/api/theme") {
     readJson(req)
@@ -968,6 +1002,20 @@ async function dirIfValid(dir: string | undefined): Promise<string | undefined> 
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The directory a pane is "in" right now: its shell's live cwd, else the last
+ * one persisted for it by the sweep, else home. Anchors the endpoints that act
+ * on whatever the focused terminal is currently looking at.
+ */
+async function sessionCwd(sessionId: string): Promise<string> {
+  const pty = ptySessions.get(sessionId)?.pty;
+  return (
+    (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
+    (await dirIfValid(getSessionCwd(sessionId) ?? undefined)) ??
+    os.homedir()
+  );
 }
 
 /**
