@@ -35,10 +35,12 @@ function edgeFor(rect: DOMRect, x: number, y: number): DropEdge {
 function PaneHeader({
   leaf,
   solo,
+  zen,
   onPointerDown,
 }: {
   leaf: Leaf;
   solo: boolean;
+  zen: boolean;
   onPointerDown: (e: React.PointerEvent) => void;
 }) {
   const renamePane = useStore((s) => s.renamePane);
@@ -111,9 +113,17 @@ function PaneHeader({
         >
           {solo ? <RestoreIcon /> : <MaximizeIcon />}
         </button>
-        <button className="pane-btn" title={withShortcut("Close pane", "closePane")} onClick={() => closePane(leaf.id)}>
-          <CloseIcon />
-        </button>
+        {/* Hidden in zen mode: sitting right next to the restore button, an X
+            reads as "exit zoom" and would silently close the pane instead. */}
+        {!zen && (
+          <button
+            className="pane-btn"
+            title={withShortcut("Close pane", "closePane")}
+            onClick={() => closePane(leaf.id)}
+          >
+            <CloseIcon />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -124,12 +134,15 @@ function PaneSlot({
   leaf,
   showFocus,
   solo,
+  zen = false,
   dropTarget,
   onPaneDragStart,
 }: {
   leaf: Leaf;
   showFocus: boolean;
   solo: boolean;
+  /** Rendered as the floating pane of the zen overlay (hides the close button). */
+  zen?: boolean;
   dropTarget: PaneDropTarget;
   onPaneDragStart: (id: string, e: React.PointerEvent) => void;
 }) {
@@ -147,7 +160,12 @@ function PaneSlot({
       className={`pane-slot ${showFocus && focused ? "focused" : ""}`}
       onMouseDown={() => setFocusedPane(leaf.id)}
     >
-      <PaneHeader leaf={leaf} solo={solo} onPointerDown={(e) => onPaneDragStart(leaf.id, e)} />
+      <PaneHeader
+        leaf={leaf}
+        solo={solo}
+        zen={zen}
+        onPointerDown={(e) => onPaneDragStart(leaf.id, e)}
+      />
       <div className="pane-body">
         {leaf.view === "files" ? (
           <FileTree
@@ -340,6 +358,7 @@ function ZenOverlay({
           leaf={leaf}
           showFocus={false}
           solo
+          zen
           dropTarget={dropTarget}
           onPaneDragStart={onPaneDragStart}
         />
