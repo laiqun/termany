@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { ChevronIcon, GitBranchIcon, RefreshIcon } from "./icons";
@@ -105,6 +105,42 @@ export function parseDiff(diff: string): DiffLine[] {
 
 const rowKey = (r: GitRow) => `${r.section}:${r.path}`;
 
+interface CachedView {
+  base: string;
+  collapsed: Record<string, boolean>;
+  diffs: Record<string, DiffPayload>;
+  overview: Overview | null | undefined;
+  scrollTop: number;
+}
+
+/**
+ * View state lives outside React, keyed by pane, because the pane's React tree
+ * position is not stable: zen mode portals it to <body>, and dragging it to
+ * another tab re-parents it. Both unmount and remount this component, which
+ * would otherwise throw away the compare selection, the collapse toggles, the
+ * fetched diffs and the scroll offset every time. Terminal panes survive the
+ * same churn the same way — see attachSession in terminal/manager.
+ */
+const viewCache = new Map<string, CachedView>();
+/** Bounded so closed panes can't retain their diffs for the session's lifetime. */
+const MAX_CACHED_VIEWS = 8;
+
+function remember(viewId: string, patch: Partial<CachedView>) {
+  const prev = viewCache.get(viewId);
+  if (!prev && viewCache.size >= MAX_CACHED_VIEWS) {
+    viewCache.delete(viewCache.keys().next().value as string);
+  }
+  viewCache.set(viewId, {
+    base: WORKING_TREE,
+    collapsed: {},
+    diffs: {},
+    overview: undefined,
+    scrollTop: 0,
+    ...prev,
+    ...patch,
+  });
+}
+
 /**
  * One file's card. The diff is handed down rather than fetched here: the
  * parent asks for every expanded file in a single request, so a refresh
@@ -129,7 +165,7 @@ function FileCard({
   const name = row.path.split("/").pop();
 
   return (
-    <div className="gd-card">
+    <div className={`gd-card ${expanded ? "open" : ""}`}>
       <button className="gd-card-head" onClick={onToggle} aria-expanded={expanded}>
         <span className={`gd-chevron ${expanded ? "open" : ""}`}>
           <ChevronIcon dir="right" />
@@ -187,12 +223,23 @@ function FileCard({
  * untracked, the default) and "what this branch changes vs <branch>", measured
  * from the merge base — see /api/git/overview.
  */
-export function GitDiffView({ session, variant }: { session: string; variant: "pane" | "modal" }) {
+export function GitDiffView({
+  session,
+  variant,
+  viewId,
+}: {
+  session: string;
+  variant: "pane" | "modal";
+  /** Stable identity for the cached view state — the leaf id for a pane. */
+  viewId: string;
+}) {
   const { t } = useI18n();
-  const [overview, setOverview] = useState<Overview | null | undefined>(undefined);
-  const [base, setBase] = useState(WORKING_TREE);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [diffs, setDiffs] = useState<Record<string, DiffPayload>>({});
+  const cached = viewCache.get(viewId);
+  const [overview, setOverview] = useState<Overview | null | undefined>(cached?.overview);
+  const [base, setBase] = useState(cached?.base ?? WORKING_TREE);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(cached?.collapsed ?? {});
+  const [diffs, setDiffs] = useState<Record<string, DiffPayload>>(cached?.diffs ?? {});
+  const filesRef = useRef<HTMLDivElement>(null);
   // Bumped on every reload so the diff bodies refetch even when the file list
   // came back identical — the whole point of a refresh is that the CONTENTS
   // moved, which nothing in the row identity would reflect.
@@ -221,6 +268,18 @@ export function GitDiffView({ session, variant }: { session: string; variant: "p
     window.addEventListener("focus", load);
     return () => window.removeEventListener("focus", load);
   }, [load]);
+
+  useEffect(() => {
+    remember(viewId, { overview, base, collapsed, diffs });
+  }, [viewId, overview, base, collapsed, diffs]);
+
+  // Restore before paint so a remount (zen, drag to another tab) doesn't flash
+  // at the top of the file before jumping back.
+  useLayoutEffect(() => {
+    const el = filesRef.current;
+    const top = viewCache.get(viewId)?.scrollTop ?? 0;
+    if (el && top) el.scrollTop = top;
+  }, [viewId, overview]);
 
   const rows = overview && overview.repo ? overview.rows : [];
 
@@ -352,7 +411,11 @@ export function GitDiffView({ session, variant }: { session: string; variant: "p
       )}
 
       {overview?.repo === true && rows.length > 0 && (
-        <div className="gd-files">
+        <div
+          className="gd-files"
+          ref={filesRef}
+          onScroll={(e) => remember(viewId, { scrollTop: e.currentTarget.scrollTop })}
+        >
           {groups.map((group) => (
             <div key={group.section} className="gd-group">
               <div className="gd-group-head">

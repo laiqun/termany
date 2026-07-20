@@ -191,7 +191,7 @@ function PaneSlot({
             explicitSelected={leaf.filesSelected}
           />
         ) : leaf.view === "git" ? (
-          <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" />
+          <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
         ) : leaf.view === "web" ? (
           <WebBrowserPane id={leaf.id} />
         ) : (

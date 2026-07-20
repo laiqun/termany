@@ -3901,7 +3901,13 @@ html.tauri #root {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px 12px 20px;
+  /* No padding-top: it shifts where a sticky top:0 comes to rest, and the gap
+     it opens above a pinned header lets the previous file scroll through it.
+     The breathing room goes on the first group instead. */
+  padding: 0 12px 20px;
+}
+.gd-group:first-child {
+  padding-top: 10px;
 }
 .gd-group + .gd-group {
   margin-top: 14px;
@@ -3918,23 +3924,42 @@ html.tauri #root {
 .gd-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  /* Deliberately NOT overflow:hidden. It would clip the header to the card and
+     kill the sticky below — an overflow ancestor becomes the scroll container
+     sticky resolves against. The corners are rounded on the children instead. */
 }
 .gd-card + .gd-card {
   margin-top: 8px;
 }
+/* Pinned to the top of the file list while its own card is in view, so the
+   collapse toggle stays reachable partway down a long file. */
 .gd-card-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
   padding: 7px 10px;
   border: none;
+  border-radius: calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0 0;
   background: var(--bg-2);
   color: var(--fg);
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
+}
+/* Collapsed, the header IS the card, so it takes the full rounding. */
+.gd-card:not(.open) .gd-card-head {
+  border-radius: calc(var(--radius-md) - 1px);
+}
+/* Pinned, the header sits ON TOP of the diff rather than beside it, so it
+   needs its own bottom edge and a slight lift — without them the file name
+   reads as just another line of code. */
+.gd-card.open .gd-card-head {
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 .gd-card-head:hover {
   background: var(--bg-3);
@@ -4003,7 +4028,7 @@ html.tauri #root {
   white-space: nowrap;
 }
 .gd-card-body {
-  border-top: 1px solid var(--border);
+  border-radius: 0 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px);
   overflow-x: auto;
 }
 .gd-note {

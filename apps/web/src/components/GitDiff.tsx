@@ -18,7 +18,7 @@ export function GitDiff({ session, onClose }: { session?: string; onClose: () =>
   return (
     <div className="search-backdrop" onClick={onClose}>
       <div className="usage-modal" onClick={(e) => e.stopPropagation()}>
-        <GitDiffView session={session ?? ""} variant="modal" />
+        <GitDiffView session={session ?? ""} variant="modal" viewId="modal" />
       </div>
     </div>
   );
