@@ -1,5 +1,6 @@
 import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
@@ -28,6 +29,7 @@ export interface Session {
   el: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
+  search: SearchAddon;
   backend: ITerminalBackend;
   opened: boolean;
   followOutput: boolean;
@@ -622,6 +624,9 @@ function getSession(id: string): Session {
   const fit = new FitAddon();
   term.loadAddon(fit);
 
+  const search = new SearchAddon();
+  term.loadAddon(search);
+
   // xterm swallows every keydown it decides to handle (preventDefault +
   // stopPropagation) before it can bubble up to App.tsx's window-level
   // shortcut listener — so with a terminal focused (the common case, since
@@ -719,6 +724,7 @@ function getSession(id: string): Session {
     el,
     term,
     fit,
+    search,
     backend: initialBackend,
     opened: false,
     followOutput: true,
@@ -1036,6 +1042,58 @@ export function focusSession(id: string) {
  */
 export function clearSession(id: string) {
   sessions.get(id)?.backend.write("\x0c");
+}
+
+/**
+ * Scrollback search (⌘F). Highlights every hit and moves the viewport to one
+ * of them; `dir` picks which way the next match is taken from the current one.
+ * Returns whether anything matched, so the find bar can flag a dead query.
+ */
+const SEARCH_DECORATIONS = {
+  matchOverviewRuler: "#f2c94c",
+  activeMatchColorOverviewRuler: "#f2994a",
+  matchBackground: "#5a4a1f",
+  activeMatchBackground: "#a06a12",
+};
+
+// Remembered so ⌘G / ⌘⇧G can step through the previous query with the find
+// bar closed — the same "find next without reopening find" every editor has.
+let lastQuery = "";
+
+export function findInSession(id: string, term: string, dir: "next" | "prev" = "next"): boolean {
+  const s = sessions.get(id);
+  if (!s) return false;
+  if (!term) {
+    s.search.clearDecorations();
+    return true;
+  }
+  lastQuery = term;
+  const opts = { decorations: SEARCH_DECORATIONS, regex: false, caseSensitive: false };
+  return dir === "next" ? s.search.findNext(term, opts) : s.search.findPrevious(term, opts);
+}
+
+/** Step through the last query again (⌘G / ⌘⇧G). No-op if nothing searched yet. */
+export function repeatFind(id: string, dir: "next" | "prev"): boolean {
+  return lastQuery ? findInSession(id, lastQuery, dir) : false;
+}
+
+/** Drop search highlighting — called when the find bar closes. */
+export function clearSessionSearch(id: string) {
+  sessions.get(id)?.search.clearDecorations();
+}
+
+/**
+ * Subscribe to match counts for the find bar's "3/17" readout. xterm reports
+ * -1 for both while a large buffer is still being scanned.
+ */
+export function onSearchResults(
+  id: string,
+  cb: (r: { index: number; count: number }) => void
+): () => void {
+  const s = sessions.get(id);
+  if (!s) return () => {};
+  const sub = s.search.onDidChangeResults((r) => cb({ index: r.resultIndex, count: r.resultCount }));
+  return () => sub.dispose();
 }
 
 /** Ask the server to start a not-yet-created session in another session's cwd. */

@@ -28,6 +28,13 @@ export interface ActionDef {
   label: string;
   group: ActionGroup;
   default: Chord;
+  /**
+   * Keep this action out of the ⌘P command palette. For the handful that only
+   * make sense as a chord: opening the palette from inside itself, and the nine
+   * switch-to-tab-N entries, which would otherwise crowd out real results.
+   * Still fully bindable and listed in Settings → Keyboard.
+   */
+  hideInPalette?: true;
 }
 
 /**
@@ -41,32 +48,53 @@ export const ACTIONS: ActionDef[] = [
   { id: "splitRight", label: "Split right", group: "Tabs & panes", default: { code: "KeyD", meta: true } },
   { id: "splitDown", label: "Split down", group: "Tabs & panes", default: { code: "KeyD", meta: true, shift: true } },
   { id: "toggleMaximize", label: "Maximize / restore pane", group: "Tabs & panes", default: { code: "KeyM", meta: true } },
+  { id: "retilePanes", label: "Cycle pane layout", group: "Tabs & panes", default: { code: "KeyE", meta: true, shift: true } },
+  // Directional pane focus / resize — the chords iTerm2 and Warp both use.
+  { id: "focusPaneLeft", label: "Focus pane left", group: "Tabs & panes", default: { code: "ArrowLeft", meta: true, alt: true } },
+  { id: "focusPaneRight", label: "Focus pane right", group: "Tabs & panes", default: { code: "ArrowRight", meta: true, alt: true } },
+  { id: "focusPaneUp", label: "Focus pane above", group: "Tabs & panes", default: { code: "ArrowUp", meta: true, alt: true } },
+  { id: "focusPaneDown", label: "Focus pane below", group: "Tabs & panes", default: { code: "ArrowDown", meta: true, alt: true } },
+  { id: "resizePaneLeft", label: "Move divider left", group: "Tabs & panes", default: { code: "ArrowLeft", meta: true, ctrl: true } },
+  { id: "resizePaneRight", label: "Move divider right", group: "Tabs & panes", default: { code: "ArrowRight", meta: true, ctrl: true } },
+  { id: "resizePaneUp", label: "Move divider up", group: "Tabs & panes", default: { code: "ArrowUp", meta: true, ctrl: true } },
+  { id: "resizePaneDown", label: "Move divider down", group: "Tabs & panes", default: { code: "ArrowDown", meta: true, ctrl: true } },
+  { id: "togglePaneView", label: "Toggle terminal / file view", group: "Tabs & panes", default: { code: "KeyE", meta: true } },
   { id: "zoomTerminalIn", label: "Increase terminal text size", group: "Appearance", default: { code: "Equal", meta: true, shift: true } },
   { id: "zoomTerminalOut", label: "Decrease terminal text size", group: "Appearance", default: { code: "Minus", meta: true } },
   { id: "resetTerminalZoom", label: "Reset terminal text size", group: "Appearance", default: { code: "Digit0", meta: true } },
   { id: "clearScreen", label: "Clear terminal", group: "Tabs & panes", default: { code: "KeyK", meta: true } },
+  { id: "clearAllPanes", label: "Clear every terminal in tab", group: "Tabs & panes", default: { code: "KeyK", meta: true, shift: true } },
   { id: "nextTab", label: "Next tab", group: "Tabs & panes", default: { code: "BracketRight", meta: true, shift: true } },
   { id: "prevTab", label: "Previous tab", group: "Tabs & panes", default: { code: "BracketLeft", meta: true, shift: true } },
-  { id: "switchTab1", label: "Switch to tab 1", group: "Tabs & panes", default: { code: "Digit1", meta: true } },
-  { id: "switchTab2", label: "Switch to tab 2", group: "Tabs & panes", default: { code: "Digit2", meta: true } },
-  { id: "switchTab3", label: "Switch to tab 3", group: "Tabs & panes", default: { code: "Digit3", meta: true } },
-  { id: "switchTab4", label: "Switch to tab 4", group: "Tabs & panes", default: { code: "Digit4", meta: true } },
-  { id: "switchTab5", label: "Switch to tab 5", group: "Tabs & panes", default: { code: "Digit5", meta: true } },
-  { id: "switchTab6", label: "Switch to tab 6", group: "Tabs & panes", default: { code: "Digit6", meta: true } },
-  { id: "switchTab7", label: "Switch to tab 7", group: "Tabs & panes", default: { code: "Digit7", meta: true } },
-  { id: "switchTab8", label: "Switch to tab 8", group: "Tabs & panes", default: { code: "Digit8", meta: true } },
-  { id: "switchTab9", label: "Switch to tab 9", group: "Tabs & panes", default: { code: "Digit9", meta: true } },
+  { id: "switchTab1", label: "Switch to tab 1", group: "Tabs & panes", default: { code: "Digit1", meta: true }, hideInPalette: true },
+  { id: "switchTab2", label: "Switch to tab 2", group: "Tabs & panes", default: { code: "Digit2", meta: true }, hideInPalette: true },
+  { id: "switchTab3", label: "Switch to tab 3", group: "Tabs & panes", default: { code: "Digit3", meta: true }, hideInPalette: true },
+  { id: "switchTab4", label: "Switch to tab 4", group: "Tabs & panes", default: { code: "Digit4", meta: true }, hideInPalette: true },
+  { id: "switchTab5", label: "Switch to tab 5", group: "Tabs & panes", default: { code: "Digit5", meta: true }, hideInPalette: true },
+  { id: "switchTab6", label: "Switch to tab 6", group: "Tabs & panes", default: { code: "Digit6", meta: true }, hideInPalette: true },
+  { id: "switchTab7", label: "Switch to tab 7", group: "Tabs & panes", default: { code: "Digit7", meta: true }, hideInPalette: true },
+  { id: "switchTab8", label: "Switch to tab 8", group: "Tabs & panes", default: { code: "Digit8", meta: true }, hideInPalette: true },
+  { id: "switchTab9", label: "Switch to tab 9", group: "Tabs & panes", default: { code: "Digit9", meta: true }, hideInPalette: true },
   { id: "nextPane", label: "Next pane", group: "Tabs & panes", default: { code: "BracketRight", meta: true } },
   { id: "prevPane", label: "Previous pane", group: "Tabs & panes", default: { code: "BracketLeft", meta: true } },
+  { id: "scrollTop", label: "Scroll to top", group: "Navigation", default: { code: "Home", meta: true } },
+  { id: "scrollBottom", label: "Scroll to bottom", group: "Navigation", default: { code: "End", meta: true } },
   { id: "newPage", label: "New page", group: "Navigation", default: { code: "KeyN", meta: true } },
   { id: "newChildPage", label: "New child page", group: "Navigation", default: { code: "Enter", meta: true } },
   { id: "newWorkspace", label: "New workspace", group: "Navigation", default: { code: "KeyN", meta: true, shift: true } },
+  { id: "nextWorkspace", label: "Next workspace", group: "Navigation", default: { code: "BracketRight", meta: true, ctrl: true } },
+  { id: "prevWorkspace", label: "Previous workspace", group: "Navigation", default: { code: "BracketLeft", meta: true, ctrl: true } },
   { id: "previousTheme", label: "Previous theme", group: "Appearance", default: { code: "Comma", meta: true, alt: true } },
   { id: "nextTheme", label: "Next theme", group: "Appearance", default: { code: "Period", meta: true, alt: true } },
   { id: "toggleSidebar", label: "Toggle sidebar", group: "General", default: { code: "KeyB", meta: true } },
-  { id: "toggleRail", label: "Toggle quick-action panel", group: "General", default: { code: "KeyJ", meta: true, shift: true } },
+  // Mirrors ⌘B for the left sidebar, and matches iTerm2, whose right-hand
+  // Toolbelt is also ⌘⇧B.
+  { id: "toggleRail", label: "Toggle quick-action panel", group: "General", default: { code: "KeyB", meta: true, shift: true } },
   { id: "openSettings", label: "Open settings", group: "General", default: { code: "Comma", meta: true } },
-  { id: "search", label: "Search pages, tabs & panels", group: "General", default: { code: "KeyP", meta: true } },
+  { id: "search", label: "Search pages, tabs & panels", group: "General", default: { code: "KeyP", meta: true }, hideInPalette: true },
+  { id: "find", label: "Find in terminal", group: "General", default: { code: "KeyF", meta: true } },
+  { id: "findNext", label: "Find next", group: "General", default: { code: "KeyG", meta: true } },
+  { id: "findPrev", label: "Find previous", group: "General", default: { code: "KeyG", meta: true, shift: true } },
 ];
 
 /** Codes that are modifiers themselves — never a valid chord on their own. */
