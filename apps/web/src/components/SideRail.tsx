@@ -11,6 +11,7 @@ import {
   ChartIcon,
   FilesIcon,
   GearIcon,
+  GitBranchIcon,
   HistoryIcon,
   TerminalIcon,
   WebIcon,
@@ -22,6 +23,7 @@ const AGENT_MENU_OCCLUDER_ID = "side-rail-agent-menu";
 const RAIL_ITEMS: Array<{ view: PaneView; label: string; icon: () => JSX.Element }> = [
   { view: "terminal", label: "terminal", icon: TerminalIcon },
   { view: "files", label: "files", icon: FilesIcon },
+  { view: "git", label: "git diff", icon: GitBranchIcon },
   { view: "web", label: "web", icon: WebIcon },
 ];
 

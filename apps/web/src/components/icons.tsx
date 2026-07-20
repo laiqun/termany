@@ -17,6 +17,7 @@ import {
   Folder,
   FolderOpen,
   FolderTree,
+  GitBranch,
   Globe,
   History,
   ExternalLink,
@@ -176,6 +177,11 @@ export function FlaskIcon() {
 /** Spinning loader for in-flight actions. */
 export function SpinnerIcon() {
   return <Loader2 {...base} className="spin" />;
+}
+
+/** Branch glyph — the git diff viewer. */
+export function GitBranchIcon() {
+  return <GitBranch {...base} />;
 }
 
 /** Pulse line — the system CPU/memory monitor. */

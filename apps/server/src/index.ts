@@ -27,6 +27,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
+import { gitDiffs, gitOverview } from "./git.js";
 import { testProvider } from "./providerTest.js";
 import { generateTheme } from "./theme.js";
 
@@ -871,6 +872,43 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Changed files (plus branch list) for the repo containing the focused pane's
+  // cwd. With no `base` this is the working tree split into staged/unstaged/
+  // untracked; with one it is "what this branch changes vs that branch",
+  // measured from their merge base. Returns { repo: false } rather than an
+  // error when the directory isn't in a repo — an empty state, not a failure.
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/overview") {
+    (async () => {
+      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
+      json(200, await gitOverview(cwd, reqUrl.searchParams.get("base") ?? undefined));
+    })().catch(fail);
+    return;
+  }
+
+  // Diffs for a set of files in one request — the viewer asks for everything
+  // it has expanded, so opening a compare costs one round trip instead of one
+  // per file. POST because the path list can outgrow a query string.
+  if (req.method === "POST" && reqUrl.pathname === "/api/git/diffs") {
+    readJson(req)
+      .then(async (body) => {
+        const cwd = await sessionCwd(String(body?.session ?? ""));
+        const files = Array.isArray(body?.files) ? body.files : [];
+        json(200, {
+          diffs: await gitDiffs({
+            cwd,
+            base: body?.base ? String(body.base) : undefined,
+            files: files.map((f: any) => ({
+              path: String(f?.path ?? ""),
+              oldPath: f?.oldPath ? String(f.oldPath) : undefined,
+              section: String(f?.section ?? "unstaged"),
+            })),
+          }),
+        });
+      })
+      .catch(fail);
+    return;
+  }
+
   // AI theme generation — uses the configured default model.
   if (req.method === "POST" && req.url === "/api/theme") {
     readJson(req)
@@ -968,6 +1006,20 @@ async function dirIfValid(dir: string | undefined): Promise<string | undefined> 
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The directory a pane is "in" right now: its shell's live cwd, else the last
+ * one persisted for it by the sweep, else home. Anchors the endpoints that act
+ * on whatever the focused terminal is currently looking at.
+ */
+async function sessionCwd(sessionId: string): Promise<string> {
+  const pty = ptySessions.get(sessionId)?.pty;
+  return (
+    (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
+    (await dirIfValid(getSessionCwd(sessionId) ?? undefined)) ??
+    os.homedir()
+  );
 }
 
 /**

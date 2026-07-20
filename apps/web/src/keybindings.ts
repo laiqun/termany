@@ -91,6 +91,7 @@ export const ACTIONS: ActionDef[] = [
   // Toolbelt is also ⌘⇧B.
   { id: "toggleRail", label: "Toggle quick-action panel", group: "General", default: { code: "KeyB", meta: true, shift: true } },
   { id: "openSettings", label: "Open settings", group: "General", default: { code: "Comma", meta: true } },
+  { id: "showGitDiff", label: "Show git diff", group: "General", default: { code: "KeyG", meta: true, alt: true } },
   { id: "search", label: "Search pages, tabs & panels", group: "General", default: { code: "KeyP", meta: true }, hideInPalette: true },
   { id: "find", label: "Find in terminal", group: "General", default: { code: "KeyF", meta: true } },
   { id: "findNext", label: "Find next", group: "General", default: { code: "KeyG", meta: true } },

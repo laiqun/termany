@@ -7,7 +7,16 @@ import { withShortcut } from "../keybindings";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import { focusSession } from "../terminal/manager";
 import { FileTree } from "./FileTree";
-import { CloseIcon, FilesIcon, MaximizeIcon, RestoreIcon, TerminalIcon, WebIcon } from "./icons";
+import { GitDiffView } from "./GitDiffView";
+import {
+  CloseIcon,
+  FilesIcon,
+  GitBranchIcon,
+  MaximizeIcon,
+  RestoreIcon,
+  TerminalIcon,
+  WebIcon,
+} from "./icons";
 import { TerminalPane } from "./TerminalPane";
 import { WebBrowserPane } from "./WebBrowserPane";
 
@@ -50,6 +59,7 @@ function PaneHeader({
   const [editing, setEditing] = useState(false);
   const showingFiles = leaf.view === "files";
   const showingWeb = leaf.view === "web";
+  const showingGit = leaf.view === "git";
   const nextView = showingFiles ? "terminal" : "files";
   const renameWidth = `${Math.max(8, leaf.title.length + 1)}ch`;
 
@@ -69,7 +79,10 @@ function PaneHeader({
       onDoubleClick={onHeaderDoubleClick}
     >
       <span className="pane-head-icon">
-        {showingFiles ? <FilesIcon /> : showingWeb ? <WebIcon /> : <TerminalIcon />}
+        {showingFiles ? <FilesIcon />
+        : showingGit ? <GitBranchIcon />
+        : showingWeb ? <WebIcon />
+        : <TerminalIcon />}
       </span>
       <span className="pane-head-name">
         {editing ? (
@@ -97,7 +110,10 @@ function PaneHeader({
       </span>
       <span className="pane-head-spacer" />
       <div className="pane-head-actions">
-        {!showingWeb && (
+        {/* The terminal/file-tree toggle only makes sense for a pane that is
+            one of those two. On a web or git pane it would be a one-way trip
+            into a file tree, with no button left to get back. */}
+        {!showingWeb && !showingGit && (
           <button
             className="pane-btn"
             title={showingFiles ? "Show terminal" : "Show file tree"}
@@ -174,6 +190,8 @@ function PaneSlot({
             explicitRoot={leaf.filesRoot}
             explicitSelected={leaf.filesSelected}
           />
+        ) : leaf.view === "git" ? (
+          <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
         ) : leaf.view === "web" ? (
           <WebBrowserPane id={leaf.id} />
         ) : (

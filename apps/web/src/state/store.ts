@@ -28,7 +28,7 @@ import { applyTheme, loadThemeId, THEMES } from "../themes";
  *
  * A leaf's `id` is the terminal session id in the registry.
  */
-export type PaneView = "terminal" | "files" | "web";
+export type PaneView = "terminal" | "files" | "web" | "git";
 
 export type Pane =
   | {
@@ -1138,7 +1138,13 @@ export const useStore = create<State>((set) => ({
             // never mounts for it), so it can't resolve "my own live cwd" the
             // way a terminal pane does — instead it opens rooted at whatever
             // pane was focused when created (see FileTree's initialCwdFrom).
-            const leaf = { ...makeLeaf(title ?? view), view, cwdFrom: view === "files" ? h.focused : undefined };
+            // A files/git leaf gets no PTY of its own, so it can't resolve "my own
+            // live cwd" — it follows the pane that was focused when it was created.
+            const leaf = {
+              ...makeLeaf(title ?? view),
+              view,
+              cwdFrom: view === "files" || view === "git" ? h.focused : undefined,
+            };
             created = leaf.id;
             inheritSessionCwd(leaf.id, h.focused);
             return {
@@ -1416,6 +1422,19 @@ export function activeWorkspace(s: State): Workspace {
 export function activeNode(s: State): TreeNode | undefined {
   const ws = activeWorkspace(s);
   return findNode(ws.roots, ws.activeNode);
+}
+
+/**
+ * The session a repo-scoped panel (the git diff viewer) should follow. Usually
+ * the focused leaf, but a files/git/web leaf has no shell of its own to resolve
+ * a directory from — it follows the pane it was created beside, the same anchor
+ * the file tree uses.
+ */
+export function focusedCwdSession(s: State): string | undefined {
+  const h = activeHtab(s);
+  if (!h) return undefined;
+  const leaf = findLeaf(h.layout, h.focused);
+  return leaf?.cwdFrom ?? h.focused;
 }
 
 export function activeHtab(s: State): HTab | undefined {
