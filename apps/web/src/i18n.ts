@@ -66,6 +66,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     "drag.edge.top": "split top",
     "drag.edge.bottom": "split bottom",
 
+    "pane.zoomedRestore": "Restore split panes",
+
     "kb.title": "KEYBOARD SHORTCUTS",
     "kb.resetAll": "Reset all",
     "kb.reset": "Reset",
@@ -367,6 +369,8 @@ const dictionaries: Record<Language, Record<string, string>> = {
     "drag.edge.right": "拆分到右侧",
     "drag.edge.top": "拆分到上方",
     "drag.edge.bottom": "拆分到下方",
+
+    "pane.zoomedRestore": "还原所有窗格",
 
     "kb.title": "快捷键",
     "kb.resetAll": "全部重置",
