@@ -15,7 +15,7 @@ import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
-import { activeHtab, activeNode, leafIds, useStore } from "./state/store";
+import { activeHtab, activeNode, focusedCwdSession, leafIds, useStore } from "./state/store";
 import {
   adjustTerminalFontSize,
   clearSession,
@@ -87,6 +87,7 @@ export function App() {
   const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
   const focusedPane = htab?.focused;
+  const gitSession = useStore(focusedCwdSession);
 
   // The find bar targets one pane; if focus moves elsewhere, it would be
   // searching a terminal the user is no longer looking at — close it instead.
@@ -329,7 +330,6 @@ export function App() {
           onOpenClaudeHistory={() => setClaudeHistoryOpen(true)}
           onOpenAgentUsage={() => setAgentUsageOpen(true)}
           onOpenSystemMonitor={() => setSystemMonitorOpen(true)}
-          onOpenGitDiff={() => setGitDiffOpen(true)}
         />
       )}
       {settingsOpen && (
@@ -347,7 +347,7 @@ export function App() {
       {claudeHistoryOpen && <AgentHistory onClose={() => setClaudeHistoryOpen(false)} />}
       {agentUsageOpen && <AgentUsage onClose={() => setAgentUsageOpen(false)} />}
       {systemMonitorOpen && <SystemMonitor onClose={() => setSystemMonitorOpen(false)} />}
-      {gitDiffOpen && <GitDiff session={focusedPane} onClose={() => setGitDiffOpen(false)} />}
+      {gitDiffOpen && <GitDiff session={gitSession} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>
   );

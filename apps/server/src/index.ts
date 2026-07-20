@@ -27,7 +27,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { gitDiff, gitStatus } from "./git.js";
+import { gitDiff, gitOverview } from "./git.js";
 import { testProvider } from "./providerTest.js";
 import { generateTheme } from "./theme.js";
 
@@ -872,33 +872,35 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Working-tree status of the repo containing the focused pane's cwd. Returns
-  // { repo: false } rather than an error when that directory isn't in a repo —
-  // the viewer renders that as an empty state, not a failure.
-  if (req.method === "GET" && reqUrl.pathname === "/api/git/status") {
+  // Changed files (plus branch list) for the repo containing the focused pane's
+  // cwd. With no `base` this is the working tree split into staged/unstaged/
+  // untracked; with one it is "what this branch changes vs that branch",
+  // measured from their merge base. Returns { repo: false } rather than an
+  // error when the directory isn't in a repo — an empty state, not a failure.
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/overview") {
     (async () => {
       const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
-      json(200, await gitStatus(cwd));
+      json(200, await gitOverview(cwd, reqUrl.searchParams.get("base") ?? undefined));
     })().catch(fail);
     return;
   }
 
-  // Unified diff for one file. `staged` picks the index-vs-HEAD side, and
-  // `untracked` means the file has no git history at all (synthesized as an
-  // all-additions hunk).
+  // Unified diff for one file, fetched as its card is expanded. `section` says
+  // which side it came from and so which diff to run.
   if (req.method === "GET" && reqUrl.pathname === "/api/git/diff") {
     (async () => {
       const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
       const filePath = reqUrl.searchParams.get("path") ?? "";
       if (!filePath) return json(400, { error: "path is required" });
+      const section = reqUrl.searchParams.get("section") ?? "unstaged";
       json(
         200,
         await gitDiff({
           cwd,
           path: filePath,
           oldPath: reqUrl.searchParams.get("oldPath") ?? undefined,
-          staged: reqUrl.searchParams.get("staged") === "1",
-          untracked: reqUrl.searchParams.get("untracked") === "1",
+          section: section as "staged" | "unstaged" | "untracked" | "changed",
+          base: reqUrl.searchParams.get("base") ?? undefined,
         })
       );
     })().catch(fail);

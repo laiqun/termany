@@ -23,6 +23,7 @@ const AGENT_MENU_OCCLUDER_ID = "side-rail-agent-menu";
 const RAIL_ITEMS: Array<{ view: PaneView; label: string; icon: () => JSX.Element }> = [
   { view: "terminal", label: "terminal", icon: TerminalIcon },
   { view: "files", label: "files", icon: FilesIcon },
+  { view: "git", label: "git diff", icon: GitBranchIcon },
   { view: "web", label: "web", icon: WebIcon },
 ];
 
@@ -43,7 +44,6 @@ export function SideRail({
   onOpenClaudeHistory,
   onOpenAgentUsage,
   onOpenSystemMonitor,
-  onOpenGitDiff,
 }: {
   agentsOpen: boolean;
   onAgentsOpenChange: (open: boolean) => void;
@@ -52,7 +52,6 @@ export function SideRail({
   onOpenClaudeHistory: () => void;
   onOpenAgentUsage: () => void;
   onOpenSystemMonitor: () => void;
-  onOpenGitDiff: () => void;
 }) {
   const addPane = useStore((s) => s.addPane);
   const setPaneView = useStore((s) => s.setPaneView);
@@ -142,13 +141,6 @@ export function SideRail({
           </div>
         )}
       </div>
-      <button
-        className="side-rail-btn"
-        title={withShortcut(t("gitdiff.title"), "showGitDiff")}
-        onClick={onOpenGitDiff}
-      >
-        <GitBranchIcon />
-      </button>
       <button className="side-rail-btn" title="Agent session history" onClick={onOpenClaudeHistory}>
         <HistoryIcon />
       </button>

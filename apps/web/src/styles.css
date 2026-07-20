@@ -3809,34 +3809,73 @@ html.tauri #root {
   }
 }
 
-/* Git diff viewer (SideRail branch button) — reuses the usage-modal shell:
-   file list on the left, unified diff on the right. Add/delete colours are
-   mixed from the theme's own foreground/background rather than hard-coded, so
-   every theme (including generated ones) gets a diff that matches it. */
-.gitdiff-meta {
+
+/* Git diff viewer — a pane view (the SideRail branch button) and the ⌘⌥G
+   modal, sharing one body. Files are listed GitHub-style: an expandable card
+   per file with its unified diff and old/new line gutters inline.
+   Add/delete colours are mixed from the theme's own foreground rather than
+   hard-coded, so every theme (including generated ones) gets a matching diff. */
+.gd-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg);
+}
+.gd-modal,
+.gd-root.gd-modal {
+  background: var(--bg-2);
+}
+.gd-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
 }
-.gitdiff-root {
-  font-size: 11.5px;
-  color: var(--fg-dim);
-  /* Ellipsize the START — the tail of a path is what identifies it. `plaintext`
-     is load-bearing: rtl alone lets bidi reorder the neutral leading "/" to the
-     end ("/Users/x" renders as "Users/x/"); it makes each run take its own
-     natural direction while the box still truncates from the left. */
-  direction: rtl;
-  unicode-bidi: plaintext;
-  text-align: left;
+.gd-branch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 46ch;
 }
-.gitdiff-refresh {
+.gd-branch svg {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.gd-summary {
   display: flex;
   align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.gd-summary em,
+.gd-counts em {
+  font-style: normal;
+  font-weight: 600;
+}
+.gd-summary em.add,
+.gd-counts em.add {
+  color: #4a9e60;
+}
+.gd-summary em.del,
+.gd-counts em.del {
+  color: #c8624a;
+}
+.gd-refresh {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
   padding: 4px;
   border: none;
   border-radius: var(--radius-md);
@@ -3844,56 +3883,72 @@ html.tauri #root {
   color: var(--fg-dim);
   cursor: pointer;
 }
-.gitdiff-refresh:hover {
+.gd-refresh:hover {
   background: var(--bg-3);
   color: var(--fg);
 }
-.gitdiff-body {
+.gd-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+.gd-files {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(180px, 260px) 1fr;
-}
-.gitdiff-files {
-  min-height: 0;
   overflow-y: auto;
-  padding: 8px 6px 12px;
-  border-right: 1px solid var(--border);
+  padding: 10px 12px 20px;
 }
-.gitdiff-group + .gitdiff-group {
-  margin-top: 10px;
+.gd-group + .gd-group {
+  margin-top: 14px;
 }
-.gitdiff-group-head {
+.gd-group-head {
   display: flex;
   justify-content: space-between;
-  padding: 4px 8px;
+  padding: 4px 2px 6px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-dim);
 }
-.gitdiff-file {
+.gd-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.gd-card + .gd-card {
+  margin-top: 8px;
+}
+.gd-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 5px 8px;
+  padding: 7px 10px;
   border: none;
-  border-radius: var(--radius-md);
-  background: transparent;
+  background: var(--bg-2);
   color: var(--fg);
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
 }
-.gitdiff-file:hover {
+.gd-card-head:hover {
   background: var(--bg-3);
 }
-.gitdiff-file.active {
-  background: var(--bg-3);
-  box-shadow: inset 2px 0 0 var(--accent);
+.gd-chevron {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--fg-dim);
+  transition: transform 0.15s ease;
 }
-.gitdiff-status {
+.gd-chevron.open {
+  transform: rotate(90deg);
+}
+.gd-status {
   flex-shrink: 0;
   width: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3902,88 +3957,133 @@ html.tauri #root {
   text-align: center;
   color: var(--fg-dim);
 }
-.gitdiff-status.s-A,
-.gitdiff-status.s-\? {
-  color: #6cc17f;
+.gd-status.s-A,
+.gd-status.s-\? {
+  color: #4a9e60;
 }
-.gitdiff-status.s-D {
-  color: #e0806a;
+.gd-status.s-D {
+  color: #c8624a;
 }
-.gitdiff-status.s-M,
-.gitdiff-status.s-R {
+.gd-status.s-M,
+.gd-status.s-R,
+.gd-status.s-C {
   color: var(--accent);
 }
 /* The directory prefix is context, the basename is the answer — so the prefix
    is what gives way when the row is too narrow, and the basename always stays
    whole. (A single rtl-ellipsized string would do the same job but reorders
    leading dots, turning ".gitignore" into "gitignore.".) */
-.gitdiff-path {
+.gd-path {
   display: flex;
   min-width: 0;
   white-space: nowrap;
 }
-.gitdiff-path em {
+.gd-path em {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   font-style: normal;
   color: var(--fg-dim);
 }
-.gitdiff-path b {
+.gd-path b {
   flex-shrink: 0;
-  font-weight: inherit;
+  font-weight: 600;
 }
-.gitdiff-pane {
+.gd-renamed {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.gd-counts {
   display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
+  gap: 6px;
+  margin-left: auto;
+  padding-left: 8px;
+  font-size: 11px;
+  white-space: nowrap;
 }
-.gitdiff-code {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 10px 0;
-  overflow: auto;
+.gd-card-body {
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+.gd-note {
+  padding: 10px 12px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.gd-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.55;
   tab-size: 4;
-}
-.gitdiff-line {
-  padding: 0 14px;
-  white-space: pre;
   min-width: max-content;
 }
-.gitdiff-line.add {
-  background: color-mix(in srgb, #6cc17f 16%, transparent);
-  color: color-mix(in srgb, #6cc17f 60%, var(--fg));
+.gd-line {
+  display: flex;
 }
-.gitdiff-line.del {
-  background: color-mix(in srgb, #e0806a 16%, transparent);
-  color: color-mix(in srgb, #e0806a 60%, var(--fg));
+/* Gutters stay put while the code scrolls sideways, so a long line never
+   leaves you guessing which line number you are on. */
+.gd-ln {
+  position: sticky;
+  flex-shrink: 0;
+  width: 44px;
+  padding: 0 8px 0 0;
+  text-align: right;
+  color: var(--fg-dim);
+  opacity: 0.65;
+  background: inherit;
+  user-select: none;
 }
-.gitdiff-line.hunk {
-  margin: 6px 0 2px;
+.gd-ln:first-child {
+  left: 0;
+}
+.gd-ln:nth-child(2) {
+  left: 44px;
+  border-right: 1px solid var(--border);
+}
+.gd-text {
+  flex: 1;
+  padding: 0 12px 0 8px;
+  white-space: pre;
+}
+.gd-line.add {
+  background: color-mix(in srgb, #4a9e60 14%, var(--bg));
+}
+.gd-line.del {
+  background: color-mix(in srgb, #c8624a 14%, var(--bg));
+}
+.gd-line.hunk {
   background: var(--bg-3);
   color: var(--fg-dim);
 }
-.gitdiff-line.meta {
+.gd-line.hunk .gd-ln {
+  border-right-color: transparent;
+}
+.gd-line.ctx {
+  background: var(--bg);
+}
+.gd-line.meta {
+  background: var(--bg);
   color: var(--fg-dim);
   font-style: italic;
 }
-.gitdiff-truncated {
-  flex-shrink: 0;
-  padding: 8px 14px;
-  border-top: 1px solid var(--border);
-  font-size: 11.5px;
-  color: var(--fg-dim);
+.gd-modal .gd-line.ctx,
+.gd-modal .gd-line.meta,
+.gd-modal .gd-line.add,
+.gd-modal .gd-line.del {
+  background-color: var(--bg-2);
+}
+.gd-modal .gd-line.add {
+  background: color-mix(in srgb, #4a9e60 14%, var(--bg-2));
+}
+.gd-modal .gd-line.del {
+  background: color-mix(in srgb, #c8624a 14%, var(--bg-2));
 }
 @media (max-width: 700px) {
-  .gitdiff-body {
-    grid-template-columns: minmax(120px, 160px) 1fr;
+  .gd-summary {
+    display: none;
   }
-  .gitdiff-root {
+  .gd-ln:nth-child(2) {
     display: none;
   }
 }
