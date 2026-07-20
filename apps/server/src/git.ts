@@ -319,33 +319,95 @@ async function untrackedDiff(abs: string, relative: string): Promise<GitDiff> {
   return cap(header + body + tail);
 }
 
-export async function gitDiff(opts: {
-  cwd: string;
+/** Files requested together, capped so one pathspec can't grow unbounded. */
+const MAX_DIFF_FILES = 200;
+
+export interface DiffRequest {
   path: string;
   oldPath?: string;
   section: Section;
+}
+
+/** Key a diff by the same identity the client groups rows under. */
+const diffKey = (section: Section, filePath: string) => `${section}:${filePath}`;
+
+/**
+ * Split a multi-file diff into per-file chunks. Only a real header sits at
+ * column 0 — every content line carries a "+", "-", or " " prefix — so the
+ * anchored split can't be fooled by a file whose own text contains the marker.
+ */
+function splitDiff(out: string): string[] {
+  return out
+    .split(/^diff --git /m)
+    .slice(1)
+    .map((chunk) => `diff --git ${chunk}`);
+}
+
+/**
+ * Diffs for many files in one shot: two git invocations per section rather
+ * than one per file. The chunks come back in the same order git lists them in
+ * `--numstat`, which is what pairs each chunk with its path — parsing the path
+ * out of the `diff --git a/x b/x` header instead would be ambiguous for any
+ * name containing a space.
+ */
+export async function gitDiffs(opts: {
+  cwd: string;
   base?: string;
-}): Promise<GitDiff & { repo: boolean }> {
+  files: DiffRequest[];
+}): Promise<Record<string, GitDiff>> {
   const root = await repoRoot(opts.cwd);
-  if (!root) return { repo: false, diff: "" };
-  const abs = insideRoot(root, opts.path);
-  if (!abs) return { repo: true, diff: "" };
+  if (!root) return {};
 
-  if (opts.section === "untracked") {
-    return { repo: true, ...(await untrackedDiff(abs, opts.path)) };
+  const out: Record<string, GitDiff> = {};
+  const bySection = new Map<Section, DiffRequest[]>();
+  for (const f of opts.files.slice(0, MAX_DIFF_FILES)) {
+    if (!insideRoot(root, f.path)) continue;
+    const list = bySection.get(f.section) ?? [];
+    list.push(f);
+    bySection.set(f.section, list);
   }
 
-  const args = ["diff", "--no-color"];
-  if (opts.section === "staged") args.push("--cached");
-  if (opts.section === "changed") {
-    if (!opts.base || !validRef(opts.base)) return { repo: true, diff: "" };
-    args.push(await mergeBase(root, opts.base));
-  }
-  args.push("--", opts.path);
-  // Rename detection pairs the two sides only if both are in the pathspec;
-  // with just the new path git reports the change as a whole new file.
-  if (opts.oldPath && insideRoot(root, opts.oldPath)) args.push(opts.oldPath);
-  const out = await git(args, root);
-  if (isBinaryDiff(out)) return { repo: true, diff: "", binary: true };
-  return { repo: true, ...cap(out) };
+  await Promise.all(
+    [...bySection].map(async ([section, files]) => {
+      if (section === "untracked") {
+        await Promise.all(
+          files.map(async (f) => {
+            const abs = insideRoot(root, f.path);
+            if (abs) out[diffKey(section, f.path)] = await untrackedDiff(abs, f.path);
+          }),
+        );
+        return;
+      }
+
+      const args: string[] = [];
+      if (section === "staged") args.push("--cached");
+      if (section === "changed") {
+        if (!opts.base || !validRef(opts.base)) return;
+        args.push(await mergeBase(root, opts.base));
+      }
+      // Rename detection pairs the two sides only if both are in the pathspec;
+      // with just the new path git reports the change as a whole new file.
+      const paths = files.flatMap((f) =>
+        f.oldPath && insideRoot(root, f.oldPath) ? [f.path, f.oldPath] : [f.path],
+      );
+      const [text, numstat] = await Promise.all([
+        git(["diff", "--no-color", ...args, "--", ...paths], root),
+        git(["diff", "--numstat", "-z", ...args, "--", ...paths], root),
+      ]);
+
+      const order = [...parseNumstat(numstat).keys()];
+      const chunks = splitDiff(text);
+      // A mismatch means the tree moved under us between the two calls; fall
+      // back to reporting nothing rather than pairing diffs to wrong files.
+      if (order.length !== chunks.length) return;
+      order.forEach((filePath, i) => {
+        const chunk = chunks[i];
+        out[diffKey(section, filePath)] = isBinaryDiff(chunk)
+          ? { diff: "", binary: true }
+          : cap(chunk);
+      });
+    }),
+  );
+
+  return out;
 }

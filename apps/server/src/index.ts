@@ -27,7 +27,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { gitDiff, gitOverview } from "./git.js";
+import { gitDiffs, gitOverview } from "./git.js";
 import { testProvider } from "./providerTest.js";
 import { generateTheme } from "./theme.js";
 
@@ -885,25 +885,27 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Unified diff for one file, fetched as its card is expanded. `section` says
-  // which side it came from and so which diff to run.
-  if (req.method === "GET" && reqUrl.pathname === "/api/git/diff") {
-    (async () => {
-      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
-      const filePath = reqUrl.searchParams.get("path") ?? "";
-      if (!filePath) return json(400, { error: "path is required" });
-      const section = reqUrl.searchParams.get("section") ?? "unstaged";
-      json(
-        200,
-        await gitDiff({
-          cwd,
-          path: filePath,
-          oldPath: reqUrl.searchParams.get("oldPath") ?? undefined,
-          section: section as "staged" | "unstaged" | "untracked" | "changed",
-          base: reqUrl.searchParams.get("base") ?? undefined,
-        })
-      );
-    })().catch(fail);
+  // Diffs for a set of files in one request — the viewer asks for everything
+  // it has expanded, so opening a compare costs one round trip instead of one
+  // per file. POST because the path list can outgrow a query string.
+  if (req.method === "POST" && reqUrl.pathname === "/api/git/diffs") {
+    readJson(req)
+      .then(async (body) => {
+        const cwd = await sessionCwd(String(body?.session ?? ""));
+        const files = Array.isArray(body?.files) ? body.files : [];
+        json(200, {
+          diffs: await gitDiffs({
+            cwd,
+            base: body?.base ? String(body.base) : undefined,
+            files: files.map((f: any) => ({
+              path: String(f?.path ?? ""),
+              oldPath: f?.oldPath ? String(f.oldPath) : undefined,
+              section: String(f?.section ?? "unstaged"),
+            })),
+          }),
+        });
+      })
+      .catch(fail);
     return;
   }
 

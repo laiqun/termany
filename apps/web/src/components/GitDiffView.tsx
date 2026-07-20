@@ -39,11 +39,13 @@ interface DiffPayload {
 const WORKING_TREE = "";
 
 /**
- * Cards past this many start collapsed. Each expanded card fetches its own
- * diff, and each fetch spawns a git process — auto-expanding a 300-file
- * compare would stampede the server for output nobody has scrolled to yet.
+ * How much diff to open on arrival. Budgeting by LINES rather than by file
+ * count is what keeps a compare of fifteen 4000-line files from laying down a
+ * quarter-million DOM nodes before you have scrolled anywhere. The file cap
+ * backs it up for untracked entries, whose size isn't known until fetched.
  */
-const AUTO_EXPAND_LIMIT = 15;
+const AUTO_EXPAND_LINES = 3000;
+const AUTO_EXPAND_FILES = 50;
 
 type LineKind = "add" | "del" | "meta" | "hunk" | "ctx";
 
@@ -103,47 +105,25 @@ export function parseDiff(diff: string): DiffLine[] {
 
 const rowKey = (r: GitRow) => `${r.section}:${r.path}`;
 
-/** One file's card: header with counts, body with the diff, fetched on expand. */
+/**
+ * One file's card. The diff is handed down rather than fetched here: the
+ * parent asks for every expanded file in a single request, so a refresh
+ * refreshes the bodies too (a per-card fetch keyed on the path would keep
+ * showing the old diff after the file changed underneath it).
+ */
 function FileCard({
   row,
-  session,
-  base,
+  diff,
   expanded,
   onToggle,
 }: {
   row: GitRow;
-  session: string;
-  base: string;
+  diff: DiffPayload | undefined;
   expanded: boolean;
   onToggle: () => void;
 }) {
   const { t } = useI18n();
-  const [diff, setDiff] = useState<DiffPayload | null | undefined>(undefined);
-
   const skip = row.binary || row.isDir;
-
-  useEffect(() => {
-    if (!expanded || skip) return;
-    let cancelled = false;
-    setDiff(undefined);
-    const params = new URLSearchParams({ session, path: row.path, section: row.section });
-    if (row.oldPath) params.set("oldPath", row.oldPath);
-    if (base) params.set("base", base);
-    (async () => {
-      try {
-        const r = await fetch(apiPath(`/api/git/diff?${params}`));
-        if (!r.ok) throw new Error(String(r.status));
-        const data = (await r.json()) as DiffPayload;
-        if (!cancelled) setDiff(data);
-      } catch {
-        if (!cancelled) setDiff(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [expanded, skip, session, base, row.path, row.section, row.oldPath]);
-
   const lines = useMemo(() => (diff?.diff ? parseDiff(diff.diff) : []), [diff]);
   const dir = row.path.replace(/[^/]+$/, "");
   const name = row.path.split("/").pop();
@@ -172,8 +152,7 @@ function FileCard({
         <div className="gd-card-body">
           {row.isDir && <div className="gd-note">{t("gitdiff.directory")}</div>}
           {row.binary && <div className="gd-note">{t("gitdiff.binary")}</div>}
-          {!skip && diff === undefined && <div className="gd-note">{t("gitdiff.loading")}</div>}
-          {!skip && diff === null && <div className="gd-note">{t("gitdiff.error")}</div>}
+          {!skip && !diff && <div className="gd-note">{t("gitdiff.loading")}</div>}
           {!skip && diff?.binary && <div className="gd-note">{t("gitdiff.binary")}</div>}
           {!skip && diff && !diff.binary && lines.length === 0 && (
             <div className="gd-note">{t("gitdiff.empty")}</div>
@@ -213,6 +192,11 @@ export function GitDiffView({ session, variant }: { session: string; variant: "p
   const [overview, setOverview] = useState<Overview | null | undefined>(undefined);
   const [base, setBase] = useState(WORKING_TREE);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [diffs, setDiffs] = useState<Record<string, DiffPayload>>({});
+  // Bumped on every reload so the diff bodies refetch even when the file list
+  // came back identical — the whole point of a refresh is that the CONTENTS
+  // moved, which nothing in the row identity would reflect.
+  const [revision, setRevision] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -221,6 +205,7 @@ export function GitDiffView({ session, variant }: { session: string; variant: "p
       const r = await fetch(apiPath(`/api/git/overview?${params}`));
       if (!r.ok) throw new Error(String(r.status));
       setOverview((await r.json()) as Overview);
+      setRevision((n) => n + 1);
     } catch {
       setOverview(null);
     }
@@ -239,15 +224,71 @@ export function GitDiffView({ session, variant }: { session: string; variant: "p
 
   const rows = overview && overview.repo ? overview.rows : [];
 
-  // Collapse state is keyed by file, so it survives a refresh; only the
-  // position-based default changes when the row list does.
+  // Which files open by default, spending a line budget down the list. Derived
+  // in one pass rather than counted during render, so nothing depends on the
+  // order React happens to render children in.
+  const autoExpanded = useMemo(() => {
+    const set = new Set<string>();
+    let budget = AUTO_EXPAND_LINES;
+    for (const row of rows) {
+      const cost = row.additions + row.deletions;
+      // Always open the first file, however big — landing on a wall of
+      // collapsed headers with nothing shown reads as a broken panel.
+      if (set.size > 0 && (budget < cost || set.size >= AUTO_EXPAND_FILES)) break;
+      set.add(rowKey(row));
+      budget -= cost;
+    }
+    return set;
+  }, [rows]);
+
+  // Collapse state is keyed by file so a manual toggle survives a refresh.
   const isExpanded = useCallback(
-    (row: GitRow, index: number) => {
+    (row: GitRow) => {
       const key = rowKey(row);
-      return key in collapsed ? !collapsed[key] : index < AUTO_EXPAND_LIMIT;
+      return key in collapsed ? !collapsed[key] : autoExpanded.has(key);
     },
-    [collapsed],
+    [collapsed, autoExpanded],
   );
+
+  const expandedRows = useMemo(() => rows.filter(isExpanded), [rows, isExpanded]);
+  // Identity of the request, so expanding one more card refetches once rather
+  // than on every render.
+  const expandedKeys = expandedRows.map(rowKey).join("\n");
+
+  // One request for every open file. Server-side this is two git invocations
+  // per section regardless of file count, instead of one process per file.
+  useEffect(() => {
+    if (!expandedRows.length) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(apiPath("/api/git/diffs"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session,
+            base: base || undefined,
+            files: expandedRows.map((row) => ({
+              path: row.path,
+              oldPath: row.oldPath,
+              section: row.section,
+            })),
+          }),
+        });
+        if (!r.ok) throw new Error(String(r.status));
+        const data = (await r.json()) as { diffs: Record<string, DiffPayload> };
+        // Merged, not replaced: a card collapsed since the request went out
+        // keeps its body for when it is opened again.
+        if (!cancelled) setDiffs((prev) => ({ ...prev, ...data.diffs }));
+      } catch {
+        /* leave the previous bodies up; the toolbar refresh is the retry */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revision, expandedKeys, session, base]);
 
   const groups = useMemo(() => {
     const order: Section[] = ["changed", "staged", "unstaged", "untracked"];
@@ -278,8 +319,6 @@ export function GitDiffView({ session, variant }: { session: string; variant: "p
       ...refs.map((r) => ({ value: r, label: t("gitdiff.vsRef", { ref: r }) })),
     ];
   }, [overview, t]);
-
-  let index = -1;
 
   return (
     <div className={`gd-root gd-${variant}`}>
@@ -321,15 +360,13 @@ export function GitDiffView({ session, variant }: { session: string; variant: "p
                 <span>{group.rows.length}</span>
               </div>
               {group.rows.map((row) => {
-                index++;
                 const key = rowKey(row);
-                const expanded = isExpanded(row, index);
+                const expanded = isExpanded(row);
                 return (
                   <FileCard
                     key={key}
                     row={row}
-                    session={session}
-                    base={base}
+                    diff={diffs[key]}
                     expanded={expanded}
                     onToggle={() => setCollapsed((c) => ({ ...c, [key]: expanded }))}
                   />

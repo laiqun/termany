@@ -110,7 +110,10 @@ function PaneHeader({
       </span>
       <span className="pane-head-spacer" />
       <div className="pane-head-actions">
-        {!showingWeb && (
+        {/* The terminal/file-tree toggle only makes sense for a pane that is
+            one of those two. On a web or git pane it would be a one-way trip
+            into a file tree, with no button left to get back. */}
+        {!showingWeb && !showingGit && (
           <button
             className="pane-btn"
             title={showingFiles ? "Show terminal" : "Show file tree"}
