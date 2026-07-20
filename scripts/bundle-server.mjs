@@ -10,6 +10,10 @@
 // the macOS CI produces a darwin-arm64 bundle and the Windows CI a win32-x64
 // one. On macOS, CI signs `node` (with entitlements) and the native binaries
 // after this runs. Run from the repo root: `node scripts/bundle-server.mjs`.
+//
+// Set TERMANY_TARGET_ARCH=x64|arm64 to bundle for an arch other than the host's
+// — needed when cross-building the Intel macOS app from an Apple Silicon
+// machine, where the bundled runtime must match the app, not the builder.
 
 import { execSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
@@ -21,7 +25,10 @@ import { fileURLToPath } from "node:url";
 const NODE_VERSION = "24.0.0";
 
 const PLATFORM = process.platform; // 'darwin' | 'win32' | 'linux'
-const ARCH = process.arch; // 'arm64' | 'x64'
+const ARCH = process.env.TERMANY_TARGET_ARCH?.trim() || process.arch; // 'arm64' | 'x64'
+if (!["arm64", "x64"].includes(ARCH)) {
+  throw new Error(`unsupported TERMANY_TARGET_ARCH: ${ARCH} (expected arm64 or x64)`);
+}
 const IS_WIN = PLATFORM === "win32";
 
 // node-pty stores prebuilds under `prebuilds/<platform>-<arch>` (matching
