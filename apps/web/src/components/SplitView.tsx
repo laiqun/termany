@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
 import { useI18n } from "../i18n";
+import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { withShortcut } from "../keybindings";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import { focusSession } from "../terminal/manager";
@@ -183,18 +185,22 @@ function SplitTree({
   showFocus,
   path,
   dropTarget,
+  ghostId,
   onPaneDragStart,
 }: {
   pane: Pane;
   showFocus: boolean;
   path: number[];
   dropTarget: PaneDropTarget;
+  /** Leaf rendered as an empty placeholder — it's mounted in the zen overlay instead. */
+  ghostId?: string;
   onPaneDragStart: (id: string, e: React.PointerEvent) => void;
 }) {
   const resizeSplit = useStore((s) => s.resizeSplit);
   const containerRef = useRef<HTMLDivElement>(null);
 
   if (pane.kind === "leaf") {
+    if (pane.id === ghostId) return <div className="pane-slot pane-slot-ghost" />;
     return (
       <PaneSlot
         leaf={pane}
@@ -259,6 +265,7 @@ function SplitTree({
               showFocus={showFocus}
               path={[...path, i]}
               dropTarget={dropTarget}
+              ghostId={ghostId}
               onPaneDragStart={onPaneDragStart}
             />
           </div>
@@ -270,6 +277,76 @@ function SplitTree({
 
 function leafKey(pane: Pane): string {
   return pane.kind === "leaf" ? pane.id : pane.children.map(leafKey).join("|");
+}
+
+/**
+ * Zen (maximize) overlay: dimming scrim over the whole app view, with the
+ * zoomed pane floating centered above it. Portaled to <body> so it centers in
+ * the window rather than inside the (sidebar-offset) pane card. Native
+ * webviews in background panes paint over any DOM scrim, so the scrim area is
+ * registered as four occluder bands framing the floating pane — covered web
+ * panes hide themselves while the floating one (whose rect is exactly the
+ * hole) stays visible.
+ */
+function ZenOverlay({
+  htabId,
+  leaf,
+  dropTarget,
+  onPaneDragStart,
+}: {
+  htabId: string;
+  leaf: Leaf;
+  dropTarget: PaneDropTarget;
+  onPaneDragStart: (id: string, e: React.PointerEvent) => void;
+}) {
+  const { t } = useI18n();
+  const toggleMaximize = useStore((s) => s.toggleMaximize);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const scrim = scrimRef.current;
+    const pane = paneRef.current;
+    if (!scrim || !pane) return;
+    const ids = ["top", "bottom", "left", "right"].map((side) => `zen:${htabId}:${side}`);
+    const sync = () => {
+      const r = scrim.getBoundingClientRect();
+      const p = pane.getBoundingClientRect();
+      registerOccluder(ids[0], { x: r.x, y: r.y, width: r.width, height: p.y - r.y });
+      registerOccluder(ids[1], { x: r.x, y: p.bottom, width: r.width, height: r.bottom - p.bottom });
+      registerOccluder(ids[2], { x: r.x, y: p.y, width: p.x - r.x, height: p.height });
+      registerOccluder(ids[3], { x: p.right, y: p.y, width: r.right - p.right, height: p.height });
+    };
+    const ro = new ResizeObserver(sync);
+    ro.observe(scrim);
+    ro.observe(pane);
+    sync();
+    return () => {
+      ro.disconnect();
+      ids.forEach(unregisterOccluder);
+    };
+  }, [htabId]);
+
+  return createPortal(
+    <>
+      <div
+        ref={scrimRef}
+        className="zen-scrim"
+        title={withShortcut(t("pane.zoomedRestore"), "toggleMaximize")}
+        onClick={() => toggleMaximize(leaf.id)}
+      />
+      <div ref={paneRef} className="zen-pane">
+        <PaneSlot
+          leaf={leaf}
+          showFocus={false}
+          solo
+          dropTarget={dropTarget}
+          onPaneDragStart={onPaneDragStart}
+        />
+      </div>
+    </>,
+    document.body,
+  );
 }
 
 /** Top-level: render the magnified pane alone, or the full split tree. */
@@ -406,6 +483,26 @@ export function SplitView({ htab }: { htab: HTab }) {
   };
 
   const maxLeaf = htab.maximized ? findLeaf(htab.layout, htab.maximized) : undefined;
+  if (maxLeaf && paneCount(htab.layout) > 1) {
+    return (
+      <>
+        <SplitTree
+          pane={htab.layout}
+          showFocus={false}
+          path={[]}
+          dropTarget={null}
+          ghostId={maxLeaf.id}
+          onPaneDragStart={startPaneDrag}
+        />
+        <ZenOverlay
+          htabId={htab.id}
+          leaf={maxLeaf}
+          dropTarget={dropTarget}
+          onPaneDragStart={startPaneDrag}
+        />
+      </>
+    );
+  }
   if (maxLeaf) {
     return (
       <PaneSlot

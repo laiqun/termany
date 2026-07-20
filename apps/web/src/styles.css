@@ -1649,6 +1649,47 @@ html.tauri #root {
   flex: 1 1 0;
   min-width: 10px;
 }
+/* Zen (maximize) mode: the split tree stays visible underneath, dimmed by
+   the scrim, and the zoomed pane floats centered above it — so the hidden
+   siblings read as "covered", not "closed". Portaled to <body> and fixed so
+   the pane centers in the whole window, not the sidebar-offset pane card.
+   Clicking the scrim restores the split. Below the ⌘K palette (60) and
+   settings (100) so those still open on top; above everything workspace-level. */
+.zen-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  backdrop-filter: blur(3px);
+  cursor: zoom-out;
+  animation: zen-fade-in 140ms ease-out;
+}
+.zen-pane {
+  position: fixed;
+  inset: clamp(16px, 5vh, 48px) clamp(16px, 5vw, 80px);
+  z-index: 31;
+  background: var(--pane-bg, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: var(--pane-radius);
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  animation: zen-pane-in 140ms ease-out;
+}
+/* The zoomed pane's original cell in the dimmed tree — an intentional hole. */
+.pane-slot-ghost {
+  background: transparent;
+}
+@keyframes zen-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes zen-pane-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
 .pane-head-title {
   display: block;
   min-width: 0;
