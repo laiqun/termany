@@ -1,6 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
 import { isTauri } from "../env";
+import { useI18n } from "../i18n";
 import { withShortcut } from "../keybindings";
 import { useStore, activeNode, type Pane } from "../state/store";
 import {
@@ -21,12 +23,14 @@ function leafIds(pane: Pane): string[] {
 }
 
 export function HTabBar() {
+  const { t } = useI18n();
   const node = useStore(activeNode);
   const setActiveHTab = useStore((s) => s.setActiveHTab);
   const addHTab = useStore((s) => s.addHTab);
   const closeHTab = useStore((s) => s.closeHTab);
   const renameHTab = useStore((s) => s.renameHTab);
   const moveHTab = useStore((s) => s.moveHTab);
+  const moveHTabToNewNode = useStore((s) => s.moveHTabToNewNode);
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const railCollapsed = useStore((s) => s.railCollapsed);
@@ -37,6 +41,15 @@ export function HTabBar() {
 
   const [editing, setEditing] = useState<string | null>(null);
   const suppressClickRef = useRef(false);
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  // Keep the active tab on screen — a tab created past the right edge would
+  // otherwise be active but invisible. `nearest` no-ops when it already is.
+  useEffect(() => {
+    stripRef.current
+      ?.querySelector(`[data-htab-id="${CSS.escape(node?.activeHTab ?? "")}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [node?.activeHTab, node?.htabs.length]);
   const nodeLeafIds = node?.htabs.flatMap((h) => leafIds(h.layout)) ?? [];
   useSyncExternalStore(
     subscribeAgentActivity,
@@ -82,13 +95,23 @@ export function HTabBar() {
     const pointerId = e.pointerId;
     const startX = e.clientX;
     const startY = e.clientY;
+    const title = node.htabs.find((h) => h.id === tabId)?.title ?? "tab";
     let active = false;
     let targetNodeId: string | null = null;
+    // Dropped inside the tree but not on a page → the tab becomes its own page.
+    let toNewNode = false;
+    // Created once the drag passes the movement threshold, so a plain click on
+    // a tab never flashes a ghost.
+    let ghost: DragGhost | null = null;
+    const self = document.querySelector<HTMLElement>(`[data-htab-id="${CSS.escape(tabId)}"]`);
 
     const clearHover = () => {
       document
         .querySelectorAll(".tree-row.tab-drop-target")
         .forEach((el) => el.classList.remove("tab-drop-target"));
+      document
+        .querySelectorAll(".tree.tab-drop-new")
+        .forEach((el) => el.classList.remove("tab-drop-new"));
     };
 
     const onMove = (ev: PointerEvent) => {
@@ -96,29 +119,43 @@ export function HTabBar() {
       if (!active) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
         active = true;
-        document.body.style.cursor = "grabbing";
-        document.body.style.userSelect = "none";
+        ghost = createDragGhost(title);
+        self?.classList.add("dragging");
+        beginDragCursor();
       }
       ev.preventDefault();
       clearHover();
-      const row = document
-        .elementFromPoint(ev.clientX, ev.clientY)
-        ?.closest<HTMLElement>("[data-tree-node-id]");
+      ghost?.move(ev.clientX, ev.clientY);
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const row = under?.closest<HTMLElement>("[data-tree-node-id]");
       targetNodeId = row?.dataset.treeNodeId ?? null;
-      if (row && targetNodeId && targetNodeId !== fromNodeId) row.classList.add("tab-drop-target");
+      const valid = !!row && !!targetNodeId && targetNodeId !== fromNodeId;
+      if (valid) {
+        toNewNode = false;
+        row!.classList.add("tab-drop-target");
+        ghost?.setHint(t("drag.toPage"));
+        return;
+      }
+      // Inside the tree but not on a page — drop here to spin up a new page.
+      const tree = !row ? under?.closest<HTMLElement>(".tree") : null;
+      toNewNode = !!tree;
+      if (tree) tree.classList.add("tab-drop-new");
+      ghost?.setHint(tree ? t("drag.newPage") : null);
     };
 
     const onUp = (ev: PointerEvent) => {
       if (ev.pointerId !== pointerId) return;
       clearHover();
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      ghost?.destroy();
+      self?.classList.remove("dragging");
+      endDragCursor();
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
       if (!active) return;
       suppressClickRef.current = true;
       if (targetNodeId && targetNodeId !== fromNodeId) moveHTab(tabId, fromNodeId, targetNodeId);
+      else if (toNewNode) moveHTabToNewNode(tabId, fromNodeId);
     };
 
     window.addEventListener("pointermove", onMove);
@@ -129,6 +166,10 @@ export function HTabBar() {
   return (
     <div className={cls} data-tauri-drag-region onDoubleClick={onBarDoubleClick}>
       {controls}
+      {/* Only the tabs scroll; the workspace controls and the panel toggle stay
+          pinned to either end. Without this the strip just overflowed and a
+          newly created tab sat off-screen, active but invisible. */}
+      <div className="htab-strip" ref={stripRef} data-tauri-drag-region>
       {node?.htabs.map((h) => (
         (() => {
           const activity = aggregateAgentActivity(leafIds(h.layout));
@@ -195,6 +236,12 @@ export function HTabBar() {
           <PlusIcon />
         </button>
       )}
+      {/* Placeholder shown only while a pane is dragged over the empty strip —
+          previews the tab that dropping would create (see SplitView). */}
+      <div className="htab-ghost" aria-hidden="true">
+        <PlusIcon />
+      </div>
+      </div>
       <button
         className="bar-btn rail-toggle"
         title={withShortcut(railCollapsed ? "Show panel" : "Hide panel", "toggleRail")}

@@ -1,4 +1,6 @@
 import { PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
+import { useI18n } from "../i18n";
 import { withShortcut } from "../keybindings";
 import { activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
 import {
@@ -215,6 +217,7 @@ function TreeItem({
 
 /** Left sidebar: the workspace's node tree. */
 export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { t } = useI18n();
   const ws = useStore(activeWorkspace);
   const addRootNode = useStore((s) => s.addRootNode);
   const collapseAll = useStore((s) => s.collapseAll);
@@ -223,13 +226,27 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
   const [collapsed, setCollapsed] = useState(false);
   const [nodeDrag, setNodeDrag] = useState<NodeDragUi | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+
+  // Keep the active page on screen. Creating a page (⌘N / ⌘⏎) appends it below
+  // everything else, which in a long tree lands outside the scroll viewport —
+  // the page would become active with nothing visibly happening. `nearest`
+  // makes this a no-op when the row is already in view, so plain clicks and
+  // ⌘P jumps don't yank the sidebar around.
+  useEffect(() => {
+    treeRef.current
+      ?.querySelector(`[data-tree-node-id="${CSS.escape(ws.activeNode)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [ws.activeNode, ws.roots]);
   const dragRef = useRef<{
     id: string;
+    title: string;
     pointerId: number;
     startX: number;
     startY: number;
     active: boolean;
   } | null>(null);
+  // Cursor-following label, created once the drag passes the 4px threshold.
+  const ghostRef = useRef<DragGhost | null>(null);
   const dragUiRef = useRef<NodeDragUi | null>(null);
   const suppressClickRef = useRef(false);
   const wsLeafIds = ws.roots.flatMap(subtreeLeafIds);
@@ -248,7 +265,17 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
     if (e.button !== 0) return;
     const target = e.target instanceof Element ? e.target : null;
     if (target?.closest("button,input")) return;
-    dragRef.current = { id, pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, active: false };
+    // Resolve the title now, while the tree is in scope — the pointer handlers
+    // below live in an effect that only re-subscribes on moveNode.
+    const title = target?.closest<HTMLElement>("[data-tree-node-id]")?.innerText.trim() || "page";
+    dragRef.current = {
+      id,
+      title: title.split("\n")[0],
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      active: false,
+    };
   };
 
   const consumeSuppressedClick = () => {
@@ -266,8 +293,11 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
         const dy = e.clientY - drag.startY;
         if (Math.hypot(dx, dy) < 4) return;
         drag.active = true;
+        ghostRef.current = createDragGhost(drag.title);
+        beginDragCursor();
       }
       e.preventDefault();
+      ghostRef.current?.move(e.clientX, e.clientY);
 
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       const row = hit instanceof Element ? hit.closest<HTMLElement>("[data-tree-node-id]") : null;
@@ -275,26 +305,21 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
       if (row && tree?.contains(row)) {
         const targetId = row.dataset.treeNodeId;
         if (!targetId || targetId === drag.id) {
+          ghostRef.current?.setHint(null);
           setDragUi({ id: drag.id, targetId: null, pos: null, overTree: false });
           return;
         }
         const r = row.getBoundingClientRect();
         const y = (e.clientY - r.top) / r.height;
-        setDragUi({
-          id: drag.id,
-          targetId,
-          pos: y < 0.25 ? "before" : y > 0.75 ? "after" : "into",
-          overTree: true,
-        });
+        const pos: TreeDropPos = y < 0.25 ? "before" : y > 0.75 ? "after" : "into";
+        ghostRef.current?.setHint(t(`drag.node.${pos}`));
+        setDragUi({ id: drag.id, targetId, pos, overTree: true });
         return;
       }
 
-      setDragUi({
-        id: drag.id,
-        targetId: null,
-        pos: null,
-        overTree: !!(hit && tree?.contains(hit)),
-      });
+      const overTree = !!(hit && tree?.contains(hit));
+      ghostRef.current?.setHint(overTree ? t("drag.node.root") : null);
+      setDragUi({ id: drag.id, targetId: null, pos: null, overTree });
     };
 
     const onPointerUp = (e: PointerEvent) => {
@@ -303,6 +328,9 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
       const wasActive = drag.active;
       const ui = dragUiRef.current;
       dragRef.current = null;
+      ghostRef.current?.destroy();
+      ghostRef.current = null;
+      endDragCursor();
       setDragUi(null);
       if (!wasActive) return;
       suppressClickRef.current = true;
