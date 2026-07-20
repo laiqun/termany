@@ -1,26 +1,37 @@
-import { Bot, Brain, Download, Info, Keyboard, Palette, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Bot, Brain, Info, Keyboard, Palette } from "lucide-react";
+import { useEffect, useState } from "react";
 import { apiPath } from "../api";
 import { isTauri } from "../env";
 import { useI18n, type Language } from "../i18n";
-import { openExternal } from "../openExternal";
+import { openExternal, revealPath } from "../openExternal";
 import { useStore } from "../state/store";
 import { checkForUpdate, installUpdate, relaunchApp } from "../updater";
-import { fromCodexTheme, isCodexTheme, registerTheme, THEMES, type Theme } from "../themes";
+import { BUILT_IN_THEMES } from "../themes";
+import {
+  codexThemeId,
+  fetchCodexListings,
+  registerCodexListing,
+  type CodexListing,
+} from "../themes/codex-packs";
 import { AgentSettings } from "./AgentSettings";
-import { CloseIcon, EditIcon, GearIcon } from "./icons";
+import { CloseIcon, ExternalOpenIcon, GearIcon, RevealFolderIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
-import { ThemeEditor } from "./ThemeEditor";
+
+/** Where users get more custom themes (the folder below is populated from it). */
+const THEMES_SITE = "https://codexthemes.ai/themes";
+const THEMES_SITE_LABEL = "codexthemes.ai/themes";
+
+const REPO = "https://github.com/thinkany-ai/termany";
+
+/** About-section destinations; `key` also names the i18n label (about.<key>). */
+const ABOUT_LINKS = [
+  { key: "website", url: "https://termany.sh?utm_source=termany_app&utm_medium=settings_about" },
+  { key: "source", url: REPO },
+  { key: "feedback", url: `${REPO}/issues` },
+] as const;
 
 export type SettingsSection = "general" | "appearance" | "models" | "agents" | "keyboard" | "about";
-
-/** One locally installed CodexThemes package, as listed by /api/codex-themes. */
-type CodexListing = {
-  manifest: { id: string; displayName?: string; description?: string; mode?: string };
-  artPath: string | null;
-  previewPath: string | null;
-};
 
 /**
  * App-wide settings, shown as an in-app overlay (works in both web and the
@@ -30,22 +41,28 @@ type CodexListing = {
 export function Settings({
   initialSection = "general",
   onClose,
+  onSectionChange,
 }: {
   initialSection?: SettingsSection;
   onClose: () => void;
+  /** Reported so the panel can reopen where the user left it. */
+  onSectionChange?: (section: SettingsSection) => void;
 }) {
   const { language, setLanguage, t } = useI18n();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
 
   const [section, setSection] = useState<SettingsSection>(initialSection);
-  const [editingTheme, setEditingTheme] = useState<Theme | null>(null);
-  const [prompt, setPrompt] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const goto = (next: SettingsSection) => {
+    setSection(next);
+    onSectionChange?.(next);
+  };
   const [importError, setImportError] = useState<string | null>(null);
-  const importInputRef = useRef<HTMLInputElement>(null);
   const [codexThemes, setCodexThemes] = useState<CodexListing[]>([]);
+  // Absolute path of ~/.codexthemes/themes, reported by the server so the
+  // reveal button doesn't have to guess the home directory.
+  const [themesRoot, setThemesRoot] = useState<string | null>(null);
   const [applyingCodex, setApplyingCodex] = useState<string | null>(null);
   const [version, setVersion] = useState("0.1.0");
   const [aboutError, setAboutError] = useState<string | null>(null);
@@ -100,12 +117,10 @@ export function Settings({
 
   // Esc closes. Capture on `document` so the terminal/xterm cannot swallow the
   // key before this overlay sees it. Keyboard rebinding still wins because it
-  // listens on `window` capture; the theme editor is allowed to handle its own
-  // Esc in bubble phase.
+  // listens on `window` capture.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (editingTheme) return;
         e.preventDefault();
         e.stopPropagation();
         onClose();
@@ -113,61 +128,27 @@ export function Settings({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose, editingTheme]);
-
-  async function generate() {
-    const brief = prompt.trim();
-    if (!brief || generating) return;
-    setGenerating(true);
-    setError(null);
-    try {
-      const res = await fetch(apiPath("/api/theme"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: brief }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `request failed (${res.status})`);
-      const created = registerTheme(data); // adds to THEMES + persists
-      setTheme(created.id); // apply it (and re-render the grid)
-      setPrompt("");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setGenerating(false);
-    }
-  }
+  }, [onClose]);
 
   // The gallery of locally installed CodexThemes packages (~/.codexthemes),
   // refetched each time Appearance opens so newly created packages show up.
   useEffect(() => {
     if (section !== "appearance") return;
-    fetch(apiPath("/api/codex-themes"))
-      .then((r) => r.json())
-      .then((d) => setCodexThemes(Array.isArray(d?.themes) ? d.themes : []))
+    fetchCodexListings()
+      .then(({ themes, root }) => {
+        setCodexThemes(themes);
+        setThemesRoot(root);
+      })
       .catch(() => setCodexThemes([]));
   }, [section]);
 
-  /** One-click apply: same conversion as file import, artwork embedded. */
+  /** One-click apply. The theme is registered in memory only — the folder on
+   *  disk stays the source of truth and is re-read on the next launch. */
   async function applyCodexTheme(item: CodexListing) {
     setImportError(null);
     setApplyingCodex(item.manifest.id);
     try {
-      let art: { mimeType: string; base64: string } | undefined;
-      if (item.artPath) {
-        const res = await fetch(apiPath(`/api/fs/media?path=${encodeURIComponent(item.artPath)}`));
-        if (res.ok) {
-          const blob = await res.blob();
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const fr = new FileReader();
-            fr.onload = () => resolve(String(fr.result));
-            fr.onerror = () => reject(new Error("failed to read artwork"));
-            fr.readAsDataURL(blob);
-          });
-          art = { mimeType: blob.type || "image/jpeg", base64: dataUrl.slice(dataUrl.indexOf(",") + 1) };
-        }
-      }
-      const created = registerTheme(fromCodexTheme({ format: "codex-theme", manifest: item.manifest, art }));
+      const created = await registerCodexListing(item);
       setTheme(created.id);
     } catch (e) {
       setImportError(e instanceof Error ? e.message : String(e));
@@ -176,38 +157,17 @@ export function Settings({
     }
   }
 
-  async function importThemeFile(file: File | undefined) {
-    if (!file) return;
-    setImportError(null);
-    try {
-      const parsed = JSON.parse(await file.text());
-      // Codex themes (a theme.json manifest or a .codex-theme export) are
-      // converted to Termany's schema; the converter assigns a stable
-      // "custom-codex-…" id so re-imports update in place.
-      const candidate = isCodexTheme(parsed) ? fromCodexTheme(parsed) : parsed;
-      // Re-imported exports (already "custom-"/"ai-") update in place; anything
-      // else (a shared built-in, a hand-authored file) gets a fresh custom id
-      // so it persists as the user's own theme instead of silently vanishing —
-      // registerTheme() only persists ids with those prefixes (see themes/index.ts).
-      if (typeof candidate?.id !== "string" || !/^(custom|ai)-/.test(candidate.id)) {
-        candidate.id = `custom-${crypto.randomUUID()}`;
-      }
-      const created = registerTheme(candidate);
-      setTheme(created.id);
-    } catch (e) {
-      setImportError(e instanceof Error ? e.message : String(e));
-    }
+  /** Open ~/.codexthemes/themes in Finder/Explorer (desktop only). */
+  async function revealThemesFolder() {
+    if (!themesRoot) return;
+    setImportError(await revealPath(themesRoot));
   }
 
-  function exportThemeFile(t: Theme) {
-    const blob = new Blob([JSON.stringify(t, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${t.id}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+
+  // The empty-state sentence wraps a link, so it's split on the {site}
+  // placeholder instead of concatenated — each language keeps its own word
+  // order and spacing around the link.
+  const [emptyBefore, emptyAfter] = t("theme.empty").split("{site}");
 
   return (
     <div className="settings-backdrop" onClick={onClose}>
@@ -220,7 +180,7 @@ export function Settings({
         <aside className="settings-nav">
           <div
             className={`settings-nav-item ${section === "general" ? "active" : ""}`}
-            onClick={() => setSection("general")}
+            onClick={() => goto("general")}
           >
             <span className="settings-nav-icon">
               <GearIcon />
@@ -229,7 +189,7 @@ export function Settings({
           </div>
           <div
             className={`settings-nav-item ${section === "appearance" ? "active" : ""}`}
-            onClick={() => setSection("appearance")}
+            onClick={() => goto("appearance")}
           >
             <span className="settings-nav-icon">
               <Palette size={18} />
@@ -238,7 +198,7 @@ export function Settings({
           </div>
           <div
             className={`settings-nav-item ${section === "models" ? "active" : ""}`}
-            onClick={() => setSection("models")}
+            onClick={() => goto("models")}
           >
             <span className="settings-nav-icon">
               <Brain size={18} />
@@ -247,7 +207,7 @@ export function Settings({
           </div>
           <div
             className={`settings-nav-item ${section === "agents" ? "active" : ""}`}
-            onClick={() => setSection("agents")}
+            onClick={() => goto("agents")}
           >
             <span className="settings-nav-icon">
               <Bot size={18} />
@@ -256,7 +216,7 @@ export function Settings({
           </div>
           <div
             className={`settings-nav-item ${section === "keyboard" ? "active" : ""}`}
-            onClick={() => setSection("keyboard")}
+            onClick={() => goto("keyboard")}
           >
             <span className="settings-nav-icon">
               <Keyboard size={18} />
@@ -265,7 +225,7 @@ export function Settings({
           </div>
           <div
             className={`settings-nav-item ${section === "about" ? "active" : ""}`}
-            onClick={() => setSection("about")}
+            onClick={() => goto("about")}
           >
             <span className="settings-nav-icon">
               <Info size={18} />
@@ -295,99 +255,76 @@ export function Settings({
           )}
           {section === "appearance" && (
           <>
-          <div className="settings-section-title">GENERATE WITH AI</div>
-          <div className="ai-theme">
-            <input
-              className="ai-theme-input"
-              placeholder="Describe a theme — e.g. cyberpunk purple, rounded"
-              value={prompt}
-              disabled={generating}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing) return; // let the IME handle Enter
-                if (e.key === "Enter") generate();
-              }}
-            />
-            <button
-              className="ai-theme-btn"
-              onClick={generate}
-              disabled={generating || !prompt.trim()}
-            >
-              {generating ? "Generating…" : "Generate"}
-            </button>
-          </div>
-          {error && <div className="ai-theme-error">{error}</div>}
-
-          <div
-            className="settings-section-title"
-            style={{ marginTop: 28, display: "flex", alignItems: "center", justifyContent: "space-between" }}
-          >
-            THEME
-            <button
-              className="ws-dialog-btn"
-              title="Import a theme JSON or .codex-theme file"
-              onClick={() => importInputRef.current?.click()}
-            >
-              <Upload size={13} /> Import
-            </button>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept="application/json,.json,.codex-theme"
-              hidden
-              onChange={(e) => {
-                void importThemeFile(e.target.files?.[0]);
-                e.target.value = "";
-              }}
-            />
-          </div>
-          {importError && <div className="ai-theme-error">{importError}</div>}
+          <div className="settings-section-title">{t("theme.title")}</div>
           <div className="theme-grid">
-            {THEMES.map((t) => (
-              <div key={t.id} className={`theme-card ${t.id === theme ? "selected" : ""}`}>
+            {BUILT_IN_THEMES.map((item) => (
+              <div key={item.id} className={`theme-card ${item.id === theme ? "selected" : ""}`}>
                 <div className="theme-preview-wrap">
                   <button
                     className="theme-preview"
-                    onClick={() => setTheme(t.id)}
+                    onClick={() => setTheme(item.id)}
                     style={{
-                      background: t.term.background as string,
-                      borderColor: t.colors.border,
-                      borderRadius: t.radius.lg,
+                      background: item.term.background as string,
+                      borderColor: item.colors.border,
+                      borderRadius: item.radius.lg,
                     }}
                   >
-                    <span className="theme-preview-side" style={{ background: t.colors.bg2 }} />
-                    <span className="theme-preview-dot" style={{ background: t.colors.accent }} />
-                    <span className="theme-preview-line lg" style={{ background: t.colors.fg }} />
-                    <span className="theme-preview-line" style={{ background: t.colors.fgDim }} />
-                    <span className="theme-preview-line sm" style={{ background: t.colors.fgDim }} />
-                  </button>
-                  <button className="theme-edit-btn" title="Edit theme" onClick={() => setEditingTheme(t)}>
-                    <EditIcon />
-                  </button>
-                  <button
-                    className="theme-edit-btn theme-export-btn"
-                    title="Export theme as JSON"
-                    onClick={() => exportThemeFile(t)}
-                  >
-                    <Download size={13} />
+                    <span className="theme-preview-side" style={{ background: item.colors.bg2 }} />
+                    <span className="theme-preview-dot" style={{ background: item.colors.accent }} />
+                    <span className="theme-preview-line lg" style={{ background: item.colors.fg }} />
+                    <span className="theme-preview-line" style={{ background: item.colors.fgDim }} />
+                    <span className="theme-preview-line sm" style={{ background: item.colors.fgDim }} />
                   </button>
                 </div>
-                <span className="theme-card-name">{t.name}</span>
+                <span className="theme-card-name">{item.name}</span>
               </div>
             ))}
           </div>
 
-          {codexThemes.length > 0 && (
+          <div className="settings-section-title custom-themes-head">
+            <span>
+              {t("theme.custom")} <span className="codex-themes-hint">~/.codexthemes</span>
+            </span>
+            <span className="custom-themes-actions">
+              <button
+                className="ws-dialog-btn"
+                title={t("theme.openFolder")}
+                onClick={() => void revealThemesFolder()}
+              >
+                <RevealFolderIcon />
+              </button>
+              <button
+                className="ws-dialog-btn"
+                title={THEMES_SITE}
+                onClick={() => void openExternal(THEMES_SITE)}
+              >
+                <ExternalOpenIcon /> {t("theme.browse")}
+              </button>
+            </span>
+          </div>
+          {importError && <div className="ai-theme-error">{importError}</div>}
+          {codexThemes.length === 0 ? (
+            <div className="custom-themes-empty">
+              {emptyBefore}
+              <button className="link-btn" onClick={() => void openExternal(THEMES_SITE)}>
+                {THEMES_SITE_LABEL}
+              </button>
+              {emptyAfter}
+            </div>
+          ) : (
             <>
-              <div className="settings-section-title" style={{ marginTop: 28 }}>
-                CODEX THEMES <span className="codex-themes-hint">~/.codexthemes</span>
-              </div>
               <div className="codex-theme-grid">
                 {codexThemes.map((item) => {
-                  const active = theme === `custom-codex-${item.manifest.id}`;
+                  const active = theme === codexThemeId(item.manifest.id);
                   const shot = item.previewPath ?? item.artPath;
                   return (
-                    <div key={item.manifest.id} className={`codex-theme-card ${active ? "selected" : ""}`}>
+                    <button
+                      key={item.manifest.id}
+                      type="button"
+                      className={`codex-theme-card ${active ? "selected" : ""}`}
+                      disabled={applyingCodex !== null}
+                      onClick={() => void applyCodexTheme(item)}
+                    >
                       {shot && (
                         <img
                           className="codex-theme-shot"
@@ -399,26 +336,22 @@ export function Settings({
                       <div className="codex-theme-body">
                         <div className="codex-theme-title">
                           <span className="codex-theme-name">{item.manifest.displayName ?? item.manifest.id}</span>
-                          <span className="codex-theme-mode">{item.manifest.mode === "dark" ? "Dark" : "Light"}</span>
+                          <span className="codex-theme-mode">
+                            {t(item.manifest.mode === "dark" ? "theme.mode.dark" : "theme.mode.light")}
+                          </span>
                         </div>
                         {item.manifest.description && (
                           <div className="codex-theme-desc">{item.manifest.description}</div>
                         )}
-                        <div className="codex-theme-actions">
-                          {active ? (
-                            <span className="codex-theme-active">Active</span>
-                          ) : (
-                            <button
-                              className="ws-dialog-btn primary"
-                              disabled={applyingCodex !== null}
-                              onClick={() => void applyCodexTheme(item)}
-                            >
-                              {applyingCodex === item.manifest.id ? "Applying…" : "Apply"}
-                            </button>
-                          )}
-                        </div>
+                        {(active || applyingCodex === item.manifest.id) && (
+                          <div className="codex-theme-actions">
+                            <span className="codex-theme-active">
+                              {t(applyingCodex === item.manifest.id ? "theme.applying" : "theme.active")}
+                            </span>
+                          </div>
+                        )}
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -428,10 +361,12 @@ export function Settings({
           )}
           {section === "about" && (
             <>
-              <div className="settings-section-title">ABOUT</div>
+              <div className="settings-section-title">{t("about.title")}</div>
               <div className="about">
                 <div className="about-name">Termany</div>
-                <div className="about-version">Version {version}</div>
+                <div className="about-version">
+                  {t("about.version")} {version}
+                </div>
                 {isTauri && (
                   <div className="about-update">
                     {updateVersion ? (
@@ -440,13 +375,15 @@ export function Settings({
                           <div className="update-progress-track">
                             <div className="update-progress-fill" style={{ width: `${updPct}%` }} />
                           </div>
-                          <span>Downloading… {updPct}%</span>
+                          <span>
+                            {t("about.downloading")} {updPct}%
+                          </span>
                         </div>
                       ) : updPhase === "restarting" ? (
-                        <span className="update-status">Installed — restarting…</span>
+                        <span className="update-status">{t("about.restarting")}</span>
                       ) : (
                         <button className="update-btn" onClick={applyUpdate}>
-                          Update to v{updateVersion} &amp; restart
+                          {t("about.updateRestart", { version: updateVersion })}
                         </button>
                       )
                     ) : (
@@ -456,35 +393,38 @@ export function Settings({
                         disabled={updPhase === "checking"}
                       >
                         {updPhase === "checking"
-                          ? "Checking…"
+                          ? t("about.checking")
                           : updPhase === "none"
-                            ? "You're up to date ✓"
-                            : "Check for updates"}
+                            ? t("about.upToDate")
+                            : t("about.checkUpdates")}
                       </button>
                     )}
-                    {updError && <div className="ai-theme-error">update failed: {updError}</div>}
+                    {updError && (
+                      <div className="ai-theme-error">
+                        {t("about.updateFailed")}: {updError}
+                      </div>
+                    )}
                   </div>
                 )}
-                <p className="about-desc">An agent-native terminal — local-first, cloud-ready.</p>
-                <div className="about-author">
-                  Website{" "}
-                  <button
-                    className="about-link"
-                    onClick={async () => setAboutError(await openExternal("https://termany.sh"))}
-                  >
-                    termany.sh
-                  </button>
-                </div>
-                <div className="about-author">
-                  Made by{" "}
-                  <button
-                    className="about-link"
-                    onClick={async () => setAboutError(await openExternal("https://idoubi.ai"))}
-                  >
-                    idoubi
-                  </button>
-                </div>
-                {aboutError && <div className="ai-theme-error">opener failed: {aboutError}</div>}
+                <p className="about-desc">{t("about.desc")}</p>
+                {ABOUT_LINKS.map(({ key, url }) => (
+                  <div className="about-row" key={key}>
+                    <span>{t(`about.${key}`)}</span>
+                    <button
+                      className="about-open-btn"
+                      title={t("about.open")}
+                      aria-label={t("about.open")}
+                      onClick={async () => setAboutError(await openExternal(url))}
+                    >
+                      <ExternalOpenIcon />
+                    </button>
+                  </div>
+                ))}
+                {aboutError && (
+                  <div className="ai-theme-error">
+                    {t("about.openerFailed")}: {aboutError}
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -495,9 +435,6 @@ export function Settings({
         </button>
       </div>
 
-      {editingTheme && (
-        <ThemeEditor base={editingTheme} activeThemeId={theme} onClose={() => setEditingTheme(null)} />
-      )}
     </div>
   );
 }

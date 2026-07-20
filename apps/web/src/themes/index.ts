@@ -4,8 +4,6 @@ import { codex } from "./codex";
 import { daylight } from "./daylight";
 import { defaultDark } from "./default-dark";
 import { meadow } from "./meadow";
-import { oneLight } from "./one-light";
-import { snow } from "./snow";
 import { solarizedDark } from "./solarized-dark";
 import type { Theme } from "./types";
 
@@ -20,15 +18,19 @@ export { fromCodexTheme, isCodexTheme } from "./codex-import";
 export const THEMES: Theme[] = [
   defaultDark,
   solarizedDark,
-  oneLight,
   daylight,
   meadow,
-  snow,
   charcoal,
   codex,
 ];
 
-export const DEFAULT_THEME_ID = "default-dark";
+/** The bundled themes, i.e. THEMES minus anything registered at runtime. */
+export const BUILT_IN_THEMES: readonly Theme[] = [...THEMES];
+
+// Codex is the out-of-the-box look for a fresh install. Anyone who has already
+// picked a theme keeps it — loadThemeId() only falls back here when nothing is
+// stored.
+export const DEFAULT_THEME_ID = "codex";
 const STORAGE_KEY = "termany.theme";
 const AI_THEMES_KEY = "termany.aiThemes";
 
@@ -61,29 +63,28 @@ export function registerTheme(theme: unknown): Theme {
   const i = THEMES.findIndex((t) => t.id === theme.id);
   if (i >= 0) THEMES[i] = theme;
   else THEMES.push(theme);
-  persistUserThemes();
   return theme;
 }
 
-function persistUserThemes() {
+/**
+ * One-time cleanup of the pre-6.0 theme store. Themes authored in the removed
+ * in-app editor (and Codex packs that older builds copied here) are dropped:
+ * a stored id that no longer resolves falls back to DEFAULT_THEME_ID.
+ */
+export function loadAiThemes() {
   try {
-    const userThemes = THEMES.filter((t) => t.id.startsWith("ai-") || t.id.startsWith("custom-"));
-    localStorage.setItem(AI_THEMES_KEY, JSON.stringify(userThemes));
+    localStorage.removeItem(AI_THEMES_KEY);
   } catch {
-    /* ignore persistence failure */
+    /* ignore */
   }
 }
 
-/** Load any persisted user (AI-generated or hand-edited) themes into THEMES. */
-export function loadAiThemes() {
+/** The raw persisted id, before it is checked against the registry. */
+export function storedThemeId(): string | null {
   try {
-    const raw = localStorage.getItem(AI_THEMES_KEY);
-    if (!raw) return;
-    for (const t of JSON.parse(raw)) {
-      if (isTheme(t) && !THEMES.some((e) => e.id === t.id)) THEMES.push(t);
-    }
+    return localStorage.getItem(STORAGE_KEY);
   } catch {
-    /* ignore */
+    return null;
   }
 }
 
