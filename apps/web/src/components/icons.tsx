@@ -17,10 +17,12 @@ import {
   FolderOpen,
   FolderTree,
   Globe,
+  History,
   ExternalLink,
   ArrowLeft,
   ArrowRight,
   Bot,
+  ChartColumn,
   Maximize2,
   Minimize2,
   PanelLeft,
@@ -139,6 +141,16 @@ export function CollapseAllIcon() {
 /** Magnifying glass — quick search / command palette. */
 export function SearchIcon() {
   return <Search {...base} />;
+}
+
+/** Clock-with-arrow — the Claude Code session history browser. */
+export function HistoryIcon() {
+  return <History {...base} />;
+}
+
+/** Column chart — the agent token-usage dashboard. */
+export function ChartIcon() {
+  return <ChartColumn {...base} />;
 }
 
 /** Branching folder glyph — toggle a pane between terminal and file-tree view. */

@@ -45,6 +45,10 @@ export type Pane =
       filesRoot?: string;
       /** File to preview when opening this pane in files view. */
       filesSelected?: string;
+      /** Which agent CLI conversation this pane hosts, registered when the
+       *  session-history browser resumes into it — lets a later click on the
+       *  same conversation jump here instead of resuming a second copy. */
+      agentSession?: { agent: string; sessionId: string };
     }
   | {
       kind: "split";
@@ -187,6 +191,7 @@ interface State {
   nextPane: () => void;
   prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
+  setPaneAgentSession: (leafId: string, info: { agent: string; sessionId: string }) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
@@ -242,6 +247,41 @@ export function findLeaf(pane: Pane, leafId: string): (Pane & { kind: "leaf" }) 
     if (hit) return hit;
   }
   return undefined;
+}
+
+/** Where a pane lives, in jumpToResult coordinates. */
+export interface PaneLocation {
+  workspaceId: string;
+  nodeId: string;
+  tabId: string;
+  paneId: string;
+}
+
+/**
+ * Every open pane's registered agent conversation, keyed "agent|sessionId" —
+ * the session-history browser uses this to jump to an already-open
+ * conversation instead of resuming a second copy of it.
+ */
+export function agentSessionPanes(workspaces: Workspace[]): Map<string, PaneLocation> {
+  const out = new Map<string, PaneLocation>();
+  const collect = (p: Pane, loc: Omit<PaneLocation, "paneId">) => {
+    if (p.kind === "leaf") {
+      if (p.agentSession) {
+        out.set(`${p.agentSession.agent}|${p.agentSession.sessionId}`, { ...loc, paneId: p.id });
+      }
+      return;
+    }
+    for (const c of p.children) collect(c, loc);
+  };
+  for (const ws of workspaces) {
+    const stack = [...ws.roots];
+    while (stack.length) {
+      const n = stack.pop()!;
+      for (const h of n.htabs) collect(h.layout, { workspaceId: ws.id, nodeId: n.id, tabId: h.id });
+      stack.push(...n.children);
+    }
+  }
+  return out;
 }
 
 /** Insert `leaf` beside `targetId` on the given edge; merges into same-dir parents. */
@@ -833,6 +873,26 @@ export const useStore = create<State>((set) => ({
                   : p
                 : { ...p, children: p.children.map(rename) };
             return { ...h, layout: rename(h.layout) };
+          }),
+        })),
+      })),
+    })),
+
+  setPaneAgentSession: (leafId, info) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const tag = (p: Pane): Pane =>
+              p.kind === "leaf"
+                ? p.id === leafId
+                  ? { ...p, agentSession: info }
+                  : p
+                : { ...p, children: p.children.map(tag) };
+            return { ...h, layout: tag(h.layout) };
           }),
         })),
       })),

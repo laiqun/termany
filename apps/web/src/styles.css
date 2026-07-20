@@ -432,11 +432,13 @@ html.tauri #root {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding-top: 12vh;
+  padding-top: 10vh;
 }
 .search-palette {
   display: flex;
@@ -448,6 +450,41 @@ html.tauri #root {
   border-radius: var(--radius-lg);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   overflow: hidden;
+}
+/* The two full dashboards (session history, token usage) share one larger
+   footprint so they don't jump in size as you switch between them. The ⌘K
+   palette keeps the compact .search-palette default. */
+.search-palette-lg,
+.usage-modal {
+  width: min(1024px, 92vw);
+  max-height: min(720px, 76vh);
+}
+/* Short or narrow windows: give the dialogs more of the viewport and pull
+   them toward the top, so the content area doesn't collapse to a sliver. */
+@media (max-height: 720px) {
+  .search-backdrop {
+    padding-top: 6vh;
+  }
+  .search-palette-lg,
+  .usage-modal {
+    max-height: 84vh;
+  }
+}
+@media (max-width: 900px) {
+  .search-palette-lg,
+  .usage-modal {
+    width: 94vw;
+  }
+}
+@media (max-width: 600px) {
+  .search-backdrop {
+    padding-top: 4vh;
+  }
+  .search-palette,
+  .search-palette-lg,
+  .usage-modal {
+    width: 96vw;
+  }
 }
 .search-input-row {
   display: flex;
@@ -477,6 +514,73 @@ html.tauri #root {
   line-height: 20px;
   outline: none;
 }
+/* Agent tabs in the session-history browser, between search input and list. */
+.history-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.history-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.history-tab:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.history-tab.active {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+.history-tab-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  object-fit: contain;
+  border-radius: 4px;
+  /* Same reasoning as .agent-menu-icon: several logos are white-only. */
+  background: #161616;
+}
+.history-tab-icon.fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-dim);
+}
+/* Session-state pill on a history row: open = hosted by a pane (click jumps
+   there), live = transcript written to in the last couple of minutes. */
+.history-badge {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.history-badge.open {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+.history-badge.live {
+  background: rgba(74, 222, 128, 0.14);
+  color: #4ade80;
+}
+
 .search-results {
   overflow-y: auto;
   padding: 6px;
@@ -3051,4 +3155,305 @@ html.tauri #root {
    the right, Reset (a lesser, non-primary action) sits apart from them. */
 .theme-editor-reset {
   margin-right: auto;
+}
+
+/* Agent token-usage dashboard (SideRail chart button).
+   Sizing is shared with the history browser — see .search-palette-lg. */
+.usage-modal {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.usage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.usage-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.usage-title svg {
+  color: var(--fg-dim);
+}
+.usage-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.usage-body {
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.usage-cards {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+.usage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  min-width: 0;
+}
+.usage-card-label {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.usage-card-value {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.usage-card:first-child .usage-card-value {
+  color: var(--accent);
+}
+.usage-card-note {
+  font-size: 10px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.usage-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.usage-legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fg-dim);
+}
+.usage-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.usage-swatch.output {
+  background: var(--accent);
+}
+.usage-swatch.input {
+  background: var(--fg-dim);
+}
+.usage-legend-note {
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.usage-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 120px;
+  padding: 4px 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+.usage-bar-slot {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.usage-bar {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 100%;
+  max-width: 14px;
+  height: 100%;
+  border-radius: 2px 2px 0 0;
+  overflow: hidden;
+}
+.usage-bar-output {
+  background: var(--accent);
+  min-height: 0;
+}
+.usage-bar-input {
+  background: var(--fg-dim);
+  min-height: 0;
+}
+.usage-bar-slot:hover .usage-bar-output,
+.usage-bar-slot:hover .usage-bar-input {
+  filter: brightness(1.25);
+}
+.usage-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+.usage-models {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.usage-model-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr 64px 64px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.usage-model-name {
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-model-bar {
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.usage-model-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.usage-model-tokens {
+  text-align: right;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+.usage-model-cost {
+  text-align: right;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 720px) {
+  .usage-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+/* Narrow windows: let the name column shrink and drop the fixed numeric
+   columns down a size so a row still fits without horizontal scrolling. */
+@media (max-width: 600px) {
+  .usage-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .usage-model-row {
+    grid-template-columns: minmax(80px, 1fr) 1fr 52px 52px;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .usage-header {
+    gap: 8px;
+  }
+  .usage-select {
+    flex-shrink: 1;
+  }
+}
+/* Self-drawn dropdown (see UsageSelect): a native <select> popup is sized and
+   themed by the OS, so long project paths widen it past the control. */
+.usage-select {
+  position: relative;
+  flex-shrink: 0;
+  max-width: 100%;
+}
+.usage-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  outline: none;
+}
+.usage-select-btn:hover,
+.usage-select-btn.open {
+  background: var(--active-row);
+}
+.usage-select-btn svg {
+  flex-shrink: 0;
+  color: var(--fg-dim);
+}
+.usage-select-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 5;
+  width: 100%;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.usage-select-item {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.usage-select-item:hover {
+  background: var(--bg-3);
+}
+.usage-select-item.active {
+  background: var(--accent-soft);
 }

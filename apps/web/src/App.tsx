@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { AgentHistory } from "./components/AgentHistory";
+import { AgentUsage } from "./components/AgentUsage";
 import { HTabBar } from "./components/HTabBar";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
@@ -26,6 +28,8 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [claudeHistoryOpen, setClaudeHistoryOpen] = useState(false);
+  const [agentUsageOpen, setAgentUsageOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
 
   // Settings and Search are full-panel overlays, so blanket-hiding every
@@ -34,7 +38,7 @@ export function App() {
   // registers its own rect via nativeViewOcclusion instead, so it only
   // blanks the pane(s) it actually overlaps (see SideRail.tsx).
   useEffect(() => {
-    const suppressed = settingsOpen || searchOpen;
+    const suppressed = settingsOpen || searchOpen || claudeHistoryOpen || agentUsageOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -45,7 +49,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen]);
+  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen]);
 
   // Global shortcuts. Each action's chord is user-customizable (Settings →
   // Keyboard, persisted to localStorage); the catalog and defaults live in
@@ -179,6 +183,8 @@ export function App() {
           onAgentsOpenChange={setAgentsOpen}
           onOpenSettings={() => setSettingsSection("general")}
           onOpenAgentsSettings={() => setSettingsSection("agents")}
+          onOpenClaudeHistory={() => setClaudeHistoryOpen(true)}
+          onOpenAgentUsage={() => setAgentUsageOpen(true)}
         />
       )}
       {settingsOpen && (
@@ -188,6 +194,8 @@ export function App() {
         />
       )}
       {searchOpen && <SearchPalette onClose={() => setSearchOpen(false)} />}
+      {claudeHistoryOpen && <AgentHistory onClose={() => setClaudeHistoryOpen(false)} />}
+      {agentUsageOpen && <AgentUsage onClose={() => setAgentUsageOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>
   );

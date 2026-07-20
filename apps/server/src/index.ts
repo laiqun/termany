@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
 import {
@@ -806,6 +807,25 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Per-agent CLI conversation history for the SideRail history browser.
+  // Readers live in agentSessions.ts (claude, codex); unknown agents return
+  // sessions: null so the frontend can show "not supported" instead of empty.
+  if (req.method === "GET" && reqUrl.pathname === "/api/agent-sessions") {
+    (async () => {
+      const agent = reqUrl.searchParams.get("agent") ?? "claude";
+      json(200, { sessions: await listAgentSessions(agent) });
+    })().catch(fail);
+    return;
+  }
+
+  // Daily per-agent/per-model token usage for the SideRail usage dashboard.
+  if (req.method === "GET" && reqUrl.pathname === "/api/agent-usage") {
+    (async () => {
+      json(200, { rows: await listAgentUsage() });
+    })().catch(fail);
+    return;
+  }
+
   // AI theme generation — uses the configured default model.
   if (req.method === "POST" && req.url === "/api/theme") {
     readJson(req)
@@ -853,6 +873,7 @@ function tryListen(): void {
   listenAttempts++;
   http.listen(PORT, () => {
     console.log(`[termany] PTY server listening on ws://localhost:${PORT}  (shell: ${SHELL})`);
+    warmAgentSessionCache();
   });
 }
 
