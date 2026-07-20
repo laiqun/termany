@@ -3,6 +3,8 @@
 An agent-native terminal — **local-first, cloud-ready**. The same UI runs as a web app and as a
 desktop client today, and as a cloud service later, by swapping one thing: the backend.
 
+Website: **[termany.sh](https://termany.sh)** — downloads, docs, and release notes.
+
 ## Why it's shaped like this
 
 ```
@@ -100,6 +102,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and PR guidelines, and
 
 ## License
 
-[AGPL-3.0](LICENSE) © Termany. Network use is distribution: if you run a modified
+[AGPL-3.0](LICENSE) © 2026 ThinkAny, LLC. Network use is distribution: if you run a modified
 version as a service, you must offer users its source. For commercial licensing
-outside the AGPL, contact support@trys.ai.
+outside the AGPL, contact support@thinkany.ai.
+
+---
+
+[termany.sh](https://termany.sh) is built with [ShipAny](https://shipany.ai).

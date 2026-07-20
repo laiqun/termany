@@ -56,7 +56,7 @@ jobs:
         run: |
           cd site
           git config user.name "termany-release-bot"
-          git config user.email "support@trys.ai"
+          git config user.email "support@thinkany.ai"
           git add src/config/releases.ts
           if git diff --cached --quiet; then
             echo "nothing new to publish"

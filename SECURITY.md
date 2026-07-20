@@ -4,7 +4,7 @@
 
 Please **do not** open a public issue for security problems.
 
-Email **support@trys.ai** with:
+Email **support@thinkany.ai** with:
 
 - a description of the issue and its impact,
 - steps to reproduce (proof-of-concept if possible),
