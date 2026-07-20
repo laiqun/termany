@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useI18n } from "../i18n";
+import { ACTIONS, formatChord } from "../keybindings";
 import { useStore, type Pane, type TreeNode, type Workspace } from "../state/store";
-import { PageIcon, SearchIcon, TerminalIcon } from "./icons";
+import { CommandIcon, PageIcon, SearchIcon, TerminalIcon } from "./icons";
 
 function leavesOf(pane: Pane): Array<{ id: string; title: string }> {
   return pane.kind === "leaf" ? [{ id: pane.id, title: pane.title }] : pane.children.flatMap(leavesOf);
@@ -92,13 +94,16 @@ function buildPages(ws: Workspace, nodes: TreeNode[], q: string): PageNode[] {
 interface Row {
   key: string;
   depth: number;
-  kind: "page" | "tab" | "pane";
+  kind: "page" | "tab" | "pane" | "action";
   label: string;
   /** Non-selectable rows are pure context: an ancestor page shown only to place a real match underneath it. */
   selectable: boolean;
   target?: { workspaceId: string; nodeId: string; tabId?: string; paneId?: string };
   /** For a pane row, which tab it lives in — shown when the tab itself isn't its own row. */
   tabTitle?: string;
+  /** For an action row: the id to dispatch, and its current chord for display. */
+  actionId?: string;
+  chord?: string;
 }
 
 function flattenPages(pages: PageNode[], depth: number, out: Row[]): void {
@@ -151,8 +156,18 @@ function flattenPages(pages: PageNode[], depth: number, out: Row[]): void {
   }
 }
 
-const KIND_ICON = { page: PageIcon, tab: TerminalIcon, pane: TerminalIcon } as const;
-const KIND_LABEL = { page: "Page", tab: "Tab", pane: "Panel" } as const;
+const KIND_ICON = {
+  page: PageIcon,
+  tab: TerminalIcon,
+  pane: TerminalIcon,
+  action: CommandIcon,
+} as const;
+const KIND_LABEL_KEY = {
+  page: "search.kind.page",
+  tab: "search.kind.tab",
+  pane: "search.kind.pane",
+  action: "search.kind.action",
+} as const;
 
 /**
  * ⌘K quick-find: search across every workspace's pages, tabs, and panes by
@@ -164,24 +179,68 @@ const KIND_LABEL = { page: "Page", tab: "Tab", pane: "Panel" } as const;
  * shows indented under its actual ancestors, not as a flat row with a
  * breadcrumb string — so the hierarchy you already know from the sidebar is
  * what disambiguates same-named pages/tabs here too.
+ *
+ * It doubles as the command palette: every bindable action (keybindings.ts) is
+ * listed and runnable here, each showing its current chord. That's deliberately
+ * NOT a Warp-style `/` in the terminal — panes run agent CLIs whose own slash
+ * commands own that key, and keystrokes go straight to the PTY with no input
+ * layer of ours to intercept them. An app-level chord has neither problem.
  */
-export function SearchPalette({ onClose }: { onClose: () => void }) {
+export function SearchPalette({
+  onClose,
+  onRunAction,
+}: {
+  onClose: () => void;
+  onRunAction: (actionId: string) => void;
+}) {
+  const { t } = useI18n();
   const workspaces = useStore((s) => s.workspaces);
   const jumpToResult = useStore((s) => s.jumpToResult);
+  const keybindings = useStore((s) => s.keybindings);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
+  const actionRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const rows: Array<Row & { score: number }> = [];
+    for (const action of ACTIONS) {
+      if (action.hideInPalette) continue;
+      const label = t(`action.${action.id}`);
+      // Match the translated label AND the English one, so muscle memory for
+      // "split" keeps working with the UI in Chinese.
+      const score = q ? Math.max(titleScore(label, q), titleScore(action.label, q)) : 0;
+      if (score < 0) continue;
+      const chord = keybindings[action.id] ?? action.default;
+      rows.push({
+        key: `action:${action.id}`,
+        depth: 0,
+        kind: "action",
+        label,
+        selectable: true,
+        actionId: action.id,
+        chord: formatChord(chord),
+        score,
+      });
+    }
+    return rows.sort((a, b) => b.score - a.score).map(({ score: _score, ...row }) => row);
+  }, [query, keybindings, t]);
+
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return [];
+    // Empty query: the action list IS the useful default — it's what makes the
+    // shortcuts discoverable. Listing every page instead would just be the
+    // sidebar again.
+    if (!q) return actionRows;
     const pages = workspaces
       .flatMap((ws) => buildPages(ws, ws.roots, q))
       .sort((a, b) => b.best - a.best);
     const out: Row[] = [];
     flattenPages(pages, 0, out);
-    return out;
-  }, [workspaces, query]);
+    // Actions first: they're a fixed, exactly-matchable vocabulary, whereas page
+    // titles are user data that fuzzy-matches far more loosely.
+    return [...actionRows, ...out];
+  }, [workspaces, query, actionRows]);
 
   const selectable = useMemo(() => rows.filter((r) => r.selectable), [rows]);
   const selectableIndex = useMemo(() => {
@@ -198,7 +257,14 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
       ?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
-  const jump = (row: Row) => {
+  const activate = (row: Row) => {
+    if (row.actionId) {
+      // Close first: several actions open another overlay, and leaving the
+      // palette mounted on top of it would swallow the new one's focus.
+      onClose();
+      onRunAction(row.actionId);
+      return;
+    }
     if (!row.target) return;
     jumpToResult(row.target);
     onClose();
@@ -219,7 +285,7 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
             autoCapitalize="off"
             spellCheck={false}
             value={query}
-            placeholder="Search pages, tabs, and panels…"
+            placeholder={t("search.placeholder")}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing) return;
@@ -234,18 +300,16 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
               } else if (e.key === "Enter") {
                 e.preventDefault();
                 const row = selectable[selected];
-                if (row) jump(row);
+                if (row) activate(row);
               }
             }}
           />
         </div>
 
         <div className="search-results" ref={listRef}>
-          {query.trim() === "" && (
-            <div className="search-empty">Type to search pages, tabs, and panels across every workspace.</div>
-          )}
+          {query.trim() === "" && <div className="search-section">{t("search.commands")}</div>}
           {query.trim() !== "" && rows.length === 0 && (
-            <div className="search-empty">No matches for "{query.trim()}".</div>
+            <div className="search-empty">{t("search.noMatch", { query: query.trim() })}</div>
           )}
           {rows.map((row) => {
             const idx = selectableIndex.get(row.key);
@@ -268,18 +332,24 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
                 className={`search-row ${row.kind} ${idx === selected ? "active" : ""}`}
                 style={{ paddingLeft: indent }}
                 onMouseEnter={() => setSelected(idx!)}
-                onClick={() => jump(row)}
+                onClick={() => activate(row)}
               >
                 <span className="search-row-ico">
                   <Icon />
                 </span>
                 <span className="search-row-main">
-                  <span className="search-row-label">{row.label || "(untitled)"}</span>
+                  <span className="search-row-label">{row.label || t("search.untitled")}</span>
                   {row.kind === "pane" && row.tabTitle && (
-                    <span className="search-row-breadcrumb">in {row.tabTitle}</span>
+                    <span className="search-row-breadcrumb">
+                      {t("search.inTab", { tab: row.tabTitle })}
+                    </span>
                   )}
                 </span>
-                <span className="search-row-kind">{KIND_LABEL[row.kind]}</span>
+                {row.chord ? (
+                  <kbd className="search-row-chord">{row.chord}</kbd>
+                ) : (
+                  <span className="search-row-kind">{t(KIND_LABEL_KEY[row.kind])}</span>
+                )}
               </button>
             );
           })}

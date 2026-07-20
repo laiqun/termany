@@ -5,7 +5,16 @@ import { withShortcut } from "../keybindings";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { activeHtab, useStore, type PaneView } from "../state/store";
 import { queueCommand } from "../terminal/manager";
-import { AgentIcon, ChartIcon, FilesIcon, GearIcon, HistoryIcon, TerminalIcon, WebIcon } from "./icons";
+import {
+  ActivityIcon,
+  AgentIcon,
+  ChartIcon,
+  FilesIcon,
+  GearIcon,
+  HistoryIcon,
+  TerminalIcon,
+  WebIcon,
+} from "./icons";
 
 const AGENT_MENU_OCCLUDER_ID = "side-rail-agent-menu";
 
@@ -32,6 +41,7 @@ export function SideRail({
   onOpenAgentsSettings,
   onOpenClaudeHistory,
   onOpenAgentUsage,
+  onOpenSystemMonitor,
 }: {
   agentsOpen: boolean;
   onAgentsOpenChange: (open: boolean) => void;
@@ -39,6 +49,7 @@ export function SideRail({
   onOpenAgentsSettings: () => void;
   onOpenClaudeHistory: () => void;
   onOpenAgentUsage: () => void;
+  onOpenSystemMonitor: () => void;
 }) {
   const addPane = useStore((s) => s.addPane);
   const setPaneView = useStore((s) => s.setPaneView);
@@ -133,6 +144,9 @@ export function SideRail({
       </button>
       <button className="side-rail-btn" title="Agent token usage" onClick={onOpenAgentUsage}>
         <ChartIcon />
+      </button>
+      <button className="side-rail-btn" title="System monitor (CPU & memory)" onClick={onOpenSystemMonitor}>
+        <ActivityIcon />
       </button>
       <button
         className="side-rail-btn side-rail-settings"

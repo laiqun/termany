@@ -16,7 +16,7 @@
 // machine, where the bundled runtime must match the app, not the builder.
 
 import { execSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,9 +52,15 @@ mkdirSync(path.join(out, "node_modules"), { recursive: true });
 // 1. Bundle the server to a single CJS file. node-pty is native, so it stays
 //    external and is shipped separately; everything else (ws, the Anthropic
 //    SDK, @termany/core) is inlined.
+//    The app version is baked in so the server can answer /api/version: the
+//    desktop app refuses to reuse a server from a different build, which is how
+//    an upgrade avoids leaving the new UI talking to the previous release's
+//    server (see existing_server_matches in src-tauri/src/lib.rs).
+const VERSION = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).version;
 run(
   `npx --no-install esbuild apps/server/src/index.ts --bundle --platform=node ` +
     `--format=cjs --target=node22 --external:node-pty ` +
+    `--define:__TERMANY_VERSION__='${JSON.stringify(VERSION)}' ` +
     `--outfile="${path.join(out, "server.cjs")}"`
 );
 

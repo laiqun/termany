@@ -436,38 +436,57 @@ html.tauri #root {
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  padding-top: 10vh;
 }
 .search-palette {
   display: flex;
   flex-direction: column;
   width: min(560px, 88vw);
-  max-height: min(420px, 60vh);
+  /*
+   * Centred, but anchored by its TOP edge rather than actually centre-aligned.
+   * At full height the two are identical — it sits dead centre. The difference
+   * shows once a query narrows the list: a truly centred panel would either
+   * hold its full height (leaving a large empty box under two results) or
+   * shrink and walk its top edge — and the input under the user's cursor —
+   * down the screen on every keystroke. Anchoring the top gives neither: the
+   * panel just grows and shrinks downward from a fixed point.
+   */
+  align-self: flex-start;
+  margin-top: calc((100vh - min(560px, 70vh)) / 2);
+  max-height: min(560px, 70vh);
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
-/* The two full dashboards (session history, token usage) share one larger
-   footprint so they don't jump in size as you switch between them. The ⌘K
-   palette keeps the compact .search-palette default. */
+/* The full dashboards (session history, token usage, system monitor) share one
+   larger footprint so they don't jump in size as you switch between them. The
+   ⌘K palette keeps the compact .search-palette default.
+   A FIXED height, not max-height: the monitor's list is capped at TOP_PROCESSES
+   rows and never reaches the ceiling, so under max-height it shrink-wrapped to
+   its content and sat visibly shorter than the token dashboard beside it. */
 .search-palette-lg,
 .usage-modal {
   width: min(1024px, 92vw);
-  max-height: min(720px, 76vh);
+  height: min(720px, 76vh);
+  max-height: none;
+  /* Fixed-height by design (see above), so these centre for real — none of the
+   * top-anchoring .search-palette needs to avoid shrinking under a query. */
+  align-self: center;
+  margin-top: 0;
 }
-/* Short or narrow windows: give the dialogs more of the viewport and pull
-   them toward the top, so the content area doesn't collapse to a sliver. */
+/* Short windows: give the dialogs more of the viewport so the content area
+   doesn't collapse to a sliver. */
 @media (max-height: 720px) {
-  .search-backdrop {
-    padding-top: 6vh;
+  .search-palette {
+    margin-top: calc((100vh - 80vh) / 2);
+    max-height: 80vh;
   }
   .search-palette-lg,
   .usage-modal {
-    max-height: 84vh;
+    height: 84vh;
   }
 }
 @media (max-width: 900px) {
@@ -514,6 +533,65 @@ html.tauri #root {
   line-height: 20px;
   outline: none;
 }
+/* Scrollback find (⌘F): floats over the top-right of the focused pane, the
+   way browser/editor find bars do, so it never reflows the terminal grid. */
+.find-bar {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px 5px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.find-bar-ico {
+  display: flex;
+  align-items: center;
+  color: var(--fg-dim);
+}
+.find-bar-input {
+  width: 190px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.find-bar-input.miss {
+  color: #f87171;
+}
+.find-bar-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+.find-bar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.find-bar-btn:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+
 /* Agent tabs in the session-history browser, between search input and list. */
 .history-tabs {
   display: flex;
@@ -582,10 +660,21 @@ html.tauri #root {
 }
 
 .search-results {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 6px;
 }
+/* Centers in whatever box it lands in: flex-basis wins inside a modal's own
+   column (usage / monitor), height:100% inside .search-results (history). In
+   the compact palette the parent is content-sized, so both resolve to auto and
+   the text keeps its natural placement. */
 .search-empty {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 20px 12px;
   text-align: center;
   color: var(--fg-dim);
@@ -636,6 +725,31 @@ html.tauri #root {
 }
 .search-row-kind {
   flex-shrink: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+/* An action row's current chord, in the kind badge's slot. Teaching the
+   shortcut while the user reaches for the mouse is half the point of listing
+   actions here at all. */
+.search-row-chord {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-1);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-dim);
+}
+.search-row.active .search-row-chord {
+  color: var(--fg);
+}
+/* Group heading above a run of rows (e.g. COMMANDS on the empty query). */
+.search-section {
+  padding: 10px 12px 4px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -922,6 +1036,13 @@ html.tauri #root {
   box-shadow: inset 0 0 0 1px var(--accent);
   border-radius: var(--radius-sm);
 }
+/* Dropping a tab on tree whitespace spins up a page to hold it — dashed, to
+   read as "somewhere new" rather than "into this container". */
+.tree.tab-drop-new {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+}
 .tree-row {
   cursor: grab;
 }
@@ -1091,6 +1212,23 @@ html.tauri #root {
   height: 36px;
   gap: 4px;
 }
+/* The scrolling middle of the tab bar. Takes the leftover width so the panel
+   toggle stays pinned right; the scrollbar itself is hidden because the strip
+   auto-scrolls to the active tab and a visible bar would eat vertical room in
+   a 36px-tall header. */
+.htab-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.htab-strip::-webkit-scrollbar {
+  display: none;
+}
+
 /* Tabs are centered pills, vertically aligned with the controls and + button. */
 .htab {
   display: flex;
@@ -1118,6 +1256,68 @@ html.tauri #root {
   background: var(--accent-soft);
   color: var(--fg);
   box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* --- Drag feedback (pane → tab, tab → page) ------------------------------
+   The chip that rides the cursor, naming what is in flight and — once over a
+   valid target — what dropping will do. Offset from the hotspot so it never
+   sits under the pointer and blocks the elementFromPoint hit test. */
+.drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 0 16px;
+  padding: 5px 10px;
+  max-width: 320px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+  color: var(--fg);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.drag-ghost-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drag-ghost-hint {
+  display: none;
+  color: var(--accent);
+}
+.drag-ghost.has-hint .drag-ghost-hint {
+  display: inline;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+}
+/* The thing being dragged fades, so its ghost reads as the one in motion. */
+.pane-slot.dragging {
+  opacity: 0.4;
+}
+.htab.dragging {
+  opacity: 0.4;
+}
+
+/* Dropping a pane on the empty part of the strip detaches it into a new tab:
+   the ghost pill previews that tab, and only shows during such a drag. */
+.htab-ghost {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 52px;
+  height: 24px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.htabbar.pane-drop-new .htab-ghost {
+  display: flex;
 }
 .htab-title {
   white-space: nowrap;
@@ -2461,22 +2661,26 @@ html.tauri #root {
   line-height: 1.5;
   color: var(--fg-dim);
 }
-.about-author {
+.about-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
   font-size: 13px;
   color: var(--fg-dim);
 }
-.about-link {
+.about-open-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
   border: none;
   background: transparent;
-  padding: 0;
-  font: inherit;
-  font-size: 13px;
   color: var(--accent);
   cursor: pointer;
-  text-decoration: underline;
+  opacity: 0.8;
 }
-.about-link:hover {
-  opacity: 0.85;
+.about-open-btn:hover {
+  opacity: 1;
 }
 
 /* Self-update (About section + badges) */
@@ -2734,10 +2938,19 @@ html.tauri #root {
   font-size: 12px;
   color: var(--fg-dim);
 }
+/* A long base URL should scroll the table, not wrap every heading into a
+   vertical stack of characters. */
+.ms-table-scroll {
+  overflow-x: auto;
+}
 .ms-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+.ms-table th,
+.ms-table td {
+  white-space: nowrap;
 }
 .ms-table th {
   text-align: left;
@@ -2750,6 +2963,24 @@ html.tauri #root {
   padding: 12px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+}
+/* Name and base URL are the two columns that can grow without bound; cap them
+   with ellipsis so a long value doesn't push the row actions out of view.
+   Anything still too wide falls back to scrolling the wrapper. */
+.ms-table td:first-child {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ms-table td .ms-mono {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+/* Keep the row actions reachable at the right edge while scrolling. */
+.ms-table .ms-empty {
+  white-space: normal;
 }
 .ms-mono {
   display: inline-block;
@@ -2814,7 +3045,9 @@ html.tauri #root {
   justify-content: center;
 }
 .ms-form {
-  width: min(420px, 90%);
+  width: min(520px, 92%);
+  max-height: 88%;
+  overflow-y: auto;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -2893,33 +3126,6 @@ html.tauri #root {
 .theme-card.selected .theme-preview {
   box-shadow: 0 0 0 2px var(--accent);
 }
-.theme-edit-btn {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-.theme-export-btn {
-  right: 32px;
-}
-.theme-preview-wrap:hover .theme-edit-btn,
-.theme-edit-btn:focus-visible {
-  opacity: 1;
-}
-.theme-edit-btn:hover {
-  background: rgba(0, 0, 0, 0.65);
-}
 .theme-preview-side {
   position: absolute;
   left: 0;
@@ -2978,13 +3184,26 @@ html.tauri #root {
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 18px;
 }
+/* The whole card is the switch (same as a built-in theme card), so it's a
+   <button> and needs the browser defaults reset. */
 .codex-theme-card {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.codex-theme-card:hover {
+  border-color: var(--accent);
+}
+.codex-theme-card:disabled {
+  cursor: default;
 }
 .codex-theme-card.selected {
   box-shadow: 0 0 0 2px var(--accent);
@@ -3065,98 +3284,6 @@ html.tauri #root {
   color: var(--fg);
 }
 
-/* Theme editor (Settings → Appearance → per-card Edit button) */
-.theme-editor {
-  position: relative;
-  width: min(560px, 90vw);
-  max-height: 86vh;
-  overflow-y: auto;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
-}
-.theme-editor-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--fg);
-  margin-bottom: 16px;
-}
-.theme-editor-name {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--fg-dim);
-  margin-bottom: 16px;
-}
-.theme-editor-name input {
-  height: 34px;
-  padding: 0 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  outline: none;
-}
-.theme-editor-name input:focus {
-  border-color: var(--accent);
-}
-.theme-editor-section-title {
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-  margin: 0 0 10px;
-}
-.theme-editor-colors {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: 10px;
-  margin-bottom: 20px;
-}
-.theme-editor-color {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--fg-dim);
-}
-.theme-editor-color input[type="color"] {
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  cursor: pointer;
-}
-.theme-editor-bg-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.theme-editor-opacity {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  font-size: 12px;
-  color: var(--fg-dim);
-}
-.theme-editor-opacity input {
-  flex: 1;
-}
-/* Pushed to the far left of the actions row — Cancel/Save stay grouped on
-   the right, Reset (a lesser, non-primary action) sits apart from them. */
-.theme-editor-reset {
-  margin-right: auto;
-}
-
 /* Agent token-usage dashboard (SideRail chart button).
    Sizing is shared with the history browser — see .search-palette-lg. */
 .usage-modal {
@@ -3196,6 +3323,9 @@ html.tauri #root {
   flex-wrap: wrap;
 }
 .usage-body {
+  flex: 1; /* own the modal's fixed height, so short content doesn't leave the
+              scroll container floating above a dead strip of panel */
+  min-height: 0;
   overflow-y: auto;
   padding: 14px 16px 18px;
   display: flex;
@@ -3456,4 +3586,184 @@ html.tauri #root {
 }
 .usage-select-item.active {
   background: var(--accent-soft);
+}
+
+/* System monitor (SideRail activity button) — reuses the usage-modal shell. */
+.sysmon-meta {
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+.sysmon-gauges {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.sysmon-meter {
+  height: 6px;
+  margin-top: 2px;
+  background: var(--bg-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.sysmon-meter i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+.sysmon-meter i.hot {
+  background: #e0806a;
+}
+.sysmon-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) 1fr 62px 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.sysmon-row.head {
+  padding: 0 0 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+.sysmon-row.head > :nth-child(3),
+.sysmon-row.head > :nth-child(4) {
+  text-align: right;
+}
+.sysmon-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.sysmon-bars .usage-model-bar i {
+  transition: width 0.4s ease;
+}
+.sysmon-bars .usage-model-bar i.mem {
+  background: var(--fg-dim);
+}
+.sysmon-count {
+  margin-left: 5px;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+@media (max-width: 600px) {
+  .sysmon-row {
+    grid-template-columns: minmax(80px, 1fr) 1fr 48px 56px;
+    gap: 6px;
+    font-size: 11px;
+  }
+}
+
+/* Appearance → Custom themes: title row with folder / browse actions. */
+.custom-themes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 28px;
+}
+.custom-themes-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.custom-themes-actions .ws-dialog-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.custom-themes-empty {
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  color: var(--fg-dim);
+  font-size: 12.5px;
+  line-height: 1.7;
+  text-align: center;
+}
+/* An inline link that is a real button (so it routes through openExternal). */
+.link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-btn:hover {
+  filter: brightness(1.15);
+}
+
+/* Model settings: provider dialog (two-up field row, test hints + result). */
+.ms-form-sub {
+  margin: -10px 0 14px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.ms-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.ms-field select {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.ms-field select:focus {
+  border-color: var(--accent);
+}
+.ms-form-note {
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg-dim);
+}
+.ms-form-actions {
+  align-items: center;
+}
+/* Its own row above the buttons — a long upstream error would otherwise
+   squeeze the three actions into unreadable slivers. */
+.ms-test-result {
+  margin: 10px 0 2px;
+}
+.ms-test-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: #4ec78a;
+}
+/* Upstream errors are raw JSON bodies — clamp instead of stretching the modal. */
+.ms-test-fail {
+  display: block;
+  max-height: 56px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #e0806a;
+  overflow-wrap: anywhere;
+}
+.ms-btn .spin {
+  animation: ms-spin 0.9s linear infinite;
+}
+@keyframes ms-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

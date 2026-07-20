@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentHistory } from "./components/AgentHistory";
+import { FindBar } from "./components/FindBar";
 import { AgentUsage } from "./components/AgentUsage";
+import { SystemMonitor } from "./components/SystemMonitor";
 import { HTabBar } from "./components/HTabBar";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
@@ -12,25 +14,81 @@ import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
-import { activeHtab, activeNode, useStore } from "./state/store";
+import { activeHtab, activeNode, leafIds, useStore } from "./state/store";
 import {
   adjustTerminalFontSize,
   clearSession,
+  repeatFind,
   resetTerminalFontSize,
+  scrollSessionToBottom,
+  scrollSessionToTop,
 } from "./terminal/manager";
 import { openLocalPathsInFocusedSession } from "./terminal/openLocalPath";
 import { checkForUpdate } from "./updater";
+
+/**
+ * The pane a directional move (⌥⌘←→↑↓) should land on, chosen from the
+ * rendered geometry rather than the layout tree — the tree says "row of two"
+ * but not where those two ended up after nested splits and manual resizing,
+ * and the rects are exactly what the user is aiming at. Candidates must lie
+ * on the requested side and overlap the current pane along the other axis
+ * (so ⌥⌘→ from a tall left pane picks whichever right-hand pane is beside it,
+ * not one diagonally past its corner); nearest edge wins, ties broken by how
+ * closely the centres line up.
+ */
+function paneInDirection(fromId: string, dir: "left" | "right" | "up" | "down"): string | null {
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-id]"));
+  const from = nodes.find((n) => n.dataset.paneId === fromId);
+  if (!from) return null;
+  const a = from.getBoundingClientRect();
+  const horizontal = dir === "left" || dir === "right";
+  let best: { id: string; gap: number; off: number } | null = null;
+  for (const node of nodes) {
+    const id = node.dataset.paneId;
+    if (!id || id === fromId) continue;
+    const b = node.getBoundingClientRect();
+    const overlaps = horizontal
+      ? b.bottom > a.top + 1 && b.top < a.bottom - 1
+      : b.right > a.left + 1 && b.left < a.right - 1;
+    if (!overlaps) continue;
+    const gap =
+      dir === "left" ? a.left - b.right
+      : dir === "right" ? b.left - a.right
+      : dir === "up" ? a.top - b.bottom
+      : b.top - a.bottom;
+    if (gap < -1) continue; // behind us, not in the direction asked for
+    const off = horizontal
+      ? Math.abs((b.top + b.bottom) / 2 - (a.top + a.bottom) / 2)
+      : Math.abs((b.left + b.right) / 2 - (a.left + a.right) / 2);
+    if (!best || gap < best.gap - 1 || (Math.abs(gap - best.gap) <= 1 && off < best.off)) {
+      best = { id, gap, off };
+    }
+  }
+  return best?.id ?? null;
+}
 
 export function App() {
   const htab = useStore(activeHtab);
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const railCollapsed = useStore((s) => s.railCollapsed);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
+  // Where Settings was left when it closed, so the next plain "open settings"
+  // lands there instead of snapping back to General. Entry points that target a
+  // specific pane (the agents menu) still win, and update this in turn.
+  const lastSettingsSection = useRef<SettingsSection>("general");
+  const openSettings = useCallback(() => setSettingsSection(lastSettingsSection.current), []);
   const [searchOpen, setSearchOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [claudeHistoryOpen, setClaudeHistoryOpen] = useState(false);
   const [agentUsageOpen, setAgentUsageOpen] = useState(false);
+  const [systemMonitorOpen, setSystemMonitorOpen] = useState(false);
+  const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
+  const focusedPane = htab?.focused;
+
+  // The find bar targets one pane; if focus moves elsewhere, it would be
+  // searching a terminal the user is no longer looking at — close it instead.
+  useEffect(() => setFindOpen(false), [focusedPane]);
 
   // Settings and Search are full-panel overlays, so blanket-hiding every
   // native webview in the workspace while either is open is correct. The
@@ -38,7 +96,8 @@ export function App() {
   // registers its own rect via nativeViewOcclusion instead, so it only
   // blanks the pane(s) it actually overlaps (see SideRail.tsx).
   useEffect(() => {
-    const suppressed = settingsOpen || searchOpen || claudeHistoryOpen || agentUsageOpen;
+    const suppressed =
+      settingsOpen || searchOpen || claudeHistoryOpen || agentUsageOpen || systemMonitorOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -49,15 +108,14 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen]);
+  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, systemMonitorOpen]);
 
-  // Global shortcuts. Each action's chord is user-customizable (Settings →
-  // Keyboard, persisted to localStorage); the catalog and defaults live in
-  // keybindings.ts. Here we just map every action id to what it does and fire
-  // on the first chord that matches the live binding map.
-  useEffect(() => {
-    // Run an action by id against the current store snapshot.
-    const handlers: Record<string, (s: ReturnType<typeof useStore.getState>) => void> = {
+  // What every bindable action DOES. The catalog itself (ids, labels, default
+  // chords) lives in keybindings.ts; this is the other half. Two things drive
+  // it: the global keydown listener below, and the ⌘P palette, which lists the
+  // same actions so they're discoverable without knowing the chord.
+  const handlers = useMemo(() => {
+    const map: Record<string, (s: ReturnType<typeof useStore.getState>) => void> = {
       newTab: (s) => s.addHTab(),
       closePane: (s) => s.closeFocusedPane(),
       splitRight: (s) => s.splitFocused("row"),
@@ -66,6 +124,7 @@ export function App() {
         const h = activeHtab(s);
         if (h) s.toggleMaximize(h.focused);
       },
+      retilePanes: (s) => s.retilePanes(),
       zoomTerminalIn: (s) => {
         const h = activeHtab(s);
         if (h) adjustTerminalFontSize(h.focused, 1);
@@ -82,6 +141,12 @@ export function App() {
         const h = activeHtab(s);
         if (h) clearSession(h.focused);
       },
+      // Panes showing a file tree or web view have no shell to clear; those
+      // ids simply have no session, and clearSession no-ops on them.
+      clearAllPanes: (s) => {
+        const h = activeHtab(s);
+        if (h) for (const id of leafIds(h.layout)) clearSession(id);
+      },
       nextTab: (s) => s.nextHTab(),
       prevTab: (s) => s.prevHTab(),
       nextPane: (s) => s.nextPane(),
@@ -96,24 +161,82 @@ export function App() {
       nextTheme: (s) => s.nextTheme(),
       toggleSidebar: (s) => s.toggleSidebar(),
       toggleRail: (s) => s.toggleRail(),
-      openSettings: () => setSettingsSection("general"),
+      openSettings,
       search: () => setSearchOpen((o) => !o),
+      find: () => setFindOpen(true),
+      findNext: (s) => {
+        const h = activeHtab(s);
+        if (h) repeatFind(h.focused, "next");
+      },
+      findPrev: (s) => {
+        const h = activeHtab(s);
+        if (h) repeatFind(h.focused, "prev");
+      },
+      scrollTop: (s) => {
+        const h = activeHtab(s);
+        if (h) scrollSessionToTop(h.focused);
+      },
+      scrollBottom: (s) => {
+        const h = activeHtab(s);
+        if (h) scrollSessionToBottom(h.focused);
+      },
+      nextWorkspace: (s) => s.nextWorkspace(),
+      prevWorkspace: (s) => s.prevWorkspace(),
+      togglePaneView: (s) => {
+        const h = activeHtab(s);
+        if (h) s.togglePaneView(h.focused);
+      },
     };
+    for (const dir of ["left", "right", "up", "down"] as const) {
+      const cap = dir[0].toUpperCase() + dir.slice(1);
+      map[`focusPane${cap}`] = (s) => {
+        const h = activeHtab(s);
+        const target = h && paneInDirection(h.focused, dir);
+        if (target) s.setFocusedPane(target);
+      };
+      map[`resizePane${cap}`] = (s) => s.nudgeSplit(dir);
+    }
     for (let i = 1; i <= 9; i++) {
-      handlers[`switchTab${i}`] = (s) => {
+      map[`switchTab${i}`] = (s) => {
         const node = activeNode(s);
         const htab = node?.htabs[i - 1];
         if (htab) s.setActiveHTab(htab.id);
       };
     }
+    return map;
+  }, [openSettings]);
 
+  // Read through a ref so the keydown listener can stay mounted once instead of
+  // being torn down and re-added every time `handlers` is rebuilt.
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
+
+  const runAction = useCallback((id: string) => {
+    handlersRef.current[id]?.(useStore.getState());
+  }, []);
+
+  const searchOpenRef = useRef(searchOpen);
+  searchOpenRef.current = searchOpen;
+
+  // Global shortcuts. Each action's chord is user-customizable (Settings →
+  // Keyboard, persisted to localStorage); fire on the first chord that matches
+  // the live binding map.
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const s = useStore.getState();
       for (const action of ACTIONS) {
         const chord = s.keybindings[action.id] ?? action.default;
         if (matchChord(e, chord)) {
           e.preventDefault();
-          handlers[action.id]?.(s);
+          // This listener is on the capture phase, so it fires straight through
+          // the ⌘P palette. Firing an action from the chord has to end the same
+          // way as picking its row does — otherwise the palette is left open
+          // over a workspace that just changed under it, and no longer focused.
+          // `search` is excluded because it owns the palette: its own toggle
+          // would batch AFTER this and read the pending `false`, flipping the
+          // palette back open instead of closing it.
+          if (searchOpenRef.current && action.id !== "search") setSearchOpen(false);
+          handlersRef.current[action.id]?.(s);
           return;
         }
       }
@@ -170,32 +293,51 @@ export function App() {
     <div className={`app${isTauri ? " tauri" : ""}`}>
       {isTauri && <WindowControls />}
       {isTauri && <ResizeHandles />}
-      {!collapsed && <TreeSidebar onOpenSettings={() => setSettingsSection("general")} />}
+      {!collapsed && <TreeSidebar onOpenSettings={openSettings} />}
       <div className="main">
         <HTabBar />
         <div className="pane-area">
-          <div className="pane-card">{htab && <SplitView key={htab.id} htab={htab} />}</div>
+          <div className="pane-card">
+            {htab && <SplitView key={htab.id} htab={htab} />}
+            {findOpen && focusedPane && (
+              <FindBar
+                key={focusedPane}
+                sessionId={focusedPane}
+                onClose={() => setFindOpen(false)}
+              />
+            )}
+          </div>
         </div>
       </div>
       {!railCollapsed && (
         <SideRail
           agentsOpen={agentsOpen}
           onAgentsOpenChange={setAgentsOpen}
-          onOpenSettings={() => setSettingsSection("general")}
-          onOpenAgentsSettings={() => setSettingsSection("agents")}
+          onOpenSettings={openSettings}
+          onOpenAgentsSettings={() => {
+            lastSettingsSection.current = "agents";
+            setSettingsSection("agents");
+          }}
           onOpenClaudeHistory={() => setClaudeHistoryOpen(true)}
           onOpenAgentUsage={() => setAgentUsageOpen(true)}
+          onOpenSystemMonitor={() => setSystemMonitorOpen(true)}
         />
       )}
       {settingsOpen && (
         <Settings
           initialSection={settingsSection ?? "appearance"}
           onClose={() => setSettingsSection(null)}
+          onSectionChange={(next) => {
+            lastSettingsSection.current = next;
+          }}
         />
       )}
-      {searchOpen && <SearchPalette onClose={() => setSearchOpen(false)} />}
+      {searchOpen && (
+        <SearchPalette onClose={() => setSearchOpen(false)} onRunAction={runAction} />
+      )}
       {claudeHistoryOpen && <AgentHistory onClose={() => setClaudeHistoryOpen(false)} />}
       {agentUsageOpen && <AgentUsage onClose={() => setAgentUsageOpen(false)} />}
+      {systemMonitorOpen && <SystemMonitor onClose={() => setSystemMonitorOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>
   );

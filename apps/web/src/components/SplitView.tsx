@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
+import { useI18n } from "../i18n";
 import { withShortcut } from "../keybindings";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import { focusSession } from "../terminal/manager";
@@ -272,11 +274,18 @@ function leafKey(pane: Pane): string {
 
 /** Top-level: render the magnified pane alone, or the full split tree. */
 export function SplitView({ htab }: { htab: HTab }) {
+  const { t } = useI18n();
   const movePane = useStore((s) => s.movePane);
   const movePaneToHTab = useStore((s) => s.movePaneToHTab);
+  const movePaneToNewHTab = useStore((s) => s.movePaneToNewHTab);
+  const movePaneToNode = useStore((s) => s.movePaneToNode);
   const [dropTarget, setDropTarget] = useState<PaneDropTarget>(null);
   const dropTargetRef = useRef<PaneDropTarget>(null);
   const htabDropTargetRef = useRef<string | null>(null);
+  // Dropped on the tab strip but not on any tab → detach into a new tab.
+  const newHTabDropRef = useRef(false);
+  // Dropped on a sidebar page row → new tab on that page.
+  const nodeDropTargetRef = useRef<string | null>(null);
 
   const updateDropTarget = (next: PaneDropTarget) => {
     dropTargetRef.current = next;
@@ -287,41 +296,91 @@ export function SplitView({ htab }: { htab: HTab }) {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button,input")) return;
     e.preventDefault();
 
+    const dragged = findLeaf(htab.layout, dragId);
+    const ghost = createDragGhost(dragged?.title ?? "pane");
+    ghost.move(e.clientX, e.clientY);
+    const source = document.querySelector<HTMLElement>(`[data-pane-id="${CSS.escape(dragId)}"]`);
+    source?.classList.add("dragging");
+
     const clearTabHover = () => {
       document
         .querySelectorAll(".htab.pane-drop-target")
         .forEach((el) => el.classList.remove("pane-drop-target"));
+      document
+        .querySelectorAll(".htabbar.pane-drop-new")
+        .forEach((el) => el.classList.remove("pane-drop-new"));
+      document
+        .querySelectorAll(".tree-row.tab-drop-target")
+        .forEach((el) => el.classList.remove("tab-drop-target"));
     };
 
     const onMove = (ev: PointerEvent) => {
       clearTabHover();
-      const tab = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-htab-id]");
+      ghost.move(ev.clientX, ev.clientY);
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const tab = under?.closest<HTMLElement>("[data-htab-id]");
       const targetHTabId = tab?.dataset.htabId ?? null;
       if (tab && targetHTabId && targetHTabId !== htab.id) {
         htabDropTargetRef.current = targetHTabId;
+        newHTabDropRef.current = false;
+        nodeDropTargetRef.current = null;
         tab.classList.add("pane-drop-target");
+        ghost.setHint(t("drag.toTab"));
         updateDropTarget(null);
         return;
       }
       htabDropTargetRef.current = null;
 
-      const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-pane-id]");
-      const targetId = el?.dataset.paneId;
-      if (!el || !targetId || targetId === dragId) {
+      // Over a sidebar page: the pane lands there as a new tab.
+      const row = under?.closest<HTMLElement>("[data-tree-node-id]");
+      const rowNodeId = row?.dataset.treeNodeId ?? null;
+      if (row && rowNodeId) {
+        nodeDropTargetRef.current = rowNodeId;
+        newHTabDropRef.current = false;
+        row.classList.add("tab-drop-target");
+        ghost.setHint(t("drag.toPage"));
         updateDropTarget(null);
         return;
       }
-      updateDropTarget({ id: targetId, edge: edgeFor(el.getBoundingClientRect(), ev.clientX, ev.clientY) });
+      nodeDropTargetRef.current = null;
+
+      // Over the strip itself (or its controls) but not over a tab: dropping
+      // here pulls the pane out into a new tab.
+      const bar = under?.closest<HTMLElement>(".htabbar");
+      if (bar && !tab) {
+        newHTabDropRef.current = true;
+        bar.classList.add("pane-drop-new");
+        ghost.setHint(t("drag.newTab"));
+        updateDropTarget(null);
+        return;
+      }
+      newHTabDropRef.current = false;
+
+      const el = under?.closest<HTMLElement>("[data-pane-id]");
+      const targetId = el?.dataset.paneId;
+      if (!el || !targetId || targetId === dragId) {
+        ghost.setHint(null);
+        updateDropTarget(null);
+        return;
+      }
+      const edge = edgeFor(el.getBoundingClientRect(), ev.clientX, ev.clientY);
+      ghost.setHint(t(`drag.edge.${edge}`));
+      updateDropTarget({ id: targetId, edge });
     };
 
     const onUp = () => {
       const target = dropTargetRef.current;
       const targetHTabId = htabDropTargetRef.current;
+      const toNewHTab = newHTabDropRef.current;
+      const targetNodeId = nodeDropTargetRef.current;
       htabDropTargetRef.current = null;
+      newHTabDropRef.current = false;
+      nodeDropTargetRef.current = null;
       updateDropTarget(null);
       clearTabHover();
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      ghost.destroy();
+      source?.classList.remove("dragging");
+      endDragCursor();
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
@@ -329,11 +388,18 @@ export function SplitView({ htab }: { htab: HTab }) {
         movePaneToHTab(dragId, targetHTabId);
         return;
       }
+      if (targetNodeId) {
+        movePaneToNode(dragId, targetNodeId);
+        return;
+      }
+      if (toNewHTab) {
+        movePaneToNewHTab(dragId);
+        return;
+      }
       if (target) movePane(dragId, target.id, target.edge);
     };
 
-    document.body.style.cursor = "grabbing";
-    document.body.style.userSelect = "none";
+    beginDragCursor();
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);

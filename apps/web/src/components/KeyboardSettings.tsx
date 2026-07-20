@@ -7,9 +7,16 @@ import {
   DEFAULT_KEYBINDINGS,
   formatChord,
 } from "../keybindings";
+import { useI18n } from "../i18n";
 import { useStore } from "../state/store";
 
-const GROUPS: ActionGroup[] = ["Tabs & panes", "Navigation", "Appearance", "General"];
+/** Display order for the sections, paired with their i18n key. */
+const GROUPS: { group: ActionGroup; key: string }[] = [
+  { group: "Tabs & panes", key: "kb.group.tabs" },
+  { group: "Navigation", key: "kb.group.navigation" },
+  { group: "Appearance", key: "kb.group.appearance" },
+  { group: "General", key: "kb.group.general" },
+];
 
 /**
  * Keyboard-shortcut customization. Click a binding to capture the next chord;
@@ -18,6 +25,7 @@ const GROUPS: ActionGroup[] = ["Tabs & panes", "Navigation", "Appearance", "Gene
  * the catalog wins at dispatch time (see App.tsx).
  */
 export function KeyboardSettings() {
+  const { t } = useI18n();
   const keybindings = useStore((s) => s.keybindings);
   const setKeybinding = useStore((s) => s.setKeybinding);
   const resetKeybindings = useStore((s) => s.resetKeybindings);
@@ -54,16 +62,16 @@ export function KeyboardSettings() {
     <>
       <div className="ms-head">
         <div className="settings-section-title" style={{ marginBottom: 0 }}>
-          KEYBOARD SHORTCUTS
+          {t("kb.title")}
         </div>
         <button className="ms-btn" onClick={resetKeybindings}>
-          Reset all
+          {t("kb.resetAll")}
         </button>
       </div>
 
-      {GROUPS.map((group) => (
+      {GROUPS.map(({ group, key }) => (
         <div key={group} className="kb-group">
-          <div className="kb-group-title">{group}</div>
+          <div className="kb-group-title">{t(key)}</div>
           {ACTIONS.filter((a) => a.group === group).map((a) => {
             const chord = keybindings[a.id] ?? a.default;
             const label = formatChord(chord);
@@ -71,25 +79,25 @@ export function KeyboardSettings() {
             const isCustom = !chordsEqual(chord, DEFAULT_KEYBINDINGS[a.id]);
             return (
               <div key={a.id} className="kb-row">
-                <span className="kb-label">{a.label}</span>
+                <span className="kb-label">{t(`kb.action.${a.id}`)}</span>
                 <div className="kb-controls">
                   {isCustom && capturing !== a.id && (
                     <button
                       className="kb-reset"
-                      title="Reset to default"
+                      title={t("kb.resetTitle")}
                       onClick={() => setKeybinding(a.id, null)}
                     >
-                      Reset
+                      {t("kb.reset")}
                     </button>
                   )}
                   <button
                     className={`kb-chord${capturing === a.id ? " capturing" : ""}${
                       conflict ? " conflict" : ""
                     }`}
-                    title={conflict ? "Conflicts with another shortcut" : "Click to rebind"}
+                    title={conflict ? t("kb.conflict") : t("kb.rebind")}
                     onClick={() => setCapturing(capturing === a.id ? null : a.id)}
                   >
-                    {capturing === a.id ? "Press keys…" : label}
+                    {capturing === a.id ? t("kb.capturing") : label}
                   </button>
                 </div>
               </div>

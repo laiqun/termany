@@ -132,30 +132,68 @@ fn frontend_ready_for_open_paths(state: tauri::State<'_, OpenPathState>) -> Vec<
     }
 }
 
+/// Minimal blocking HTTP GET against the local server; `None` unless it answered
+/// 200. Hand-rolled because this runs before anything else is up and a real HTTP
+/// client would be a dependency for one request.
+fn server_get(path: &str) -> Option<String> {
+    let mut addrs = ("127.0.0.1", SERVER_PORT).to_socket_addrs().ok()?;
+    let addr = addrs.next()?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(250)).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1000)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+    // `Connection: close` means the server ends the body by closing the socket,
+    // so reading to EOF needs no Content-Length parsing.
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    if !(head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200")) {
+        return None; // includes the 404 an older server gives for /api/version
+    }
+    Some(body.to_owned())
+}
+
+/// Pull `version` out of `{"version":"0.1.17"}` without pulling in a JSON dep.
+fn parse_version_field(body: &str) -> Option<String> {
+    let rest = body.split_once("\"version\"")?.1;
+    let rest = rest.split_once('"')?.1;
+    let (value, _) = rest.split_once('"')?;
+    Some(value.to_owned())
+}
+
+/// Is a server already listening on our port, and is it OURS?
+///
 /// In a packaged build there is no `npm run dev` to start the backend, so the
 /// app launches the bundled Node server itself (PTY over ws://localhost:5174 +
-/// the /api/* endpoints). In dev (`debug_assertions`) the concurrently-run dev
-/// server already owns that port, so we don't spawn — we'd just collide.
-fn existing_server_responds() -> bool {
-    let Ok(mut addrs) = ("127.0.0.1", SERVER_PORT).to_socket_addrs() else {
+/// the /api/* endpoints) — unless a usable one is already there.
+///
+/// "Responds at all" is not enough. The bundled server deliberately outlives an
+/// ordinary quit (so shells survive relaunch), which means that right after an
+/// upgrade the PREVIOUS release's server is usually still holding the port. If
+/// we reuse it, this build's UI ends up talking to an older backend and every
+/// route added since that release 404s — the user sees a dashboard stuck on
+/// "Could not load …" with nothing obviously wrong. So a version mismatch
+/// counts as unhealthy: the caller then kills it and spawns the matching one.
+///
+/// Mismatch in either direction restarts, including the rarer
+/// downgrade/run-an-older-build case — matching this app beats guessing.
+fn existing_server_matches(expected: &str) -> bool {
+    let Some(body) = server_get("/api/version") else {
         return false;
     };
-    let Some(addr) = addrs.next() else {
-        return false;
-    };
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(250)) else {
-        return false;
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    if stream
-        .write_all(b"GET /api/state HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return false;
+    match parse_version_field(&body) {
+        Some(found) if found == expected => true,
+        Some(found) => {
+            eprintln!(
+                "[termany] server on localhost:{SERVER_PORT} is version {found}, this app is {expected} — restarting it"
+            );
+            false
+        }
+        None => false,
     }
-    let mut buf = [0u8; 64];
-    matches!(stream.read(&mut buf), Ok(n) if std::str::from_utf8(&buf[..n]).is_ok_and(|s| s.starts_with("HTTP/1.1 200") || s.starts_with("HTTP/1.0 200")))
 }
 
 fn server_port_is_open() -> bool {
@@ -214,7 +252,7 @@ fn is_termany_server_command(command: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn kill_unresponsive_termany_server() {
+fn kill_termany_server_on_port() {
     if !server_port_is_open() {
         return;
     }
@@ -240,14 +278,15 @@ fn kill_unresponsive_termany_server() {
 }
 
 #[cfg(not(unix))]
-fn kill_unresponsive_termany_server() {}
+fn kill_termany_server_on_port() {}
 
 fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
-    if existing_server_responds() {
+    let version = app.package_info().version.to_string();
+    if existing_server_matches(&version) {
         eprintln!("[termany] reusing existing PTY server on localhost:{SERVER_PORT}");
         return None;
     }
-    kill_unresponsive_termany_server();
+    kill_termany_server_on_port();
 
     let resource_dir = match app.path().resource_dir() {
         Ok(d) => d,
@@ -561,4 +600,27 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_version_field;
+
+    #[test]
+    fn reads_the_version_out_of_a_json_body() {
+        assert_eq!(parse_version_field(r#"{"version":"0.1.17"}"#).as_deref(), Some("0.1.17"));
+        // Whitespace and extra keys are what a different serializer might emit.
+        assert_eq!(
+            parse_version_field(r#"{"ok":true, "version": "1.2.3" }"#).as_deref(),
+            Some("1.2.3")
+        );
+    }
+
+    #[test]
+    fn rejects_bodies_without_a_version() {
+        // An older server 404s, so we only ever see a non-version body by accident.
+        assert_eq!(parse_version_field("{}"), None);
+        assert_eq!(parse_version_field("not json at all"), None);
+        assert_eq!(parse_version_field(r#"{"version":"#), None);
+    }
 }

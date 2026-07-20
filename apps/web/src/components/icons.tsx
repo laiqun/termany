@@ -11,6 +11,7 @@ import {
   ChevronsUpDown,
   ChevronUp,
   Code2,
+  Command,
   Eye,
   File,
   Folder,
@@ -21,8 +22,12 @@ import {
   ExternalLink,
   ArrowLeft,
   ArrowRight,
+  Activity,
   Bot,
   ChartColumn,
+  Check,
+  FlaskConical,
+  Loader2,
   Maximize2,
   Minimize2,
   PanelLeft,
@@ -113,6 +118,11 @@ export function TerminalIcon() {
   return <SquareTerminal {...base} />;
 }
 
+/** ⌘ glyph — a runnable action in the command palette. */
+export function CommandIcon() {
+  return <Command {...base} />;
+}
+
 export function WebIcon() {
   return <Globe {...base} />;
 }
@@ -151,6 +161,26 @@ export function HistoryIcon() {
 /** Column chart — the agent token-usage dashboard. */
 export function ChartIcon() {
   return <ChartColumn {...base} />;
+}
+
+/** Check mark — a passed connectivity test. */
+export function CheckIcon() {
+  return <Check {...base} />;
+}
+
+/** Flask — run a provider connectivity test. */
+export function FlaskIcon() {
+  return <FlaskConical {...base} />;
+}
+
+/** Spinning loader for in-flight actions. */
+export function SpinnerIcon() {
+  return <Loader2 {...base} className="spin" />;
+}
+
+/** Pulse line — the system CPU/memory monitor. */
+export function ActivityIcon() {
+  return <Activity {...base} />;
 }
 
 /** Branching folder glyph — toggle a pane between terminal and file-tree view. */

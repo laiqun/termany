@@ -80,6 +80,12 @@ export interface HTab {
   focused: string;
   /** When set, only this leaf is shown, filling the tab (Wave-style magnify). */
   maximized?: string;
+  /**
+   * Index into this tab's layout presets, advanced by retilePanes. Undefined
+   * means "hand-arranged" — the next press lands on preset 0 rather than
+   * skipping past it.
+   */
+  layoutPreset?: number;
 }
 
 export interface TreeNode {
@@ -177,6 +183,11 @@ interface State {
    * blank tab if it would otherwise be left with none.
    */
   moveHTab: (tabId: string, fromNodeId: string, toNodeId: string) => void;
+  /**
+   * Pull a tab out onto a brand-new root page (drag tab → empty part of the
+   * sidebar tree). The new page is named after the tab and becomes active.
+   */
+  moveHTabToNewNode: (tabId: string, fromNodeId: string) => void;
 
   /** Split the focused pane of the active tab in the given direction. */
   splitFocused: (dir: "row" | "col") => void;
@@ -210,8 +221,27 @@ interface State {
   movePane: (dragId: string, targetId: string, edge: DropEdge) => void;
   /** Move a pane from the active tab into another tab on the same page. */
   movePaneToHTab: (dragId: string, targetHTabId: string) => void;
+  /**
+   * Pull a pane out into a brand-new tab (drag pane → empty part of the tab
+   * strip). No-op when the pane is the only one in its tab — there'd be nothing
+   * to detach from, and the source tab would be left holding a blank shell.
+   */
+  movePaneToNewHTab: (dragId: string) => void;
+  /**
+   * Move a pane onto another page (drag pane → sidebar row): it lands there as
+   * a new tab. Like movePaneToNewHTab, a no-op for a tab's only pane.
+   */
+  movePaneToNode: (dragId: string, toNodeId: string) => void;
   /** Set the child fractions of the split node at `path` (child-index trail). */
   resizeSplit: (path: number[], sizes: number[]) => void;
+  /**
+   * Cycle the active tab through the sensible layouts for its pane count —
+   * balanced grid, main+sidebar variants, all-columns, all-rows — discarding
+   * manual sizes. Repeating the action steps to the next arrangement.
+   */
+  retilePanes: () => void;
+  /** Move the divider next to the focused pane one step in `dir`. */
+  nudgeSplit: (dir: "left" | "right" | "up" | "down") => void;
 }
 
 const id = () => crypto.randomUUID();
@@ -232,7 +262,8 @@ function makeHTab(n: number): HTab {
 
 // --- pane layout helpers ---------------------------------------------------
 
-function leafIds(pane: Pane): string[] {
+/** Every leaf (session) id under a pane, in layout order. */
+export function leafIds(pane: Pane): string[] {
   return pane.kind === "leaf" ? [pane.id] : pane.children.flatMap(leafIds);
 }
 
@@ -320,21 +351,102 @@ function splitPane(pane: Pane, targetId: string, dir: "row" | "col", newLeaf: Pa
   return { ...pane, children: pane.children.map((c) => splitPane(c, targetId, dir, newLeaf)) };
 }
 
+/** Leaves per row for a balanced grid of `n` panes, widest row first. */
+function gridRows(n: number): number[] {
+  // Hand-picked up to MAX_PANES_PER_TAB: on a wide window 3 panes read better
+  // as three columns than as the 2+1 that a plain sqrt would give.
+  const table = [[1], [2], [3], [2, 2], [3, 2], [3, 3]];
+  if (n <= table.length) return table[n - 1];
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  // Spread the remainder over the leading rows so row widths differ by ≤ 1.
+  return Array.from({ length: rows }, (_, i) => Math.floor(n / rows) + (i < n % rows ? 1 : 0));
+}
+
 /**
- * Append `leaf` as a new full-height column at the FAR RIGHT of the whole
- * layout — used by the side rail's "new pane" buttons, which always add
- * alongside everything else rather than splitting whatever happens to be
- * focused (that's splitFocused/splitPane's job, for the split-this-pane
- * gesture). Merges into an existing top-level row split same as splitPane;
- * otherwise wraps the whole tree in a new one, so the existing layout keeps
- * its full height on the left and the new leaf gets its own full-height
- * column on the right regardless of what's nested inside.
+ * Append `leaf` and re-tile the whole tab into a balanced grid — used by the
+ * side rail's "new pane" buttons and by dragging a pane into another tab,
+ * which add alongside everything else rather than splitting whatever happens
+ * to be focused (that's splitFocused/splitPane's job, for the split-this-pane
+ * gesture). Appending a full-height column each time left every pane ~300px
+ * wide by the 5th one, so instead we flatten to the leaf list in visual order
+ * and rebuild as rows of columns (5 panes → 3 over 2). Existing leaves keep
+ * their identity, so sessions only detach/reattach — shells and scrollback
+ * survive (see TerminalPane). Manual gutter sizes are dropped: re-tiling means
+ * even by definition.
  */
-function appendColumn(pane: Pane, leaf: Pane): Pane {
-  if (pane.kind === "split" && pane.dir === "row") {
-    return { ...pane, children: [...pane.children, leaf], sizes: undefined };
+function tileLayout(pane: Pane, leaf: Pane): Pane {
+  return tileLeaves([...flattenLeaves(pane), leaf]);
+}
+
+/** Rebuild a layout from `leaves` in order as a balanced, evenly-sized grid. */
+function tileLeaves(leaves: Pane[]): Pane {
+  const rows: Pane[] = [];
+  let i = 0;
+  for (const width of gridRows(leaves.length)) {
+    const cells = leaves.slice(i, i + width);
+    i += width;
+    rows.push(cells.length === 1 ? cells[0] : { kind: "split", dir: "row", children: cells });
   }
-  return { kind: "split", dir: "row", children: [pane, leaf] };
+  return rows.length === 1 ? rows[0] : { kind: "split", dir: "col", children: rows };
+}
+
+function flattenLeaves(pane: Pane): Pane[] {
+  return pane.kind === "leaf" ? [pane] : pane.children.flatMap(flattenLeaves);
+}
+
+const rowOf = (cells: Pane[]): Pane =>
+  cells.length === 1 ? cells[0] : { kind: "split", dir: "row", children: cells };
+const colOf = (cells: Pane[]): Pane =>
+  cells.length === 1 ? cells[0] : { kind: "split", dir: "col", children: cells };
+
+/** Arrange leaves into rows of the given widths (widest row first). */
+function tileRows(leaves: Pane[], widths: number[]): Pane {
+  const rows: Pane[] = [];
+  let i = 0;
+  for (const w of widths) {
+    rows.push(rowOf(leaves.slice(i, i + w)));
+    i += w;
+  }
+  return colOf(rows);
+}
+
+/** Structural fingerprint (split dirs + nesting), ignoring which leaf is where. */
+function shapeKey(pane: Pane): string {
+  return pane.kind === "leaf" ? "." : `${pane.dir}(${pane.children.map(shapeKey).join("")})`;
+}
+
+/**
+ * The layouts worth cycling through for `n` panes, in order of usefulness —
+ * balanced grid first (the "just make it sane" answer), then the asymmetric
+ * main+sidebar arrangements people actually work in, then the degenerate
+ * all-columns / all-rows. Shapes that would come out identical for this n are
+ * dropped, so every press visibly changes something: at n=3 the grid already
+ * IS three columns, so "columns" is not offered twice.
+ */
+function layoutPresets(n: number): Array<(leaves: Pane[]) => Pane> {
+  if (n <= 1) return [(l) => l[0]];
+  const candidates: Array<(leaves: Pane[]) => Pane> = [
+    (l) => tileRows(l, gridRows(n)),
+  ];
+  if (n >= 3) {
+    // One big pane plus the rest stacked beside/below it.
+    candidates.push((l) => rowOf([l[0], colOf(l.slice(1))]));
+    candidates.push((l) => colOf([l[0], rowOf(l.slice(1))]));
+    // …and the mirrored pair, so the big pane can live on the right/bottom.
+    candidates.push((l) => rowOf([colOf(l.slice(0, -1)), l[l.length - 1]]));
+  }
+  candidates.push((l) => rowOf(l));
+  candidates.push((l) => colOf(l));
+
+  const probe = Array.from({ length: n }, (_, i) => makeLeaf(String(i)));
+  const seen = new Set<string>();
+  return candidates.filter((build) => {
+    const key = shapeKey(build(probe));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** Remove a leaf; collapses splits that drop to a single child. Null = empty. */
@@ -760,6 +872,36 @@ export const useStore = create<State>((set) => ({
       };
     }),
 
+  moveHTabToNewNode: (tabId, fromNodeId) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => {
+        const from = findNode(ws.roots, fromNodeId);
+        const moving = from?.htabs.find((h) => h.id === tabId);
+        if (!moving) return ws;
+        const roots = updateNode(ws.roots, fromNodeId, (n) => {
+          const htabs = n.htabs.filter((h) => h.id !== tabId);
+          if (htabs.length === 0) {
+            const h = makeHTab(1);
+            return { ...n, htabs: [h], activeHTab: h.id };
+          }
+          return {
+            ...n,
+            htabs,
+            activeHTab: n.activeHTab === tabId ? htabs[htabs.length - 1].id : n.activeHTab,
+          };
+        });
+        const created: TreeNode = {
+          id: id(),
+          title: moving.title,
+          expanded: true,
+          children: [],
+          htabs: [moving],
+          activeHTab: moving.id,
+        };
+        return { ...ws, roots: [...roots, created], activeNode: created.id };
+      }),
+    })),
+
   splitFocused: (dir) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -1001,7 +1143,7 @@ export const useStore = create<State>((set) => ({
             inheritSessionCwd(leaf.id, h.focused);
             return {
               ...h,
-              layout: appendColumn(h.layout, leaf),
+              layout: tileLayout(h.layout, leaf),
               focused: leaf.id,
               maximized: undefined,
             };
@@ -1080,7 +1222,7 @@ export const useStore = create<State>((set) => ({
               if (h.id === target.id) {
                 return {
                   ...h,
-                  layout: appendColumn(h.layout, dragged),
+                  layout: tileLayout(h.layout, dragged),
                   focused: dragged.id,
                   maximized: undefined,
                 };
@@ -1092,6 +1234,81 @@ export const useStore = create<State>((set) => ({
       })),
     })),
 
+  movePaneToNewHTab: (dragId) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+          const source = n.htabs.find((h) => h.id === n.activeHTab);
+          const dragged = source ? findLeaf(source.layout, dragId) : undefined;
+          if (!source || !dragged) return n;
+          const without = removeLeaf(source.layout, dragId);
+          if (!without) return n; // last pane of the tab — nothing to detach
+          const created: HTab = {
+            id: id(),
+            title: dragged.title,
+            layout: dragged,
+            focused: dragged.id,
+          };
+          return {
+            ...n,
+            activeHTab: created.id,
+            htabs: [
+              ...n.htabs.map((h) =>
+                h.id === source.id
+                  ? {
+                      ...h,
+                      layout: without,
+                      focused: h.focused === dragId ? firstLeaf(without) : h.focused,
+                      maximized: h.maximized === dragId ? undefined : h.maximized,
+                    }
+                  : h
+              ),
+              created,
+            ],
+          };
+        }),
+      })),
+    })),
+
+  movePaneToNode: (dragId, toNodeId) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => {
+        const from = findNode(ws.roots, ws.activeNode);
+        const source = from?.htabs.find((h) => h.id === from.activeHTab);
+        const dragged = source ? findLeaf(source.layout, dragId) : undefined;
+        if (!from || !source || !dragged || !findNode(ws.roots, toNodeId)) return ws;
+        const without = removeLeaf(source.layout, dragId);
+        if (!without) return ws; // last pane of the tab — nothing to detach
+        const created: HTab = {
+          id: id(),
+          title: dragged.title,
+          layout: dragged,
+          focused: dragged.id,
+        };
+        let roots = updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) =>
+            h.id === source.id
+              ? {
+                  ...h,
+                  layout: without,
+                  focused: h.focused === dragId ? firstLeaf(without) : h.focused,
+                  maximized: h.maximized === dragId ? undefined : h.maximized,
+                }
+              : h
+          ),
+        }));
+        // Follow the pane to its new page, same as dragging a whole tab there.
+        roots = updateNode(roots, toNodeId, (n) => ({
+          ...n,
+          htabs: [...n.htabs, created],
+          activeHTab: created.id,
+        }));
+        return { ...ws, roots, activeNode: toNodeId };
+      }),
+    })),
+
   resizeSplit: (path, sizes) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -1101,6 +1318,89 @@ export const useStore = create<State>((set) => ({
           htabs: n.htabs.map((h) =>
             h.id === n.activeHTab ? { ...h, layout: setSizesAt(h.layout, path, sizes) } : h
           ),
+        })),
+      })),
+    })),
+
+  retilePanes: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const leaves = flattenLeaves(h.layout);
+            const presets = layoutPresets(leaves.length);
+            // Undefined preset = hand-arranged layout, so the first press
+            // lands on preset 0; after that each press advances one step.
+            // Modulo re-clamps when the pane count changed between presses.
+            const next = h.layoutPreset === undefined ? 0 : (h.layoutPreset + 1) % presets.length;
+            return {
+              ...h,
+              layout: presets[next](leaves),
+              layoutPreset: next,
+              // Drop magnify too: it hides every other pane, so re-tiling
+              // under it would be an invisible no-op from the user's side.
+              maximized: undefined,
+            };
+          }),
+        })),
+      })),
+    })),
+
+  nudgeSplit: (dir) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const wantDir = dir === "left" || dir === "right" ? "row" : "col";
+            // Walk down to the focused leaf, remembering the LAST split that
+            // runs along the requested axis — that's the divider the user
+            // means, even when the focused pane sits several levels deep.
+            type Divider = { path: number[]; index: number; node: Pane & { kind: "split" } };
+            // Returns [reachedFocusedLeaf, nearest matching divider below here].
+            const walk = (p: Pane, path: number[]): [boolean, Divider | null] => {
+              if (p.kind === "leaf") return [p.id === h.focused, null];
+              for (let i = 0; i < p.children.length; i++) {
+                const [hit, deeper] = walk(p.children[i], [...path, i]);
+                if (!hit) continue;
+                // Prefer the divider closest to the focused pane; only claim
+                // this level when nothing deeper already matched the axis.
+                return [true, deeper ?? (p.dir === wantDir ? { path, index: i, node: p } : null)];
+              }
+              return [false, null];
+            };
+            const found = walk(h.layout, [])[1];
+            if (!found) return h; // no divider on this axis — nothing to move
+            const { path: at, index, node } = found;
+            const count = node.children.length;
+            const sizes = node.sizes ?? Array(count).fill(1 / count);
+            const forward = dir === "right" || dir === "down";
+            // Move the divider ADJACENT to the focused pane, in the absolute
+            // direction asked for — so the focused pane grows when the divider
+            // is on the side it is moving toward, and shrinks when it is the
+            // last pane and only the divider behind it can move (iTerm2's
+            // "Move Divider Right" behaves the same way at the edge).
+            const lo = forward
+              ? (index + 1 < count ? index : index - 1)
+              : (index - 1 >= 0 ? index - 1 : index);
+            const hi = lo + 1;
+            if (lo < 0 || hi >= count) return h; // single child: no divider at all
+            // Moving the divider forward grows what is before it; back grows what is after.
+            const [gain, lose] = forward ? [lo, hi] : [hi, lo];
+            const STEP = 0.03;
+            const MIN = 0.08; // keep a pane from collapsing to an unusable sliver
+            const give = Math.min(STEP, Math.max(0, sizes[lose] - MIN));
+            if (give <= 0) return h;
+            const next = [...sizes];
+            next[gain] += give;
+            next[lose] -= give;
+            return { ...h, layout: setSizesAt(h.layout, at, next) };
+          }),
         })),
       })),
     })),

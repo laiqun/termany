@@ -7,7 +7,8 @@ import { loadState, startStateSync, waitForServer } from "./state/sync";
 import { useStore } from "./state/store";
 import "./styles.css";
 import { loadSnapshots, startScrollSync } from "./terminal/scroll";
-import { applyTheme, loadAiThemes, loadThemeId, THEMES } from "./themes";
+import { applyTheme, loadAiThemes, loadThemeId, storedThemeId, THEMES } from "./themes";
+import { hydrateCodexTheme, isCodexPackTheme } from "./themes/codex-packs";
 
 // In the desktop shell the window is borderless + transparent so we can draw our
 // own rounded corners and traffic lights. Tag <html> so the CSS only kicks in there.
@@ -17,7 +18,19 @@ if (isTauri) document.documentElement.classList.add("tauri");
 // persisted theme before first render — no flash, and the first terminals are
 // created with the right palette.
 loadAiThemes();
+// Read the selection BEFORE painting: a selected CodexThemes package isn't
+// registered yet (it lives on disk, not in the bundle or localStorage), so
+// applyTheme falls back to the default — and applyTheme persists what it
+// applied, which would overwrite the very id we still need.
+const pendingCodexTheme = storedThemeId();
 applyTheme(loadThemeId());
+
+// Swap the real package in as soon as the server can be read.
+if (pendingCodexTheme && isCodexPackTheme(pendingCodexTheme)) {
+  void hydrateCodexTheme(pendingCodexTheme).then((ok) => {
+    if (ok) useStore.getState().setTheme(pendingCodexTheme);
+  });
+}
 
 // Demo mode (the marketing site embeds this build in an iframe): the embedding
 // page drives the theme — initial via `?theme=<id|system>`, live switches via
