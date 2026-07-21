@@ -41,6 +41,7 @@ function TreeItem({
   onNodePointerDown: (id: string, e: ReactPointerEvent<HTMLDivElement>) => void;
   consumeSuppressedClick: () => boolean;
 }) {
+  const { t } = useI18n();
   const activeId = useStore((s) => activeWorkspace(s).activeNode);
   const setActiveNode = useStore((s) => s.setActiveNode);
   const toggleExpand = useStore((s) => s.toggleExpand);
@@ -168,7 +169,7 @@ function TreeItem({
         )}
         <button
           className="tree-act"
-          title="Add nested page"
+          title={t("sidebar.addNestedPage")}
           onClick={(e) => {
             e.stopPropagation();
             addChildNode(node.id);
@@ -178,7 +179,7 @@ function TreeItem({
         </button>
         <button
           className="tree-act"
-          title="Delete (and everything under it)"
+          title={t("sidebar.deletePageTree")}
           onClick={(e) => {
             e.stopPropagation();
             deleteNode(node.id);
@@ -187,7 +188,7 @@ function TreeItem({
           <CloseIcon />
         </button>
         {node.htabs.length > 1 && (
-          <span className="tree-count" title={`${node.htabs.length} terminals`}>
+          <span className="tree-count" title={t("sidebar.terminals", { count: node.htabs.length })}>
             {node.htabs.length}
           </span>
         )}
@@ -358,12 +359,12 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
           <span className="section-chevron">
             <ChevronIcon dir={collapsed ? "right" : "down"} />
           </span>
-          <span className="section-title">PAGES</span>
+          <span className="section-title">{t("sidebar.pages")}</span>
         </button>
         <div className="section-actions">
           <button
             className="mini"
-            title={withShortcut("New page", "newPage")}
+            title={withShortcut(t("sidebar.newPage"), "newPage")}
             onClick={(e) => {
               e.stopPropagation();
               addRootNode();
@@ -373,7 +374,7 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
           </button>
           <button
             className="mini"
-            title="Collapse all"
+            title={t("sidebar.collapseAll")}
             onClick={(e) => {
               e.stopPropagation();
               collapseAll();

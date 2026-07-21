@@ -28,7 +28,29 @@ import { applyTheme, loadThemeId, THEMES } from "../themes";
  *
  * A leaf's `id` is the terminal session id in the registry.
  */
-export type PaneView = "terminal" | "files" | "web" | "git";
+export type PaneView = "terminal" | "files" | "git" | "agent" | "web";
+
+/** One slice of a reply, in arrival order: prose or a tool invocation.
+ *  `status` is the ACP tool-call status: pending | in_progress | completed | failed.
+ *  `input`/`output` are display-ready detail strings (command / result),
+ *  revealed when the tool row is expanded. */
+export type AgentPart =
+  | { kind: "text"; text: string }
+  | { kind: "tool"; id: string; title: string; status?: string; input?: string; output?: string };
+
+export interface AgentMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  /** The reply interleaved with the tool calls that produced it (ACP runtimes).
+   *  Only present when at least one tool ran; `content` stays the full text. */
+  parts?: AgentPart[];
+  /** Wall-clock run time, shown on the collapsed tool-call header. */
+  durationMs?: number;
+  /** Why the reply stopped, rendered in place of (or after) the content. */
+  error?: string;
+}
 
 export type Pane =
   | {
@@ -49,6 +71,19 @@ export type Pane =
        *  session-history browser resumes into it — lets a later click on the
        *  same conversation jump here instead of resuming a second copy. */
       agentSession?: { agent: string; sessionId: string };
+      /** Native Agent-pane conversation state. Stored with the layout so a
+       *  conversation survives switching tabs and relaunching the app. */
+      agentMessages?: AgentMessage[];
+      /** "providerId/modelName"; unset follows the current default model. */
+      agentModel?: string;
+      /** Agent registry id for an ACP-backed native conversation. Undefined
+       *  means "never chosen" (the pane defaults to the first enabled
+       *  runtime); "" is an explicit Chat-mode choice (Termany's lightweight
+       *  BYOK chat endpoint). */
+      agentRuntime?: string;
+      /** Working folder the user picked explicitly for the ACP agent. Unset
+       *  inherits the source terminal's live cwd (via cwdFrom). */
+      agentCwd?: string;
     }
   | {
       kind: "split";
@@ -203,6 +238,10 @@ interface State {
   prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
   setPaneAgentSession: (leafId: string, info: { agent: string; sessionId: string }) => void;
+  setAgentMessages: (leafId: string, messages: AgentMessage[]) => void;
+  setAgentModel: (leafId: string, model: string) => void;
+  setAgentRuntime: (leafId: string, runtimeId: string) => void;
+  setAgentCwd: (leafId: string, cwd: string) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
@@ -251,8 +290,19 @@ const id = () => crypto.randomUUID();
 // Rearranging (movePane) doesn't change the count, so it isn't gated by this.
 const MAX_PANES_PER_TAB = 6;
 
-function makeLeaf(title = "terminal"): Pane & { kind: "leaf" } {
+function makeLeaf(title = "pane 1"): Pane & { kind: "leaf" } {
   return { kind: "leaf", id: id(), title };
+}
+
+/** Default pane labels are scoped to a tab and keep increasing even if an
+ *  earlier pane was closed, matching the existing page 1 / tab 1 convention. */
+function nextPaneTitle(layout: Pane): string {
+  const highest = flattenLeaves(layout).reduce((max, pane) => {
+    if (pane.kind !== "leaf") return max;
+    const match = /^pane (\d+)$/i.exec(pane.title.trim());
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return `pane ${highest + 1}`;
 }
 
 function makeHTab(n: number): HTab {
@@ -477,6 +527,29 @@ function makeNode(title: string): TreeNode {
   return { id: id(), title, expanded: true, children: [], htabs: [h], activeHTab: h.id };
 }
 
+/**
+ * Which pane's directory a tab "is in" — the one the user last had focused
+ * there. A tab has no cwd of its own; only its leaves' shells do.
+ */
+function tabCwdSource(h: HTab): string {
+  return findLeaf(h.layout, h.focused) ? h.focused : firstLeaf(h.layout);
+}
+
+/** Same idea one level up: a page's directory is its active tab's directory. */
+function nodeCwdSource(n: TreeNode): string | undefined {
+  const h = n.htabs.find((t) => t.id === n.activeHTab) ?? n.htabs[0];
+  return h ? tabCwdSource(h) : undefined;
+}
+
+/**
+ * Start `node`'s first shell wherever `source` is, so a freshly created page
+ * doesn't drop the user back in their home directory. No-op without a source
+ * (a first root page has nothing to inherit from).
+ */
+function inheritNodeCwd(node: TreeNode, source: string | undefined) {
+  if (source) inheritSessionCwd(node.htabs[0].focused, source);
+}
+
 function initialWorkspace(title: string): Workspace {
   const root = makeNode("page 1");
   return { id: id(), title, roots: [root], activeNode: root.id };
@@ -565,6 +638,28 @@ const first = initialWorkspace("ws 1");
 /** Map only the active workspace; pass others through untouched. */
 function inActiveWs(s: State, fn: (ws: Workspace) => Workspace): Workspace[] {
   return s.workspaces.map((ws) => (ws.id === s.activeWorkspace ? fn(ws) : ws));
+}
+
+/** Update a leaf by globally unique id even if its tab was backgrounded while
+ * an async operation was finishing (notably an Agent response stream). */
+function updateLeafEverywhere(
+  workspaces: Workspace[],
+  leafId: string,
+  fn: (leaf: Pane & { kind: "leaf" }) => Pane & { kind: "leaf" }
+): Workspace[] {
+  const updatePane = (pane: Pane): Pane =>
+    pane.kind === "leaf"
+      ? pane.id === leafId
+        ? fn(pane)
+        : pane
+      : { ...pane, children: pane.children.map(updatePane) };
+  const updateNodes = (nodes: TreeNode[]): TreeNode[] =>
+    nodes.map((node) => ({
+      ...node,
+      htabs: node.htabs.map((tab) => ({ ...tab, layout: updatePane(tab.layout) })),
+      children: updateNodes(node.children),
+    }));
+  return workspaces.map((workspace) => ({ ...workspace, roots: updateNodes(workspace.roots) }));
 }
 
 /** Close one leaf in the active tab; drops the whole tab if it was the last pane. */
@@ -699,6 +794,8 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => {
         const node = makeNode(`page ${ws.roots.length + 1}`);
+        // Lands after the last root, so that's the page it sits next to.
+        inheritNodeCwd(node, ws.roots.length ? nodeCwdSource(ws.roots[ws.roots.length - 1]) : undefined);
         return { ...ws, roots: [...ws.roots, node], activeNode: node.id };
       }),
     })),
@@ -707,6 +804,11 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => {
         const child = makeNode("untitled");
+        // Inherit from the sibling it lands next to; the first child of a page
+        // has no sibling, so it follows the parent page instead.
+        const parent = findNode(ws.roots, parentId);
+        const prev = parent?.children[parent.children.length - 1];
+        inheritNodeCwd(child, (prev && nodeCwdSource(prev)) ?? (parent && nodeCwdSource(parent)));
         return { ...ws, roots: insertChild(ws.roots, parentId, child), activeNode: child.id };
       }),
     })),
@@ -798,6 +900,10 @@ export const useStore = create<State>((set) => ({
         ...ws,
         roots: updateNode(ws.roots, ws.activeNode, (n) => {
           const h = makeHTab(n.htabs.length + 1);
+          // Follow the tab the user is coming from — which is also what the
+          // page's directory means, so the no-tabs case needs no separate path.
+          const source = nodeCwdSource(n);
+          if (source) inheritSessionCwd(h.focused, source);
           return { ...n, htabs: [...n.htabs, h], activeHTab: h.id };
         }),
       })),
@@ -910,7 +1016,7 @@ export const useStore = create<State>((set) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
-            const leaf = makeLeaf();
+            const leaf = makeLeaf(nextPaneTitle(h.layout));
             inheritSessionCwd(leaf.id, h.focused);
             return {
               ...h,
@@ -1040,6 +1146,41 @@ export const useStore = create<State>((set) => ({
       })),
     })),
 
+  setAgentMessages: (leafId, messages) =>
+    set((s) => ({
+      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+        ...leaf,
+        // Keep layout persistence comfortably below the 1 MB state endpoint
+        // cap. A dedicated transcript store can lift this rolling window later.
+        agentMessages: messages.slice(-24).map((item) => ({
+          ...item,
+          content: item.content.slice(0, 12_000),
+        })),
+      })),
+    })),
+
+  setAgentModel: (leafId, model) =>
+    set((s) => ({
+      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({ ...leaf, agentModel: model })),
+    })),
+
+  setAgentRuntime: (leafId, runtimeId) =>
+    set((s) => ({
+      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+        ...leaf,
+        // Keep "" distinct from undefined: it records an explicit Chat choice.
+        agentRuntime: runtimeId,
+      })),
+    })),
+
+  setAgentCwd: (leafId, cwd) =>
+    set((s) => ({
+      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+        ...leaf,
+        agentCwd: cwd || undefined,
+      })),
+    })),
+
   togglePaneView: (leafId) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -1048,10 +1189,23 @@ export const useStore = create<State>((set) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
+            // ⌘E cycles through the same order shown in the pane menu and rail.
             const flip = (p: Pane): Pane =>
               p.kind === "leaf"
                 ? p.id === leafId
-                  ? { ...p, view: p.view === "terminal" || !p.view ? "files" : "terminal" }
+                  ? {
+                      ...p,
+                      view:
+                        p.view === "files"
+                          ? "git"
+                          : p.view === "git"
+                            ? "agent"
+                            : p.view === "agent"
+                              ? "web"
+                              : p.view === "web"
+                                ? "terminal"
+                                : "files",
+                    }
                   : p
                 : { ...p, children: p.children.map(flip) };
             return { ...h, layout: flip(h.layout) };
@@ -1134,16 +1288,13 @@ export const useStore = create<State>((set) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
-            // A files-view leaf gets no PTY session of its own (TerminalPane
-            // never mounts for it), so it can't resolve "my own live cwd" the
-            // way a terminal pane does — instead it opens rooted at whatever
-            // pane was focused when created (see FileTree's initialCwdFrom).
-            // A files/git leaf gets no PTY of its own, so it can't resolve "my own
-            // live cwd" — it follows the pane that was focused when it was created.
+            // Non-terminal views that work on a directory follow the pane that
+            // was focused when they were created, because they have no PTY of
+            // their own from which to resolve a live cwd.
             const leaf = {
-              ...makeLeaf(title ?? view),
+              ...makeLeaf(title ?? nextPaneTitle(h.layout)),
               view,
-              cwdFrom: view === "files" || view === "git" ? h.focused : undefined,
+              cwdFrom: view === "files" || view === "git" || view === "agent" ? h.focused : undefined,
             };
             created = leaf.id;
             inheritSessionCwd(leaf.id, h.focused);

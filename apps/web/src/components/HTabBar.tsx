@@ -65,15 +65,15 @@ export function HTabBar() {
     <div className="htab-controls">
       <button
         className="bar-btn"
-        title={withShortcut(collapsed ? "Show sidebar" : "Hide sidebar", "toggleSidebar")}
+        title={withShortcut(t(collapsed ? "sidebar.show" : "sidebar.hide"), "toggleSidebar")}
         onClick={toggleSidebar}
       >
         <PanelIcon />
       </button>
-      <button className="bar-btn" title="Previous workspace" disabled={solo} onClick={prevWorkspace}>
+      <button className="bar-btn" title={t("action.prevWorkspace")} disabled={solo} onClick={prevWorkspace}>
         <ChevronIcon dir="left" />
       </button>
-      <button className="bar-btn" title="Next workspace" disabled={solo} onClick={nextWorkspace}>
+      <button className="bar-btn" title={t("action.nextWorkspace")} disabled={solo} onClick={nextWorkspace}>
         <ChevronIcon dir="right" />
       </button>
     </div>
@@ -217,7 +217,7 @@ export function HTabBar() {
                   <span className="htab-title">{h.title}</span>
                   <button
                     className="htab-close"
-                    title={withShortcut("Close", "closePane")}
+                    title={withShortcut(t("common.close"), "closePane")}
                     onClick={(e) => {
                       e.stopPropagation();
                       closeHTab(h.id);
@@ -232,7 +232,7 @@ export function HTabBar() {
         })()
       ))}
       {node && (
-        <button className="htab-add" title={withShortcut("New terminal tab", "newTab")} onClick={addHTab}>
+        <button className="htab-add" title={withShortcut(t("action.newTab"), "newTab")} onClick={addHTab}>
           <PlusIcon />
         </button>
       )}
@@ -244,7 +244,7 @@ export function HTabBar() {
       </div>
       <button
         className="bar-btn rail-toggle"
-        title={withShortcut(railCollapsed ? "Show panel" : "Hide panel", "toggleRail")}
+        title={withShortcut(t(railCollapsed ? "rail.show" : "rail.hide"), "toggleRail")}
         onClick={toggleRail}
       >
         <PanelRightIcon />
