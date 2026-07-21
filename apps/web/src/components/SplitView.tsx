@@ -9,6 +9,7 @@ import { focusSession } from "../terminal/manager";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
+  ActivityIcon,
   ChatIcon,
   CheckIcon,
   ChevronIcon,
@@ -21,6 +22,7 @@ import {
   WebIcon,
 } from "./icons";
 import { AgentPane } from "./AgentPane";
+import { SystemMonitor } from "./SystemMonitor";
 import { TerminalPane } from "./TerminalPane";
 import { WebBrowserPane } from "./WebBrowserPane";
 
@@ -50,6 +52,7 @@ const PANE_VIEWS = [
   { view: "git", labelKey: "pane.view.git", Icon: GitBranchIcon },
   { view: "agent", labelKey: "pane.view.agent", Icon: ChatIcon },
   { view: "web", labelKey: "pane.view.web", Icon: WebIcon },
+  { view: "monitor", labelKey: "pane.view.monitor", Icon: ActivityIcon },
 ] as const;
 
 /** Header dropdown switching this pane between all four pane views — the same
@@ -255,6 +258,8 @@ function PaneSlot({
           />
         ) : leaf.view === "git" ? (
           <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
+        ) : leaf.view === "monitor" ? (
+          <SystemMonitor />
         ) : leaf.view === "web" ? (
           <WebBrowserPane id={leaf.id} />
         ) : leaf.view === "agent" ? (

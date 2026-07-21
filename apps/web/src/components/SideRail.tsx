@@ -27,6 +27,7 @@ const RAIL_ITEMS: Array<{ view: PaneView; icon: () => JSX.Element }> = [
   { view: "git", icon: GitBranchIcon },
   { view: "agent", icon: ChatIcon },
   { view: "web", icon: WebIcon },
+  { view: "monitor", icon: ActivityIcon },
 ];
 
 /**
@@ -45,7 +46,6 @@ export function SideRail({
   onOpenAgentsSettings,
   onOpenClaudeHistory,
   onOpenAgentUsage,
-  onOpenSystemMonitor,
 }: {
   agentsOpen: boolean;
   onAgentsOpenChange: (open: boolean) => void;
@@ -53,7 +53,6 @@ export function SideRail({
   onOpenAgentsSettings: () => void;
   onOpenClaudeHistory: () => void;
   onOpenAgentUsage: () => void;
-  onOpenSystemMonitor: () => void;
 }) {
   const addPane = useStore((s) => s.addPane);
   const setPaneView = useStore((s) => s.setPaneView);
@@ -179,13 +178,6 @@ export function SideRail({
         onClick={onOpenAgentUsage}
       >
         <ChartIcon />
-      </button>
-      <button
-        className="side-rail-btn"
-        title={withShortcut(t("action.openSystemMonitor"), "openSystemMonitor")}
-        onClick={onOpenSystemMonitor}
-      >
-        <ActivityIcon />
       </button>
       <button
         className="side-rail-btn side-rail-settings"

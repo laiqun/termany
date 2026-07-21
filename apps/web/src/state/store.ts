@@ -28,7 +28,7 @@ import { applyTheme, loadThemeId, THEMES } from "../themes";
  *
  * A leaf's `id` is the terminal session id in the registry.
  */
-export type PaneView = "terminal" | "files" | "git" | "agent" | "web";
+export type PaneView = "terminal" | "files" | "git" | "agent" | "web" | "monitor";
 
 /** One slice of a reply, in arrival order: prose or a tool invocation.
  *  `status` is the ACP tool-call status: pending | in_progress | completed | failed.
