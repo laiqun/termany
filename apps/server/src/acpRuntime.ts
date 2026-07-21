@@ -181,7 +181,7 @@ class Runtime {
       await connection.agent.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: {},
-        clientInfo: { name: "Termany", version: "0.1.19" },
+        clientInfo: { name: "Termany", version: "0.1.20" },
       });
       const session = await connection.agent.buildSession(cwd).start();
       runtime = new Runtime(paneId, agent, cwd, child, connection, session);
