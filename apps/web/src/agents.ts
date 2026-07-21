@@ -30,10 +30,22 @@ export type AgentConfig = {
   builtIn: boolean;
   detected?: boolean;
   detectedPath?: string;
+  runtime?: AgentRuntimeConfig;
 };
 
-type StoredAgentConfig = Partial<Omit<AgentConfig, "builtIn" | "detected" | "detectedPath">> & {
+export type AgentRuntimeConfig = {
+  protocol: "acp";
+  command: string;
+  args: string;
+  distribution: "managed" | "system" | "custom";
+  modelSource: "termany" | "agent";
+};
+
+type StoredAgentConfig = Partial<Omit<AgentConfig, "builtIn" | "detected" | "detectedPath" | "runtime">> & {
   id: string;
+  /** Missing in legacy data means "inherit the built-in adapter"; null means
+   *  the user explicitly disabled conversation runtime support. */
+  runtime?: AgentRuntimeConfig | null;
 };
 
 export const DEFAULT_AGENTS: AgentConfig[] = [
@@ -99,6 +111,13 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: false,
     icon: opencodeIcon,
     builtIn: true,
+    runtime: {
+      protocol: "acp",
+      command: "opencode",
+      args: "acp",
+      distribution: "system",
+      modelSource: "agent",
+    },
   },
   {
     id: "kilocode",
@@ -155,6 +174,7 @@ function storedShape(agent: AgentConfig): StoredAgentConfig {
     args: agent.args,
     enabled: agent.enabled,
     icon: agent.builtIn ? undefined : agent.icon,
+    runtime: agent.runtime ?? null,
   };
 }
 
@@ -177,7 +197,15 @@ function normalize(saved: StoredAgentConfig[]): AgentConfig[] {
       const base = defaultById.get(id);
       const stored = savedById.get(id);
       if (base) {
-        return { ...base, ...stored, icon: stored?.icon || base.icon, builtIn: true };
+        return {
+          ...base,
+          ...stored,
+          icon: stored?.icon || base.icon,
+          runtime: stored && "runtime" in stored
+            ? stored.runtime ?? undefined
+            : base.runtime,
+          builtIn: true,
+        };
       }
       if (stored) {
         return {
@@ -187,6 +215,7 @@ function normalize(saved: StoredAgentConfig[]): AgentConfig[] {
           args: stored.args ?? "",
           enabled: stored.enabled ?? true,
           icon: stored.icon,
+          runtime: stored.runtime ?? undefined,
           builtIn: false,
         };
       }
@@ -208,8 +237,35 @@ export function loadAgentConfigs(): AgentConfig[] {
 }
 
 export function saveAgentConfigs(agents: AgentConfig[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(agents.map(storedShape)));
+  const stored = agents.map(storedShape);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
   window.dispatchEvent(new Event(AGENTS_CHANGED_EVENT));
+  void fetch(apiPath("/api/agents"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agents: stored }),
+  }).catch(() => undefined);
+}
+
+/**
+ * Pull the server-owned registry into the browser. A legacy localStorage list
+ * wins exactly once when the server has no saved registry yet, then is copied
+ * to SQLite by saveAgentConfigs().
+ */
+export async function syncAgentConfigs(): Promise<AgentConfig[]> {
+  const response = await fetch(apiPath("/api/agents"));
+  if (!response.ok) throw new Error(`request failed (${response.status})`);
+  const data = await response.json();
+  const hasLegacy = localStorage.getItem(STORAGE_KEY) !== null;
+  if (!data.persisted && hasLegacy) {
+    const local = loadAgentConfigs();
+    saveAgentConfigs(local);
+    return local;
+  }
+  const next = normalize(Array.isArray(data.agents) ? data.agents : []);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(next.map(storedShape)));
+  window.dispatchEvent(new Event(AGENTS_CHANGED_EVENT));
+  return next;
 }
 
 export function agentCommand(agent: AgentConfig) {
@@ -253,6 +309,7 @@ export function useAgentConfigs() {
     const onChange = () => setAgents(loadAgentConfigs());
     window.addEventListener(AGENTS_CHANGED_EVENT, onChange);
     window.addEventListener("storage", onChange);
+    void syncAgentConfigs().catch(() => undefined);
     return () => {
       window.removeEventListener(AGENTS_CHANGED_EVENT, onChange);
       window.removeEventListener("storage", onChange);

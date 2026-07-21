@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^1.2.1",
     "@anthropic-ai/sdk": "^0.106.0",
     "node-pty": "^1.0.0",
     "undici": "^8.5.0",

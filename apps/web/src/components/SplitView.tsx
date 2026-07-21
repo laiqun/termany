@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
 import { useI18n } from "../i18n";
@@ -7,7 +7,22 @@ import { withShortcut } from "../keybindings";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import { focusSession } from "../terminal/manager";
 import { FileTree } from "./FileTree";
-import { CloseIcon, FilesIcon, MaximizeIcon, RestoreIcon, TerminalIcon, WebIcon } from "./icons";
+import { GitDiffView } from "./GitDiffView";
+import {
+  ActivityIcon,
+  ChatIcon,
+  CheckIcon,
+  ChevronIcon,
+  CloseIcon,
+  FilesIcon,
+  GitBranchIcon,
+  MaximizeIcon,
+  RestoreIcon,
+  TerminalIcon,
+  WebIcon,
+} from "./icons";
+import { AgentPane } from "./AgentPane";
+import { SystemMonitor } from "./SystemMonitor";
 import { TerminalPane } from "./TerminalPane";
 import { WebBrowserPane } from "./WebBrowserPane";
 
@@ -31,6 +46,88 @@ function edgeFor(rect: DOMRect, x: number, y: number): DropEdge {
   return (Object.keys(d) as DropEdge[]).reduce((a, b) => (d[b] < d[a] ? b : a));
 }
 
+const PANE_VIEWS = [
+  { view: "terminal", labelKey: "pane.view.terminal", Icon: TerminalIcon },
+  { view: "files", labelKey: "pane.view.files", Icon: FilesIcon },
+  { view: "git", labelKey: "pane.view.git", Icon: GitBranchIcon },
+  { view: "agent", labelKey: "pane.view.agent", Icon: ChatIcon },
+  { view: "web", labelKey: "pane.view.web", Icon: WebIcon },
+  { view: "monitor", labelKey: "pane.view.monitor", Icon: ActivityIcon },
+] as const;
+
+/** Header dropdown switching this pane between all four pane views — the same
+ *  order ⌘E cycles through. */
+function PaneViewMenu({ leaf }: { leaf: Leaf }) {
+  const { t } = useI18n();
+  const setPaneView = useStore((s) => s.setPaneView);
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const occluderId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setOpen(false);
+    };
+    window.addEventListener("click", onClick);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("click", onClick);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
+
+  // Native previews paint above the DOM; blank the ones this panel covers.
+  useEffect(() => {
+    if (!open || !panelRef.current) return;
+    registerOccluder(occluderId, panelRef.current.getBoundingClientRect());
+    return () => unregisterOccluder(occluderId);
+  }, [open, occluderId]);
+
+  const current = leaf.view ?? "terminal";
+  const CurrentIcon = PANE_VIEWS.find((entry) => entry.view === current)!.Icon;
+  return (
+    <div className="pane-view-menu" ref={rootRef}>
+      <button
+        className="pane-btn pane-view-btn"
+        title={withShortcut(t("pane.view.switch"), "togglePaneView")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <CurrentIcon />
+        <ChevronIcon dir="down" />
+      </button>
+      {open && (
+        <div className="pop-panel pane-view-panel" role="menu" ref={panelRef}>
+          {PANE_VIEWS.map(({ view, labelKey, Icon }) => (
+            <button
+              key={view}
+              type="button"
+              role="menuitem"
+              className="pop-item"
+              onClick={() => {
+                setPaneView(leaf.id, view);
+                setOpen(false);
+              }}
+            >
+              <Icon />
+              <span className="pop-item-label">{t(labelKey)}</span>
+              {view === current && <CheckIcon />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** The header bar of a pane: drag handle, editable name, magnify + close. */
 function PaneHeader({
   leaf,
@@ -46,11 +143,7 @@ function PaneHeader({
   const renamePane = useStore((s) => s.renamePane);
   const closePane = useStore((s) => s.closePane);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
-  const setPaneView = useStore((s) => s.setPaneView);
   const [editing, setEditing] = useState(false);
-  const showingFiles = leaf.view === "files";
-  const showingWeb = leaf.view === "web";
-  const nextView = showingFiles ? "terminal" : "files";
   const renameWidth = `${Math.max(8, leaf.title.length + 1)}ch`;
 
   // Double-clicking the header zooms the pane, same as the maximize button —
@@ -68,9 +161,6 @@ function PaneHeader({
       onPointerDown={editing ? undefined : onPointerDown}
       onDoubleClick={onHeaderDoubleClick}
     >
-      <span className="pane-head-icon">
-        {showingFiles ? <FilesIcon /> : showingWeb ? <WebIcon /> : <TerminalIcon />}
-      </span>
       <span className="pane-head-name">
         {editing ? (
           <input
@@ -97,15 +187,7 @@ function PaneHeader({
       </span>
       <span className="pane-head-spacer" />
       <div className="pane-head-actions">
-        {!showingWeb && (
-          <button
-            className="pane-btn"
-            title={showingFiles ? "Show terminal" : "Show file tree"}
-            onClick={() => setPaneView(leaf.id, nextView)}
-          >
-            {showingFiles ? <TerminalIcon /> : <FilesIcon />}
-          </button>
-        )}
+        <PaneViewMenu leaf={leaf} />
         <button
           className="pane-btn"
           title={withShortcut(solo ? "Restore" : "Maximize", "toggleMaximize")}
@@ -174,8 +256,14 @@ function PaneSlot({
             explicitRoot={leaf.filesRoot}
             explicitSelected={leaf.filesSelected}
           />
+        ) : leaf.view === "git" ? (
+          <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
+        ) : leaf.view === "monitor" ? (
+          <SystemMonitor />
         ) : leaf.view === "web" ? (
           <WebBrowserPane id={leaf.id} />
+        ) : leaf.view === "agent" ? (
+          <AgentPane leaf={leaf} />
         ) : (
           <TerminalPane id={leaf.id} />
         )}
@@ -302,9 +390,10 @@ function leafKey(pane: Pane): string {
  * zoomed pane floating centered above it. Portaled to <body> so it centers in
  * the window rather than inside the (sidebar-offset) pane card. Native
  * webviews in background panes paint over any DOM scrim, so the scrim area is
- * registered as four occluder bands framing the floating pane — covered web
- * panes hide themselves while the floating one (whose rect is exactly the
- * hole) stays visible.
+ * registered as an occluder. A zoomed web pane needs four bands framing the
+ * floating pane so its own native view can stay visible in the middle; every
+ * other pane uses one full-screen occluder so a background native webview
+ * cannot paint through the DOM-only floating pane.
  */
 function ZenOverlay({
   htabId,
@@ -321,14 +410,21 @@ function ZenOverlay({
   const toggleMaximize = useStore((s) => s.toggleMaximize);
   const scrimRef = useRef<HTMLDivElement>(null);
   const paneRef = useRef<HTMLDivElement>(null);
+  const showsNativeView = leaf.view === "web";
 
   useEffect(() => {
     const scrim = scrimRef.current;
     const pane = paneRef.current;
     if (!scrim || !pane) return;
-    const ids = ["top", "bottom", "left", "right"].map((side) => `zen:${htabId}:${side}`);
+    const ids = showsNativeView
+      ? ["top", "bottom", "left", "right"].map((side) => `zen:${htabId}:${side}`)
+      : [`zen:${htabId}:full`];
     const sync = () => {
       const r = scrim.getBoundingClientRect();
+      if (!showsNativeView) {
+        registerOccluder(ids[0], r);
+        return;
+      }
       const p = pane.getBoundingClientRect();
       registerOccluder(ids[0], { x: r.x, y: r.y, width: r.width, height: p.y - r.y });
       registerOccluder(ids[1], { x: r.x, y: p.bottom, width: r.width, height: r.bottom - p.bottom });
@@ -339,11 +435,17 @@ function ZenOverlay({
     ro.observe(scrim);
     ro.observe(pane);
     sync();
+    // The pane's entry animation scales it (transform), which moves its rect
+    // without firing the ResizeObserver — the bands computed at mount overlap
+    // the settled pane and would keep a native webview inside it hidden
+    // forever. Re-measure once the animation lands.
+    pane.addEventListener("animationend", sync);
     return () => {
       ro.disconnect();
+      pane.removeEventListener("animationend", sync);
       ids.forEach(unregisterOccluder);
     };
-  }, [htabId]);
+  }, [htabId, showsNativeView]);
 
   return createPortal(
     <>

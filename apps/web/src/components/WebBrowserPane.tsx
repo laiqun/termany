@@ -3,7 +3,7 @@ import { isTauri } from "../env";
 import { isRectOccluded, subscribeOcclusionChanged } from "../nativeViewOcclusion";
 import { BackIcon, ExternalOpenIcon, ForwardIcon, RefreshIcon } from "./icons";
 
-const DEFAULT_URL = "https://termany.sh";
+const DEFAULT_URL = "https://github.com/thinkany-ai/termany";
 const NATIVE_VIEW_INSET = {
   top: 1,
   right: 1,
@@ -31,7 +31,14 @@ export function WebBrowserPane({ id }: { id: string }) {
     () => isTauri && document.body.classList.contains("native-webviews-suppressed"),
   );
   const viewportRef = useRef<HTMLDivElement>(null);
-  const label = useMemo(() => `web_${id.replace(/[^a-zA-Z0-9_/-]/g, "_")}_${viewKey}`, [id, viewKey]);
+  // Mount-unique suffix: zen (maximize) toggling remounts this pane, and the
+  // fresh webview would otherwise reuse the label of its still-closing
+  // predecessor, which rejects the creation.
+  const mountId = useRef(Math.random().toString(36).slice(2, 8)).current;
+  const label = useMemo(
+    () => `web_${id.replace(/[^a-zA-Z0-9_/-]/g, "_")}_${mountId}_${viewKey}`,
+    [id, mountId, viewKey]
+  );
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -88,6 +95,8 @@ export function WebBrowserPane({ id }: { id: string }) {
       return host.isConnected && rect.width > 2 && rect.height > 2;
     };
 
+    const canReveal = () => !suppressed && isHostVisible() && !isRectOccluded(bounds());
+
     const create = async () => {
       try {
         const { Webview, getCurrentWebview } = await import("@tauri-apps/api/webview");
@@ -97,16 +106,42 @@ export function WebBrowserPane({ id }: { id: string }) {
         webview = new Webview(getCurrentWebview().window, label, {
           url,
           ...bounds(),
-          focus: true,
+          // A newly-created native view can finish mounting after a DOM modal
+          // has opened. Keep it unfocused until canReveal() confirms it is
+          // still safe to place above the app's DOM.
+          focus: false,
           dragDropEnabled: false,
         });
         const bringForward = async () => {
           if (cancelled || !webview) return;
           try {
+            if (!canReveal()) {
+              visible = false;
+              await webview.hide();
+              return;
+            }
             await appWindow.show();
             await appWindow.setFocus();
+            // show()/focus() cross the native bridge. Suppression may have
+            // changed while the preceding calls were in flight, so check at
+            // the last possible moment before revealing the child view.
+            if (!canReveal()) {
+              visible = false;
+              await webview.hide();
+              return;
+            }
             await webview.show();
+            if (!canReveal()) {
+              visible = false;
+              await webview.hide();
+              return;
+            }
             await webview.setFocus();
+            if (!canReveal()) {
+              visible = false;
+              await webview.hide();
+              return;
+            }
             visible = true;
           } catch (err) {
             console.warn("Failed to focus webview", err);
@@ -144,18 +179,29 @@ export function WebBrowserPane({ id }: { id: string }) {
       const occluded = suppressed || isRectOccluded(next);
       setViewSuppressed(occluded);
       if (occluded || !isHostVisible()) {
-        if (visible) {
-          visible = false;
-          void webview.hide().catch(() => {});
-        }
+        // Do not trust `visible` while creation is in flight: Tauri may make
+        // the native view visible before the created event reaches us.
+        visible = false;
+        void webview.hide().catch(() => {});
         return;
       }
       void import("@tauri-apps/api/dpi").then(({ LogicalPosition, LogicalSize }) => {
+        // The import is asynchronous; a modal may have opened since this sync
+        // began. Never let that stale continuation re-show the native view.
+        if (!canReveal()) return;
         void webview?.setPosition(new LogicalPosition(next.x, next.y));
         void webview?.setSize(new LogicalSize(next.width, next.height));
         if (!visible) {
           visible = true;
-          void webview?.show().catch(() => {});
+          void webview
+            ?.show()
+            .then(() => {
+              if (!canReveal()) {
+                visible = false;
+                void webview?.hide().catch(() => {});
+              }
+            })
+            .catch(() => {});
         }
       });
     };

@@ -5,7 +5,9 @@ import {
   detectAgentConfigs,
   loadAgentConfigs,
   saveAgentConfigs,
+  syncAgentConfigs,
   type AgentConfig,
+  type AgentRuntimeConfig,
 } from "../agents";
 import { useI18n } from "../i18n";
 import { AgentIcon, ChevronIcon, CloseIcon, PlusIcon, RefreshIcon } from "./icons";
@@ -36,6 +38,25 @@ export function AgentSettings() {
     commit(agents.map((agent) => (agent.id === id ? { ...agent, ...patch } : agent)));
   };
 
+  const updateRuntime = (agent: AgentConfig, patch: Partial<AgentRuntimeConfig>) => {
+    if (!agent.runtime) return;
+    updateAgent(agent.id, { runtime: { ...agent.runtime, ...patch } });
+  };
+
+  const toggleRuntime = (agent: AgentConfig, enabled: boolean) => {
+    updateAgent(agent.id, {
+      runtime: enabled
+        ? agent.runtime ?? {
+            protocol: "acp",
+            command: agent.command,
+            args: "acp",
+            distribution: "system",
+            modelSource: "agent",
+          }
+        : undefined,
+    });
+  };
+
   const detect = async (source = agents) => {
     setDetecting(true);
     setStatus(null);
@@ -51,7 +72,9 @@ export function AgentSettings() {
   };
 
   useEffect(() => {
-    void detect(loadAgentConfigs());
+    void syncAgentConfigs()
+      .then((next) => detect(next))
+      .catch(() => detect(loadAgentConfigs()));
     // Detect once when the settings section opens; manual refresh stays explicit after that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -151,6 +174,69 @@ export function AgentSettings() {
                       spellCheck={false}
                     />
                   </label>
+                  <label className="agent-field agent-runtime-toggle">
+                    <span>{t("agents.runtime")}</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(agent.runtime)}
+                      onChange={(event) => toggleRuntime(agent, event.target.checked)}
+                    />
+                  </label>
+                  {agent.runtime && (
+                    <div className="agent-runtime-fields">
+                      <label className="agent-field">
+                        <span>{t("agents.runtimeProtocol")}</span>
+                        <select value="acp" disabled>
+                          <option value="acp">ACP</option>
+                        </select>
+                      </label>
+                      <label className="agent-field">
+                        <span>{t("agents.runtimeCommand")}</span>
+                        <input
+                          value={agent.runtime.command}
+                          onChange={(event) => updateRuntime(agent, { command: event.target.value })}
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label className="agent-field">
+                        <span>{t("agents.runtimeArgs")}</span>
+                        <input
+                          value={agent.runtime.args}
+                          onChange={(event) => updateRuntime(agent, { args: event.target.value })}
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label className="agent-field">
+                        <span>{t("agents.runtimeDistribution")}</span>
+                        <select
+                          value={agent.runtime.distribution}
+                          onChange={(event) =>
+                            updateRuntime(agent, {
+                              distribution: event.target.value as AgentRuntimeConfig["distribution"],
+                            })
+                          }
+                        >
+                          <option value="system">{t("agents.runtimeSystem")}</option>
+                          <option value="managed" disabled>{t("agents.runtimeManaged")}</option>
+                          <option value="custom">{t("agents.runtimeCustom")}</option>
+                        </select>
+                      </label>
+                      <label className="agent-field">
+                        <span>{t("agents.runtimeModels")}</span>
+                        <select
+                          value={agent.runtime.modelSource}
+                          onChange={(event) =>
+                            updateRuntime(agent, {
+                              modelSource: event.target.value as AgentRuntimeConfig["modelSource"],
+                            })
+                          }
+                        >
+                          <option value="agent">{t("agents.runtimeModelsAgent")}</option>
+                          <option value="termany" disabled>{t("agents.runtimeModelsTermany")}</option>
+                        </select>
+                      </label>
+                    </div>
+                  )}
                   {!agent.builtIn && (
                     <label className="agent-field">
                       <span>{t("agents.iconUrl")}</span>

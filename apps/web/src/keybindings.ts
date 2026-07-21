@@ -58,7 +58,7 @@ export const ACTIONS: ActionDef[] = [
   { id: "resizePaneRight", label: "Move divider right", group: "Tabs & panes", default: { code: "ArrowRight", meta: true, ctrl: true } },
   { id: "resizePaneUp", label: "Move divider up", group: "Tabs & panes", default: { code: "ArrowUp", meta: true, ctrl: true } },
   { id: "resizePaneDown", label: "Move divider down", group: "Tabs & panes", default: { code: "ArrowDown", meta: true, ctrl: true } },
-  { id: "togglePaneView", label: "Toggle terminal / file view", group: "Tabs & panes", default: { code: "KeyE", meta: true } },
+  { id: "togglePaneView", label: "Cycle terminal / files / git diff / conversation / browser view", group: "Tabs & panes", default: { code: "KeyE", meta: true } },
   { id: "zoomTerminalIn", label: "Increase terminal text size", group: "Appearance", default: { code: "Equal", meta: true, shift: true } },
   { id: "zoomTerminalOut", label: "Decrease terminal text size", group: "Appearance", default: { code: "Minus", meta: true } },
   { id: "resetTerminalZoom", label: "Reset terminal text size", group: "Appearance", default: { code: "Digit0", meta: true } },
@@ -86,15 +86,24 @@ export const ACTIONS: ActionDef[] = [
   { id: "prevWorkspace", label: "Previous workspace", group: "Navigation", default: { code: "BracketLeft", meta: true, ctrl: true } },
   { id: "previousTheme", label: "Previous theme", group: "Appearance", default: { code: "Comma", meta: true, alt: true } },
   { id: "nextTheme", label: "Next theme", group: "Appearance", default: { code: "Period", meta: true, alt: true } },
+  // Sits with the two theme-cycling chords above rather than under ⌘⇧, so the
+  // whole theme story is on ⌥⌘.
+  { id: "openThemePicker", label: "Open theme picker", group: "Appearance", default: { code: "KeyT", meta: true, alt: true } },
   { id: "toggleSidebar", label: "Toggle sidebar", group: "General", default: { code: "KeyB", meta: true } },
   // Mirrors ⌘B for the left sidebar, and matches iTerm2, whose right-hand
   // Toolbelt is also ⌘⇧B.
   { id: "toggleRail", label: "Toggle quick-action panel", group: "General", default: { code: "KeyB", meta: true, shift: true } },
   { id: "openSettings", label: "Open settings", group: "General", default: { code: "Comma", meta: true } },
+  { id: "showGitDiff", label: "Show git diff", group: "General", default: { code: "KeyG", meta: true, alt: true } },
   { id: "search", label: "Search pages, tabs & panels", group: "General", default: { code: "KeyP", meta: true }, hideInPalette: true },
   { id: "find", label: "Find in terminal", group: "General", default: { code: "KeyF", meta: true } },
   { id: "findNext", label: "Find next", group: "General", default: { code: "KeyG", meta: true } },
   { id: "findPrev", label: "Find previous", group: "General", default: { code: "KeyG", meta: true, shift: true } },
+  // The three side-rail panels. ⌘⇧H is free — macOS only claims ⌘H (hide) and
+  // ⌥⌘H (hide others), both of which stay with the native menu.
+  { id: "openAgentHistory", label: "Open agent session history", group: "General", default: { code: "KeyH", meta: true, shift: true } },
+  { id: "openAgentUsage", label: "Open agent token usage", group: "General", default: { code: "KeyU", meta: true, shift: true } },
+  { id: "openSystemMonitor", label: "Open system monitor", group: "General", default: { code: "KeyM", meta: true, shift: true } },
 ];
 
 /** Codes that are modifiers themselves — never a valid chord on their own. */
