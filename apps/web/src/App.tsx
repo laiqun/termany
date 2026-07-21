@@ -93,6 +93,18 @@ export function App() {
   // searching a terminal the user is no longer looking at — close it instead.
   useEffect(() => setFindOpen(false), [focusedPane]);
 
+  // Panes live far below this state, so their "manage models / agents" menu
+  // footers ask for a section over an event rather than a threaded-down prop.
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const section = (event as CustomEvent<SettingsSection>).detail;
+      lastSettingsSection.current = section;
+      setSettingsSection(section);
+    };
+    window.addEventListener("termany:open-settings", onOpen);
+    return () => window.removeEventListener("termany:open-settings", onOpen);
+  }, []);
+
   // Settings and Search are full-panel overlays, so blanket-hiding every
   // native webview in the workspace while either is open is correct. The
   // SideRail agent-menu dropdown is small and floating, not full-panel — it
@@ -171,6 +183,16 @@ export function App() {
       toggleRail: (s) => s.toggleRail(),
       openSettings,
       showGitDiff: () => setGitDiffOpen(true),
+      // The theme picker is a Settings section rather than its own panel, so
+      // the chord jumps straight to it — and toggles back out, like the panels
+      // below, so the same keys that opened it put it away.
+      openThemePicker: () => {
+        lastSettingsSection.current = "appearance";
+        setSettingsSection((cur) => (cur === "appearance" ? null : "appearance"));
+      },
+      openAgentHistory: () => setClaudeHistoryOpen((o) => !o),
+      openAgentUsage: () => setAgentUsageOpen((o) => !o),
+      openSystemMonitor: () => setSystemMonitorOpen((o) => !o),
       search: () => setSearchOpen((o) => !o),
       find: () => setFindOpen(true),
       findNext: (s) => {

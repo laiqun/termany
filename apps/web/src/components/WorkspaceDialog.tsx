@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n } from "../i18n";
 import { EmojiPicker } from "./EmojiPicker";
 
 const initial = (t: string) => t.trim().charAt(0).toUpperCase() || "?";
@@ -10,7 +11,7 @@ const initial = (t: string) => t.trim().charAt(0).toUpperCase() || "?";
 export function WorkspaceDialog({
   title: initTitle = "",
   icon: initIcon,
-  confirmLabel = "Done",
+  confirmLabel,
   onConfirm,
   onClose,
 }: {
@@ -20,6 +21,7 @@ export function WorkspaceDialog({
   onConfirm: (v: { title: string; icon?: string }) => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const [title, setTitle] = useState(initTitle);
   const [icon, setIcon] = useState<string | undefined>(initIcon);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -32,7 +34,7 @@ export function WorkspaceDialog({
     <div className="ws-dialog-backdrop" onClick={onClose}>
       <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="ws-dialog-row">
-          <button className="ws-dialog-icon" title="Choose icon" onClick={() => setPickerOpen((o) => !o)}>
+          <button className="ws-dialog-icon" title={t("workspace.chooseIcon")} onClick={() => setPickerOpen((o) => !o)}>
             {icon ? (
               <span className="ws-avatar emoji">{icon}</span>
             ) : (
@@ -43,7 +45,7 @@ export function WorkspaceDialog({
             className="ws-dialog-input"
             autoFocus
             value={title}
-            placeholder="Workspace name"
+            placeholder={t("workspace.namePlaceholder")}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {
               if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
@@ -65,10 +67,10 @@ export function WorkspaceDialog({
 
         <div className="ws-dialog-actions">
           <button className="ws-dialog-btn" onClick={onClose}>
-            Cancel
+            {t("common.cancel")}
           </button>
           <button className="ws-dialog-btn primary" onClick={submit} disabled={!title.trim()}>
-            {confirmLabel}
+            {confirmLabel ?? t("common.done")}
           </button>
         </div>
       </div>
