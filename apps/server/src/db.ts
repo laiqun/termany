@@ -76,6 +76,14 @@ export function setModelsRaw(json: string): void {
   setMeta("models", json);
 }
 
+export function getAgentsRaw(): string | null {
+  return getMeta("agents");
+}
+
+export function setAgentsRaw(json: string): void {
+  setMeta("agents", json);
+}
+
 // --- workspace layout ------------------------------------------------------
 
 export interface AppState {

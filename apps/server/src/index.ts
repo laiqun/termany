@@ -12,6 +12,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
+import { streamAgentChat } from "./agentChat.js";
+import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
+import { acpRuntimeCwd, closeAcpRuntimes, closeAllAcpRuntimes, promptAcpRuntime, respondAcpPermission } from "./acpRuntime.js";
 import { KillError, killProcess, readSystemStats } from "./systemStats.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
@@ -28,6 +31,7 @@ import {
   setSessionCwd,
 } from "./db.js";
 import { gitDiffs, gitOverview } from "./git.js";
+import { pickFolder } from "./folderPicker.js";
 import { testProvider } from "./providerTest.js";
 import { generateTheme } from "./theme.js";
 
@@ -526,6 +530,150 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // One Agent registry backs both terminal launch shortcuts and native ACP
+  // conversation panes. The browser may migrate its legacy localStorage copy
+  // here on first load; after that the server DB is the source of truth.
+  if (req.method === "GET" && req.url === "/api/agents") {
+    json(200, listAgentConfigs());
+    return;
+  }
+  if (req.method === "PUT" && req.url === "/api/agents") {
+    readJson(req)
+      .then((body) => json(200, { agents: saveAgentConfigs(body?.agents) }))
+      .catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/agent/acp/chat") {
+    readJson(req)
+      .then(async (body) => {
+        const paneId = String(body?.paneId ?? "");
+        const agentId = String(body?.agentId ?? "");
+        const prompt = String(body?.prompt ?? "").trim();
+        if (!paneId || !agentId || !prompt) throw new Error("paneId, agentId and prompt are required");
+        // A folder the user picked explicitly wins over the inherited terminal
+        // cwd; if it has since vanished, fail loudly rather than silently
+        // landing the agent somewhere else.
+        const requested = body?.cwd ? String(body.cwd) : "";
+        const explicitCwd = requested ? await dirIfValid(requested) : undefined;
+        if (requested && !explicitCwd) throw new Error(`Working folder no longer exists: ${requested}`);
+        const cwd = explicitCwd ?? (await resolveSpawnCwd(body?.cwdFrom ? String(body.cwdFrom) : null, paneId));
+        res.writeHead(200, {
+          "Content-Type": "application/x-ndjson; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        res.flushHeaders();
+        const abort = new AbortController();
+        req.on("aborted", () => abort.abort());
+        res.on("close", () => {
+          if (!res.writableEnded) abort.abort();
+        });
+        const heartbeat = setInterval(() => {
+          if (!res.writableEnded) res.write(`${JSON.stringify({ type: "heartbeat" })}\n`);
+        }, 10_000);
+        try {
+          await promptAcpRuntime({
+            paneId,
+            agentId,
+            cwd,
+            cwdExplicit: Boolean(explicitCwd),
+            prompt,
+            signal: abort.signal,
+            emit: (event) => {
+              if (!res.writableEnded) res.write(`${JSON.stringify(event)}\n`);
+            },
+          });
+          if (!res.writableEnded) res.end();
+        } catch (error) {
+          if (abort.signal.aborted || res.writableEnded) return;
+          const message = error instanceof Error ? error.message : String(error);
+          res.end(`${JSON.stringify({ type: "error", error: message })}\n`);
+        } finally {
+          clearInterval(heartbeat);
+        }
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Where an ACP conversation will run, so the composer chip always shows the
+  // true target: an explicit (re)pick wins, then the folder a live session is
+  // already bound to, then the same inheritance the chat endpoint would use.
+  // Reports whether the explicit pick is still valid so stale ones get dropped.
+  if (req.method === "GET" && reqUrl.pathname === "/api/agent/acp/cwd") {
+    void (async () => {
+      const requested = reqUrl.searchParams.get("cwd") || "";
+      const explicitCwd = requested ? await dirIfValid(requested) : undefined;
+      const cwd =
+        explicitCwd ??
+        acpRuntimeCwd(reqUrl.searchParams.get("paneId") ?? "") ??
+        (await resolveSpawnCwd(reqUrl.searchParams.get("cwdFrom"), reqUrl.searchParams.get("paneId")));
+      json(200, { cwd, home: os.homedir(), explicit: Boolean(explicitCwd) });
+    })().catch(fail);
+    return;
+  }
+
+  // OS-native folder dialog for picking an agent's working folder. Blocks this
+  // request (not the server) until the user chooses or cancels.
+  if (req.method === "POST" && req.url === "/api/agent/acp/pick-cwd") {
+    readJson(req)
+      .then(async (body) => {
+        const picked = await pickFolder(
+          String(body?.prompt ?? "") || "Choose a working folder",
+          await dirIfValid(body?.defaultPath ? String(body.defaultPath) : undefined)
+        );
+        json(200, picked ? { path: picked } : { cancelled: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/agent/acp/permission") {
+    readJson(req)
+      .then((body) => {
+        const ok = respondAcpPermission(
+          String(body?.paneId ?? ""),
+          String(body?.requestId ?? ""),
+          String(body?.optionId ?? "")
+        );
+        json(ok ? 200 : 404, ok ? { ok: true } : { error: "permission request is no longer active" });
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Native conversation panes use the configured BYOK provider. Normalize all
+  // upstream streaming protocols to newline-delimited JSON so API keys and
+  // provider quirks stay on the server side.
+  if (req.method === "POST" && req.url === "/api/agent/chat") {
+    readJson(req)
+      .then(async (body) => {
+        res.writeHead(200, {
+          "Content-Type": "application/x-ndjson; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        });
+        const abort = new AbortController();
+        req.on("aborted", () => abort.abort());
+        res.on("close", () => {
+          if (!res.writableEnded) abort.abort();
+        });
+        try {
+          const result = await streamAgentChat(body?.model, body?.messages, abort.signal, (text) => {
+            if (!res.writableEnded && text) res.write(`${JSON.stringify({ type: "delta", text })}\n`);
+          });
+          if (!res.writableEnded) res.end(`${JSON.stringify({ type: "done", model: result.model })}\n`);
+        } catch (err) {
+          if (abort.signal.aborted || res.writableEnded) return;
+          const message = err instanceof Error ? err.message : String(err);
+          res.end(`${JSON.stringify({ type: "error", error: message })}\n`);
+        }
+      })
+      .catch(fail);
+    return;
+  }
+
   // Detect local agent CLIs using the same login-shell PATH that terminal panes use.
   if (req.method === "POST" && req.url === "/api/agents/detect") {
     readJson(req)
@@ -593,6 +741,7 @@ const http = createServer((req, res) => {
       .then((body) => {
         const ids = Array.isArray(body?.ids) ? body.ids.map(String) : [];
         for (const id of ids) killSession(id);
+        closeAcpRuntimes(ids);
         forgetSessions(ids);
         json(200, { ok: true });
       })
@@ -1043,9 +1192,9 @@ async function sessionCwd(sessionId: string): Promise<string> {
 }
 
 /**
- * Where to start a new shell. A split inherits its sibling's live cwd
- * (`cwdFrom`); otherwise a restored pane lands in its own last-known directory
- * (persisted by the periodic sweep); failing both, the home directory.
+ * Where to start a new shell. A new pane/tab/page inherits its source pane's
+ * live cwd (`cwdFrom`); otherwise a restored pane lands in its own last-known
+ * directory (persisted by the periodic sweep); failing both, the home directory.
  */
 async function resolveSpawnCwd(cwdFrom: string | null, sessionId: string | null): Promise<string> {
   const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
@@ -1053,6 +1202,11 @@ async function resolveSpawnCwd(cwdFrom: string | null, sessionId: string | null)
     const source = ptySessions.get(cwdFrom)?.pty;
     const live = await dirIfValid(source ? await cwdForPid(source.pid) : undefined);
     if (live) return live;
+    // A new tab or page inherits from a pane the user may not have opened this
+    // run, so there's no PTY to read a live cwd from. Its swept directory is
+    // the next best thing — without this the inheritance silently lands in home.
+    const remembered = await dirIfValid(getSessionCwd(cwdFrom) ?? undefined);
+    if (remembered) return remembered;
   }
   if (sessionId) {
     const saved = await dirIfValid(getSessionCwd(sessionId) ?? undefined);
@@ -1254,6 +1408,7 @@ async function shutdown() {
       /* already gone */
     }
   }
+  closeAllAcpRuntimes();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

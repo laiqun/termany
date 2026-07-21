@@ -1496,6 +1496,47 @@ html.tauri #root {
   text-align: left;
   cursor: pointer;
 }
+.agent-menu-entry {
+  display: flex;
+  align-items: center;
+}
+.agent-menu-entry .agent-menu-item {
+  min-width: 0;
+  flex: 1;
+}
+.agent-menu-entry .agent-menu-item > span:nth-last-child(2),
+.agent-menu-entry .agent-menu-item > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-menu-entry .agent-menu-item > svg {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--fg-dim);
+}
+.agent-menu-terminal {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.agent-menu-terminal:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.agent-menu-terminal svg {
+  width: 15px;
+  height: 15px;
+}
 .agent-menu-item:hover {
   background: var(--bg-3);
 }
@@ -1616,6 +1657,8 @@ html.tauri #root {
 
 /* Per-pane header bar */
 .pane-head {
+  position: relative;
+  z-index: 8;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1631,12 +1674,6 @@ html.tauri #root {
 }
 .pane-head:active {
   cursor: grabbing;
-}
-.pane-head-icon {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  color: var(--fg-dim);
 }
 .pane-head-name {
   display: inline-flex;
@@ -1734,11 +1771,663 @@ html.tauri #root {
   background: var(--bg-3);
   color: var(--fg);
 }
+.pane-view-menu {
+  position: relative;
+  display: flex;
+  z-index: 7;
+}
+.pane-view-btn {
+  width: auto;
+  gap: 2px;
+  padding: 0 3px 0 5px;
+}
+.pane-view-btn > svg:first-child {
+  width: 14px;
+  height: 14px;
+}
+.pane-view-btn > svg:last-child {
+  width: 10px;
+  height: 10px;
+  opacity: 0.7;
+}
+/* Header dropdown opens downward, hugging the right edge of its trigger. */
+.pop-panel.pane-view-panel {
+  top: calc(100% + 4px);
+  bottom: auto;
+  right: 0;
+  left: auto;
+  min-width: 156px;
+  padding: 4px;
+  overflow: hidden;
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--border) 82%, var(--fg-dim));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24), 0 2px 8px rgba(0, 0, 0, 0.12);
+}
 
 .pane-body {
   position: relative;
   flex: 1;
   min-height: 0;
+}
+
+/* Native agent conversation pane. It deliberately shares the pane surface and
+   typography with the terminal chrome; the centered prompt well is the one
+   distinctive moment, then it settles into a quiet document-like thread. */
+.agent-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: color-mix(in srgb, var(--pane-bg, var(--bg)) 96%, var(--bg-2));
+  color: var(--fg);
+}
+.agent-thread {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.agent-messages {
+  width: min(620px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 34px 0 24px;
+}
+.agent-message {
+  position: relative;
+  margin: 0 0 26px;
+}
+.agent-message-content {
+  font-size: 14px;
+  line-height: 1.68;
+  overflow-wrap: anywhere;
+}
+/* The user bubble hugs its text and sits flush right; assistant answers stay
+   full width so markdown blocks (lists, code, tables) have room to breathe. */
+.agent-message-user {
+  width: fit-content;
+  max-width: min(88%, 640px);
+  margin-left: auto;
+}
+.agent-message-user .agent-message-content {
+  padding: 9px 14px;
+  border-radius: 16px;
+  background: var(--bg-3);
+}
+
+/* Revealed on hover (or keyboard focus), floating in the gap below the
+   message so the hidden state doesn't stretch the space between messages. */
+.agent-message-actions {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 1px;
+  color: var(--fg-dim);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.agent-message:hover .agent-message-actions,
+.agent-message-actions:focus-within {
+  opacity: 1;
+}
+.agent-message-user .agent-message-actions {
+  left: auto;
+  right: 0;
+}
+.agent-message-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.agent-message-action:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.agent-message-action svg {
+  width: 14px;
+  height: 14px;
+}
+.agent-message-time {
+  font-size: 11px;
+}
+
+/* Tool calls a reply ran, folded behind a "worked for…" header once done. */
+.agent-tools {
+  margin: 0 0 12px;
+}
+.agent-tools-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.agent-tools-header:disabled {
+  cursor: default;
+}
+.agent-tools-header:not(:disabled):hover {
+  color: var(--fg);
+}
+.agent-tools-header svg {
+  width: 12px;
+  height: 12px;
+}
+.agent-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 10px;
+}
+.agent-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* The row is a button: clicking it reveals the call's command and output.
+   Rows with no detail yet stay inert but keep the same layout. */
+.agent-tool-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-tool-row:disabled {
+  cursor: default;
+}
+.agent-tool-row:not(:disabled):hover {
+  color: var(--fg);
+}
+.agent-tool-row svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 3px;
+}
+.agent-tool .spin {
+  animation: ms-spin 0.9s linear infinite;
+}
+.agent-tool-failed {
+  color: #e06c75;
+}
+.agent-tool-title {
+  overflow-wrap: anywhere;
+}
+.agent-tool-detail {
+  margin: 0 0 4px 21px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow: auto;
+}
+/* Prose the agent wrote between tool calls — part of the log, so it reads
+   quieter than the final answer below the fold. */
+.agent-step-text {
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* Markdown rendered from assistant replies. Margins collapse at the edges so a
+   reply never opens or closes with stray whitespace. */
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body pre,
+.markdown-body table {
+  margin: 0 0 12px;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 20px 0 10px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.markdown-body h1 { font-size: 1.32em; }
+.markdown-body h2 { font-size: 1.2em; }
+.markdown-body h3 { font-size: 1.08em; }
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 { font-size: 1em; }
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.5em;
+}
+.markdown-body li {
+  margin: 3px 0;
+}
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin: 3px 0;
+}
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body strong {
+  font-weight: 650;
+}
+.markdown-body code {
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.9em;
+}
+.markdown-body pre {
+  padding: 12px 14px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+}
+
+/* Fenced code block wrapper: copy/run buttons float in the top-right corner,
+   revealed on hover. The wrapper owns the block margin; the pre inside loses
+   its own so `> :last-child` trimming still works when a block ends a reply. */
+.md-code {
+  position: relative;
+  margin: 0 0 12px;
+}
+.md-code > pre {
+  margin: 0;
+}
+.md-code-actions {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.md-code:hover .md-code-actions,
+.md-code-actions:focus-within {
+  opacity: 1;
+}
+.md-code-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.md-code-btn:hover {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.md-code-btn svg {
+  width: 13px;
+  height: 13px;
+}
+/* Contexts without a run target (no pane to spawn from) hide the run button. */
+.md-no-run .md-code-btn[data-action="run"] {
+  display: none;
+}
+.markdown-body pre code {
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  font-size: 0.86em;
+  line-height: 1.55;
+}
+.markdown-body blockquote {
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  color: var(--fg-dim);
+}
+.markdown-body hr {
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.markdown-body table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--bg-2);
+  font-weight: 600;
+}
+.markdown-body img {
+  max-width: 100%;
+}
+.agent-thinking {
+  color: var(--fg-dim);
+  animation: agent-thinking 1.35s ease-in-out infinite;
+}
+@keyframes agent-thinking {
+  50% { opacity: 0.45; }
+}
+.agent-welcome {
+  width: min(620px, calc(100% - 40px));
+  margin: 0 auto 22px;
+  text-align: center;
+}
+.agent-welcome h2 {
+  margin: 0 0 4px;
+  font-size: clamp(18px, 2vw, 24px);
+  font-weight: 560;
+  letter-spacing: -0.025em;
+}
+.agent-pane-empty {
+  justify-content: center;
+  padding-bottom: 3vh;
+}
+.agent-pane-empty .agent-thread {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.agent-composer-wrap {
+  flex: 0 0 auto;
+  width: min(620px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 0 0 18px;
+}
+.agent-pane:not(.agent-pane-empty) .agent-composer-wrap {
+  padding-top: 10px;
+  background: linear-gradient(to bottom, transparent, var(--pane-bg, var(--bg)) 16px);
+}
+/* A failed reply: the reason sits in the thread where the answer would be. */
+.agent-message-error {
+  color: #e06c75;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.markdown-body + .agent-message-error {
+  margin-top: 10px;
+}
+.agent-permission {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  color: var(--fg);
+  font-size: 12px;
+}
+.agent-permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 8px;
+}
+.agent-permission-actions button {
+  height: 27px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.agent-permission-actions button.allow {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.agent-permission-actions button.reject {
+  color: #e06c75;
+}
+.agent-composer {
+  border: 1px solid color-mix(in srgb, var(--border) 75%, var(--fg-dim));
+  border-radius: calc(var(--radius-lg) + 2px);
+  background: var(--bg);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.09);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.agent-composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 0 0 3px var(--accent-soft), 0 10px 34px rgba(0, 0, 0, 0.1);
+}
+.agent-composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  max-height: 180px;
+  resize: none;
+  overflow-y: auto;
+  border: none;
+  outline: none;
+  padding: 15px 16px 8px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.agent-composer textarea::placeholder {
+  color: var(--fg-dim);
+}
+.agent-composer textarea:disabled {
+  opacity: 0.7;
+}
+.agent-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 4px 7px 7px 11px;
+}
+.agent-composer-bar .pop-menu-left {
+  margin-left: auto;
+}
+.pop-menu {
+  position: relative;
+  min-width: 0;
+  display: flex;
+}
+.pop-trigger {
+  max-width: min(240px, 40vw);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 6px 0 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pop-trigger:hover:not(:disabled),
+.pop-trigger.open {
+  background: var(--bg-3);
+  color: var(--fg);
+}
+.pop-trigger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.pop-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pop-trigger svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  opacity: 0.7;
+}
+.pop-panel,
+.pop-sub {
+  position: absolute;
+  z-index: 40;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+/* No overflow here: it would clip the submenus that fly out of this box. */
+.pop-panel {
+  bottom: calc(100% + 6px);
+}
+.pop-menu-right .pop-panel {
+  left: 0;
+}
+.pop-menu-left .pop-panel {
+  right: 0;
+}
+/* Submenus fly out away from the composer edge their trigger hugs. */
+.pop-sub {
+  top: -6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.pop-menu-right .pop-sub {
+  left: calc(100% + 5px);
+}
+.pop-menu-left .pop-sub {
+  right: calc(100% + 5px);
+}
+.pop-row {
+  position: relative;
+}
+.pop-item {
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.pop-item:hover,
+.pop-item.active {
+  background: var(--bg-3);
+}
+.pop-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pop-item svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  color: var(--fg-dim);
+}
+.pop-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border);
+}
+.pop-empty {
+  padding: 8px 9px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.agent-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border: none;
+  border-radius: 50%;
+  background: var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+}
+.agent-send:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.agent-send:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+.agent-send.agent-stop {
+  background: var(--fg);
+}
+@media (max-width: 620px) {
+  .agent-messages,
+  .agent-welcome {
+    width: calc(100% - 24px);
+  }
+  .agent-composer-wrap {
+    width: calc(100% - 20px);
+  }
+  .pop-trigger {
+    max-width: 34vw;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-thinking { animation: none; }
+  .agent-send { transition: none; }
 }
 
 /* Drag-rearrange drop indicator */
@@ -2642,7 +3331,8 @@ html.tauri #root {
   color: var(--fg-dim);
   font-size: 12px;
 }
-.agent-field input {
+.agent-field input,
+.agent-field select {
   width: 100%;
   min-width: 0;
   padding: 8px 10px;
@@ -2655,8 +3345,26 @@ html.tauri #root {
   font-family: var(--mono);
   font-size: 13px;
 }
-.agent-field input:focus {
+.agent-field select {
+  appearance: auto;
+}
+.agent-field input:focus,
+.agent-field select:focus {
   border-color: var(--accent);
+}
+.agent-runtime-toggle input {
+  width: 16px;
+  justify-self: start;
+}
+.agent-runtime-fields {
+  margin: 4px 0 14px;
+  padding: 14px 14px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--bg-2) 65%, transparent);
+}
+.agent-runtime-fields .agent-field {
+  grid-template-columns: 110px minmax(0, 1fr);
 }
 .agent-settings-edit-foot {
   display: flex;

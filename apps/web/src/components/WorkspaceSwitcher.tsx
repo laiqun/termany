@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n } from "../i18n";
 import { useStore } from "../state/store";
 import { EmojiPicker } from "./EmojiPicker";
 import { ChevronIcon, EditIcon, GearIcon, PlusIcon, TrashIcon } from "./icons";
@@ -14,6 +15,7 @@ type DialogState = { mode: "new" } | { mode: "edit"; id: string; title: string; 
  * ones (via a name/icon dialog), and opens Settings.
  */
 export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { t } = useI18n();
   const workspaces = useStore((s) => s.workspaces);
   const activeId = useStore((s) => s.activeWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -41,7 +43,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
   return (
     <div className="ws-switcher">
       <div className="ws-head" data-tauri-drag-region>
-        <button className="ws-icon-btn" title="Change icon" onClick={() => setEmojiOpen((o) => !o)}>
+        <button className="ws-icon-btn" title={t("workspace.changeIcon")} onClick={() => setEmojiOpen((o) => !o)}>
           {avatar(active)}
         </button>
         <button className="ws-name-btn" onClick={() => setMenuOpen((o) => !o)}>
@@ -49,7 +51,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
           <span className="ws-chevron">
             <ChevronIcon dir="down" />
           </span>
-          {updateVersion && <span className="update-dot" title={`Update ${updateVersion} available`} />}
+          {updateVersion && <span className="update-dot" title={t("workspace.updateAvailable", { version: updateVersion })} />}
         </button>
       </div>
 
@@ -81,7 +83,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
                 </button>
                 <button
                   className="ws-menu-edit"
-                  title="Edit workspace"
+                  title={t("workspace.edit")}
                   onClick={() => {
                     setMenuOpen(false);
                     setDialog({ mode: "edit", id: w.id, title: w.title, icon: w.icon });
@@ -92,7 +94,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
                 {workspaces.length > 1 && (
                   <button
                     className="ws-menu-edit ws-menu-delete"
-                    title="Delete workspace"
+                    title={t("workspace.delete")}
                     onClick={() => {
                       setMenuOpen(false);
                       setDeleteTarget({ id: w.id, title: w.title });
@@ -116,7 +118,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
               <span className="ws-menu-ico">
                 <PlusIcon />
               </span>
-              <span className="ws-menu-name">New workspace</span>
+              <span className="ws-menu-name">{t("workspace.new")}</span>
             </button>
             <button
               className="ws-menu-row"
@@ -128,8 +130,8 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
               <span className="ws-menu-ico">
                 <GearIcon />
               </span>
-              <span className="ws-menu-name">Settings</span>
-              {updateVersion && <span className="update-dot" title={`Update ${updateVersion} available`} />}
+              <span className="ws-menu-name">{t("workspace.settings")}</span>
+              {updateVersion && <span className="update-dot" title={t("workspace.updateAvailable", { version: updateVersion })} />}
             </button>
           </div>
         </>
@@ -137,7 +139,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
 
       {dialog?.mode === "new" && (
         <WorkspaceDialog
-          confirmLabel="Create"
+          confirmLabel={t("workspace.create")}
           onConfirm={({ title, icon }) => {
             addWorkspace({ title, icon });
             setDialog(null);
@@ -162,12 +164,11 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
         <div className="ws-dialog-backdrop" onClick={() => setDeleteTarget(null)}>
           <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
             <p className="quit-confirm-text">
-              Delete "{deleteTarget.title}"? All its pages, tabs, and terminal history will be
-              permanently deleted.
+              {t("workspace.deleteConfirm", { name: deleteTarget.title })}
             </p>
             <div className="ws-dialog-actions">
               <button className="ws-dialog-btn" onClick={() => setDeleteTarget(null)}>
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 className="ws-dialog-btn danger"
@@ -177,7 +178,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
                   setDeleteTarget(null);
                 }}
               >
-                Delete
+                {t("common.delete")}
               </button>
             </div>
           </div>
