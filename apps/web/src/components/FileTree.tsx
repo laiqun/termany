@@ -54,22 +54,62 @@ function isHtmlPath(path: string): boolean {
   return /\.(html|htm)$/i.test(path);
 }
 
-function inlineMarkdown(text: string): Array<string | JSX.Element> {
+/** Directory part of a path — the base a markdown doc's relative links and
+ *  image sources resolve against. */
+function dirname(path: string): string {
+  const cut = path.replace(/[\\/]+$/, "").search(/[\\/][^\\/]*$/);
+  return cut < 0 ? "" : path.slice(0, cut);
+}
+
+/** Resolve a markdown link/image target to something the browser can load.
+ *  Absolute URLs and data: URIs pass through; a repo-relative path (the common
+ *  case — `docs/hero.png`) is resolved against the doc's own directory
+ *  and served through the media endpoint, since the web app has no filesystem. */
+function resolveDocUrl(target: string, baseDir: string): string {
+  if (/^(https?:|data:|mailto:|#)/i.test(target)) return target;
+  const abs = /^([\\/]|[A-Za-z]:)/.test(target) || !baseDir ? target : `${baseDir}/${target}`;
+  const parts: string[] = [];
+  for (const seg of abs.split(/[\\/]/)) {
+    if (seg === "." || seg === "") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  const normalized = (abs.startsWith("/") ? "/" : "") + parts.join("/");
+  return `${apiUrl()}/api/fs/media?${new URLSearchParams({ path: normalized })}`;
+}
+
+/** `baseDir` is the containing directory of the markdown file being previewed;
+ *  it's what relative image sources resolve against. */
+function inlineMarkdown(text: string, baseDir = ""): Array<string | JSX.Element> {
   const out: Array<string | JSX.Element> = [];
-  const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  // Order matters. A linked image `[![alt](src)](href)` must be tried before
+  // the bare image inside it, and images before links, or each longer form
+  // gets shredded into a stray `[`/`!` plus whatever the shorter form matched.
+  const re =
+    /(`[^`]+`|\[!\[[^\]]*\]\([^)]+\)\]\([^)]+\)|!\[[^\]]*\]\([^)]+\)|\*\*(?:[^*]|\*(?!\*))+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
   let last = 0;
   let i = 0;
   for (const match of text.matchAll(re)) {
     if (match.index > last) out.push(text.slice(last, match.index));
     const token = match[0];
     if (token.startsWith("`")) out.push(<code key={i++}>{token.slice(1, -1)}</code>);
-    else if (token.startsWith("**")) out.push(<strong key={i++}>{token.slice(2, -2)}</strong>);
-    else if (token.startsWith("*")) out.push(<em key={i++}>{token.slice(1, -1)}</em>);
+    else if (token.startsWith("![")) {
+      const img = /^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/.exec(token);
+      if (img) out.push(<img key={i++} src={resolveDocUrl(img[2], baseDir)} alt={img[1]} />);
+      else out.push(token);
+    }
+    // Emphasis recurses: its content can itself hold links, code, or images.
+    else if (token.startsWith("**"))
+      out.push(<strong key={i++}>{inlineMarkdown(token.slice(2, -2), baseDir)}</strong>);
+    else if (token.startsWith("*"))
+      out.push(<em key={i++}>{inlineMarkdown(token.slice(1, -1), baseDir)}</em>);
     else {
-      const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      // Greedy label so a linked image `[![alt](src)](href)` splits at the
+      // final `](`; the label then recurses and renders as the image.
+      const link = /^\[(.+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/.exec(token);
       out.push(
         <a key={i++} href={link?.[2] ?? "#"} target="_blank" rel="noreferrer">
-          {link?.[1] ?? token}
+          {link ? inlineMarkdown(link[1], baseDir) : token}
         </a>
       );
     }
@@ -79,7 +119,7 @@ function inlineMarkdown(text: string): Array<string | JSX.Element> {
   return out;
 }
 
-function MarkdownPreview({ content }: { content: string }) {
+function MarkdownPreview({ content, baseDir }: { content: string; baseDir: string }) {
   const blocks: JSX.Element[] = [];
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
   let paragraph: string[] = [];
@@ -89,7 +129,7 @@ function MarkdownPreview({ content }: { content: string }) {
 
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    blocks.push(<p key={`p-${blocks.length}`}>{inlineMarkdown(paragraph.join(" "))}</p>);
+    blocks.push(<p key={`p-${blocks.length}`}>{inlineMarkdown(paragraph.join(" "), baseDir)}</p>);
     paragraph = [];
   };
   const flushList = () => {
@@ -99,7 +139,7 @@ function MarkdownPreview({ content }: { content: string }) {
     blocks.push(
       <Tag key={`l-${blocks.length}`}>
         {list.map((item, idx) => (
-          <li key={idx}>{inlineMarkdown(item.text)}</li>
+          <li key={idx}>{inlineMarkdown(item.text, baseDir)}</li>
         ))}
       </Tag>
     );
@@ -131,7 +171,7 @@ function MarkdownPreview({ content }: { content: string }) {
       flushList();
       const level = heading[1].length;
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
-      blocks.push(<Tag key={`h-${blocks.length}`}>{inlineMarkdown(heading[2])}</Tag>);
+      blocks.push(<Tag key={`h-${blocks.length}`}>{inlineMarkdown(heading[2], baseDir)}</Tag>);
       continue;
     }
     if (/^\s*[-*_]{3,}\s*$/.test(line)) {
@@ -144,7 +184,7 @@ function MarkdownPreview({ content }: { content: string }) {
     if (quote) {
       flushParagraph();
       flushList();
-      blocks.push(<blockquote key={`q-${blocks.length}`}>{inlineMarkdown(quote[1])}</blockquote>);
+      blocks.push(<blockquote key={`q-${blocks.length}`}>{inlineMarkdown(quote[1], baseDir)}</blockquote>);
       continue;
     }
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
@@ -420,7 +460,7 @@ function FilePreview({
       {saveError && <div className="file-tree-message file-preview-error">Save failed: {saveError}</div>}
       {openError && <div className="file-tree-message file-preview-error">{openError}</div>}
       {isMarkdownPath(selected.path) && !markdownSource && !selected.truncated ? (
-        <MarkdownPreview content={selected.content ?? ""} />
+        <MarkdownPreview content={selected.content ?? ""} baseDir={dirname(selected.path)} />
       ) : isHtmlPath(selected.path) && !markdownSource && !selected.truncated ? (
         <iframe
           className="html-preview"

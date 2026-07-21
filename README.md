@@ -5,6 +5,54 @@ desktop client today, and as a cloud service later, by swapping one thing: the b
 
 Website: **[termany.sh](https://termany.sh)** — downloads, docs, and release notes.
 
+![Termany](docs/hero.png)
+
+## Features
+
+### Agents, side by side
+
+Launch a coding agent into any pane from the side rail — **Claude, Codex, Gemini,
+OpenClaw, FastClaw, Hermes, OpenCode, Kilocode, Cursor, Kimi, Droid, and OMP** ship
+built in (Claude, Codex, and OpenClaw enabled by default; the rest are one toggle
+away). Point any of them at a different binary, or add your own agent, in
+Settings → Agents; **Detect** probes your machine and shows what it found.
+
+Every pane is a real shell, so you can split (⌘D / ⇧⌘D) into any nested layout and
+run several agents at once. **Zen mode** (⌘M) floats one pane over a dimmed scrim
+when you need to focus, and Termany tags each pane *working / done / error* from its
+output — so a backgrounded tab tells you when it wants you.
+
+![Agents and split panes](docs/agents.png)
+
+### Files, without leaving the terminal
+
+Any pane can become a file tree instead of a shell (⌘E). Click a file to edit it in
+place — CodeMirror with language detection and ⌘S to save — or just read it: markdown,
+HTML, images, video, audio, PDF, DOCX, XLSX, and PPTX all preview inline.
+
+![File tree and preview](docs/files.png)
+
+### Know what your agents cost
+
+Termany reads your agent transcripts and turns them into a usage dashboard: estimated
+cost, input / output / cache tokens, a daily chart, and breakdowns by model and by
+project. The session browser lists past conversations and resumes any of them in a new
+pane, already `cd`'d to the right project.
+
+> Both read Claude and Codex transcripts today; other agents show as unsupported.
+
+![Agent usage dashboard](docs/usage.png)
+
+### Make it yours
+
+Any [CodexThemes](https://codexthemes.ai) pack you've installed shows up in
+Settings → Appearance with its artwork, and applies in one click — on top of the six
+themes built in. Every one of the ~50 actions is rebindable in Settings → Keyboard, and
+⌘P opens a command palette that searches both your commands and every page, tab, and
+pane by name. UI available in English and 简体中文.
+
+![Codex theme packs in Settings](docs/themes.png)
+
 ## Why it's shaped like this
 
 ```
@@ -78,16 +126,25 @@ stored locally in `~/.termany/termany.db`; no keys live in this repo. Optional e
 
 ### Shortcuts
 
-| Key     | Action               |
-| ------- | -------------------- |
-| ⌘T      | New horizontal tab   |
-| ⌘N      | New vertical tab     |
-| ⌘⇧N     | New workspace        |
-| ⌘W      | Close horizontal tab |
+A starting set — all of them are rebindable in Settings → Keyboard.
+
+| Key         | Action                        |
+| ----------- | ----------------------------- |
+| ⌘T          | New horizontal tab            |
+| ⌘N          | New page (vertical tab)       |
+| ⇧⌘N         | New workspace                 |
+| ⌘W          | Close pane / tab              |
+| ⌘D / ⇧⌘D    | Split pane right / down       |
+| ⌘M          | Zen mode (maximize pane)      |
+| ⌘E          | Toggle terminal / file view   |
+| ⌘P          | Command palette / quick find  |
+| ⌘F          | Find in scrollback            |
+| ⌥⌘ ← ↑ ↓ →  | Move focus between panes      |
+| ⌃⌘ ← ↑ ↓ →  | Resize the focused pane       |
+| ⌘K          | Clear the pane                |
 
 ## Roadmap (next)
 
-- **Split panes** inside a horizontal tab (grid view — true "max windows").
 - **AI layer** in `apps/web` — pipe terminal output to Claude for inline command
   suggestion / error diagnosis / natural-language execution.
 - **`LocalPtyBackend`** — an in-process pty backend for desktop (today the desktop
@@ -99,6 +156,12 @@ stored locally in `~/.termany/termany.db`; no keys live in this repo. Optional e
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and PR guidelines, and
 [SECURITY.md](SECURITY.md) to report a vulnerability.
+
+### Contributors
+
+Thanks to everyone who has contributed to Termany:
+
+[![Contributors](https://contrib.rocks/image?repo=thinkany-ai/termany)](https://github.com/thinkany-ai/termany/graphs/contributors)
 
 ## License
 
