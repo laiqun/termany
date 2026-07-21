@@ -159,7 +159,7 @@ function applyThemeObject(theme: Theme) {
   root.style.setProperty("--top-bar-border", borderRule(theme.chrome?.topBarBorder, colors.border));
   root.style.setProperty("--active-tab", theme.chrome?.activeTab ?? colors.bg);
   root.style.setProperty("--active-row", theme.chrome?.activeRow ?? colors.bg3);
-  const paneGap = theme.chrome?.paneGap ?? "8px";
+  const paneGap = theme.chrome?.paneGap ?? "5px";
   root.style.setProperty("--pane-gap", paneGap);
   // Flush themes (no gap between panes) have no visible seam of their own, so
   // the split gutter draws the hairline instead. Themes with a gap don't: the

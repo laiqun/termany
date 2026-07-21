@@ -19,7 +19,7 @@
   --top-bar-border: 1px solid #232b35;
   --active-tab: #0e1116;
   --active-row: #1c232c;
-  --pane-gap: 8px;
+  --pane-gap: 5px;
   --pane-radius: 12px;
   --pane-border: 1px solid #232b35;
   /* Each pane is its own card now, so this has to stay tighter than the gap
@@ -31,9 +31,10 @@
      group inside a frame rather than as unrelated floating cards. Derived, so
      a flat theme setting --pane-gap: 0 keeps its edge-to-edge split. */
   --pane-split-gap: max(0px, var(--pane-gap) - 2px);
-  /* Panes get a slightly tighter radius than the area's outer frame — 12px on
-     a pane whose header is only 28px tall reads as bubbly once it's split. */
-  --pane-slot-radius: max(0px, var(--pane-radius) - 2px);
+  /* Panes get a tighter radius than the theme's general large radius (dialogs,
+     menus): a pane whose header is only 28px tall reads as bubbly at 12px+,
+     and more so once it's split into several. */
+  --pane-slot-radius: max(0px, var(--pane-radius) - 4px);
   /* Set by a theme's optional `background` (custom uploaded image). --pane-area-bg
      mirrors --bg-2 by default and only becomes translucent when an image is set. */
   --bg-image: none;
