@@ -3,7 +3,6 @@ import { AgentHistory } from "./components/AgentHistory";
 import { FindBar } from "./components/FindBar";
 import { GitDiff } from "./components/GitDiff";
 import { AgentUsage } from "./components/AgentUsage";
-import { SystemMonitor } from "./components/SystemMonitor";
 import { HTabBar } from "./components/HTabBar";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
@@ -82,7 +81,6 @@ export function App() {
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [claudeHistoryOpen, setClaudeHistoryOpen] = useState(false);
   const [agentUsageOpen, setAgentUsageOpen] = useState(false);
-  const [systemMonitorOpen, setSystemMonitorOpen] = useState(false);
   const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
@@ -104,7 +102,6 @@ export function App() {
       searchOpen ||
       claudeHistoryOpen ||
       agentUsageOpen ||
-      systemMonitorOpen ||
       gitDiffOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
@@ -116,7 +113,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, systemMonitorOpen, gitDiffOpen]);
+  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, gitDiffOpen]);
 
   // What every bindable action DOES. The catalog itself (ids, labels, default
   // chords) lives in keybindings.ts; this is the other half. Two things drive
@@ -329,7 +326,6 @@ export function App() {
           }}
           onOpenClaudeHistory={() => setClaudeHistoryOpen(true)}
           onOpenAgentUsage={() => setAgentUsageOpen(true)}
-          onOpenSystemMonitor={() => setSystemMonitorOpen(true)}
         />
       )}
       {settingsOpen && (
@@ -346,7 +342,6 @@ export function App() {
       )}
       {claudeHistoryOpen && <AgentHistory onClose={() => setClaudeHistoryOpen(false)} />}
       {agentUsageOpen && <AgentUsage onClose={() => setAgentUsageOpen(false)} />}
-      {systemMonitorOpen && <SystemMonitor onClose={() => setSystemMonitorOpen(false)} />}
       {gitDiffOpen && <GitDiff session={gitSession} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>

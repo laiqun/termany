@@ -9,6 +9,7 @@ import { focusSession } from "../terminal/manager";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
+  ActivityIcon,
   CloseIcon,
   FilesIcon,
   GitBranchIcon,
@@ -17,6 +18,7 @@ import {
   TerminalIcon,
   WebIcon,
 } from "./icons";
+import { SystemMonitor } from "./SystemMonitor";
 import { TerminalPane } from "./TerminalPane";
 import { WebBrowserPane } from "./WebBrowserPane";
 
@@ -60,6 +62,7 @@ function PaneHeader({
   const showingFiles = leaf.view === "files";
   const showingWeb = leaf.view === "web";
   const showingGit = leaf.view === "git";
+  const showingMonitor = leaf.view === "monitor";
   const nextView = showingFiles ? "terminal" : "files";
   const renameWidth = `${Math.max(8, leaf.title.length + 1)}ch`;
 
@@ -81,6 +84,7 @@ function PaneHeader({
       <span className="pane-head-icon">
         {showingFiles ? <FilesIcon />
         : showingGit ? <GitBranchIcon />
+        : showingMonitor ? <ActivityIcon />
         : showingWeb ? <WebIcon />
         : <TerminalIcon />}
       </span>
@@ -111,9 +115,9 @@ function PaneHeader({
       <span className="pane-head-spacer" />
       <div className="pane-head-actions">
         {/* The terminal/file-tree toggle only makes sense for a pane that is
-            one of those two. On a web or git pane it would be a one-way trip
-            into a file tree, with no button left to get back. */}
-        {!showingWeb && !showingGit && (
+            one of those two. On a web, git or monitor pane it would be a
+            one-way trip into a file tree, with no button left to get back. */}
+        {!showingWeb && !showingGit && !showingMonitor && (
           <button
             className="pane-btn"
             title={showingFiles ? "Show terminal" : "Show file tree"}
@@ -192,6 +196,8 @@ function PaneSlot({
           />
         ) : leaf.view === "git" ? (
           <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
+        ) : leaf.view === "monitor" ? (
+          <SystemMonitor />
         ) : leaf.view === "web" ? (
           <WebBrowserPane id={leaf.id} />
         ) : (

@@ -25,6 +25,7 @@ const RAIL_ITEMS: Array<{ view: PaneView; label: string; icon: () => JSX.Element
   { view: "files", label: "files", icon: FilesIcon },
   { view: "git", label: "git diff", icon: GitBranchIcon },
   { view: "web", label: "web", icon: WebIcon },
+  { view: "monitor", label: "activity monitor", icon: ActivityIcon },
 ];
 
 /**
@@ -43,7 +44,6 @@ export function SideRail({
   onOpenAgentsSettings,
   onOpenClaudeHistory,
   onOpenAgentUsage,
-  onOpenSystemMonitor,
 }: {
   agentsOpen: boolean;
   onAgentsOpenChange: (open: boolean) => void;
@@ -51,7 +51,6 @@ export function SideRail({
   onOpenAgentsSettings: () => void;
   onOpenClaudeHistory: () => void;
   onOpenAgentUsage: () => void;
-  onOpenSystemMonitor: () => void;
 }) {
   const addPane = useStore((s) => s.addPane);
   const setPaneView = useStore((s) => s.setPaneView);
@@ -146,9 +145,6 @@ export function SideRail({
       </button>
       <button className="side-rail-btn" title="Agent token usage" onClick={onOpenAgentUsage}>
         <ChartIcon />
-      </button>
-      <button className="side-rail-btn" title="System monitor (CPU & memory)" onClick={onOpenSystemMonitor}>
-        <ActivityIcon />
       </button>
       <button
         className="side-rail-btn side-rail-settings"

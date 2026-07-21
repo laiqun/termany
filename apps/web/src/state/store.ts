@@ -28,7 +28,7 @@ import { applyTheme, loadThemeId, THEMES } from "../themes";
  *
  * A leaf's `id` is the terminal session id in the registry.
  */
-export type PaneView = "terminal" | "files" | "web" | "git";
+export type PaneView = "terminal" | "files" | "web" | "git" | "monitor";
 
 export type Pane =
   | {

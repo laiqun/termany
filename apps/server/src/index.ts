@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
-import { readSystemStats } from "./systemStats.js";
+import { KillError, killProcess, readSystemStats } from "./systemStats.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
 import {
@@ -864,11 +864,31 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Whole-machine CPU/memory + top processes for the SideRail system monitor.
+  // Whole-machine CPU/memory + every process for the activity monitor pane.
   if (req.method === "GET" && reqUrl.pathname === "/api/system-stats") {
     (async () => {
       json(200, await readSystemStats());
     })().catch(fail);
+    return;
+  }
+
+  // The monitor's "quit process" action. killProcess() is the guard rail —
+  // it rejects pid <= 1, this server's own pid, and anything but TERM/KILL —
+  // so a bad request comes back as a 400 the UI can show, not a dead machine.
+  if (req.method === "POST" && reqUrl.pathname === "/api/system-stats/kill") {
+    readJson(req)
+      .then((body) => {
+        const pid = Number(body?.pid);
+        const signal = body?.force ? "SIGKILL" : "SIGTERM";
+        try {
+          killProcess(pid, signal);
+          json(200, { ok: true });
+        } catch (e) {
+          if (e instanceof KillError) json(400, { error: e.message });
+          else throw e;
+        }
+      })
+      .catch(fail);
     return;
   }
 
