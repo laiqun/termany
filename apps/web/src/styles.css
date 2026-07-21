@@ -4038,20 +4038,32 @@ html.tauri #root {
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
-.sysmon-detail-track {
-  height: 6px;
-  background: var(--bg-3);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.sysmon-detail-track i {
+.sysmon-mini {
   display: block;
-  height: 100%;
-  background: var(--accent);
-  border-radius: 3px;
+  width: 100%;
+  height: 40px;
+  background: var(--bg-3);
+  border-radius: 5px;
 }
-.sysmon-detail-track i.mem {
-  background: var(--fg-dim);
+.sysmon-mini.empty {
+  /* One point in — the line needs two to draw, so hold the frame meanwhile. */
+  height: 40px;
+}
+.sysmon-mini-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+}
+.sysmon-mini-fill {
+  fill: var(--accent);
+  opacity: 0.14;
+  stroke: none;
+}
+.sysmon-mini.mem .sysmon-mini-line {
+  stroke: var(--fg-dim);
+}
+.sysmon-mini.mem .sysmon-mini-fill {
+  fill: var(--fg-dim);
 }
 
 .sysmon-detail-ports-row {

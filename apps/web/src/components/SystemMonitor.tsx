@@ -57,6 +57,8 @@ interface ProcessDetail {
 }
 
 const POLL_MS = 2000;
+// ~2 minutes of per-process history at POLL_MS while the detail dialog is open.
+const DETAIL_HISTORY_CAP = 60;
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -89,6 +91,28 @@ function Sparkline({ samples, max }: { samples: Sample[]; max: number }) {
     <svg className="sysmon-spark" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
       <polygon points={`0,100 ${line} 100,100`} className="sysmon-spark-fill" />
       <polyline points={line} className="sysmon-spark-line" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
+/**
+ * A per-process history line for the detail dialog, scaled to its own peak
+ * (per-process CPU can top 100% across cores, and memory has no fixed ceiling).
+ * The series accumulates only while the dialog is open — like Activity
+ * Monitor's per-process graph, it draws in as you watch — so it opens showing
+ * a single point and fills from there.
+ */
+function MiniChart({ values, variant }: { values: number[]; variant?: "mem" }) {
+  if (values.length < 2) {
+    return <div className={`sysmon-mini empty ${variant ?? ""}`}>{/* filling… */}</div>;
+  }
+  const max = Math.max(1, ...values);
+  const span = Math.max(1, values.length - 1);
+  const line = values.map((v, i) => `${(i / span) * 100},${100 - Math.min(100, (v / max) * 100)}`).join(" ");
+  return (
+    <svg className={`sysmon-mini ${variant ?? ""}`} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden>
+      <polygon points={`0,100 ${line} 100,100`} className="sysmon-mini-fill" />
+      <polyline points={line} className="sysmon-mini-line" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -187,9 +211,24 @@ export function SystemMonitor() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // The process a double-clicked row opened — the detail dialog is where a
   // process is inspected and terminated, so the table itself carries no
-  // selection state or action button.
+  // selection state or action button. `detailId` is what stays fixed; the
+  // shown values and the two history series are re-derived from each poll so
+  // the dialog is live, and the series accumulate only while it's open.
+  const [detailId, setDetailId] = useState<{ pid: number; name: string; group: boolean } | null>(null);
   const [detail, setDetail] = useState<ProcessDetail | null>(null);
+  const [detailHistory, setDetailHistory] = useState<{ cpu: number; mem: number }[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const openDetail = (d: ProcessDetail, group: boolean) => {
+    setDetailId({ pid: d.pid, name: d.name, group });
+    setDetail(d);
+    setDetailHistory([{ cpu: d.cpu, mem: d.memBytes }]);
+  };
+  const closeDetail = () => {
+    setDetailId(null);
+    setDetail(null);
+    setDetailHistory([]);
+  };
   // Keep the last good sample on screen if one poll fails, so the numbers
   // don't blink out on a transient hiccup.
   const failures = useRef(0);
@@ -219,6 +258,30 @@ export function SystemMonitor() {
       window.clearTimeout(timer);
     };
   }, []);
+
+  // While the detail dialog is open, follow its process across polls: re-read
+  // its live values and push another point onto the two history series. A group
+  // is tracked by name (its membership shifts); a single process by pid, in the
+  // top level or inside any group's children.
+  useEffect(() => {
+    if (!detailId || !stats) return;
+    let cur: ProcessDetail | null = null;
+    if (detailId.group) {
+      const g = stats.processes.find((p) => p.name === detailId.name);
+      if (g) cur = { name: g.name, pid: g.pid, cpu: g.cpu, memBytes: g.memBytes, user: g.user, ports: g.ports, count: g.count };
+    } else {
+      for (const p of stats.processes) {
+        const inst = p.pid === detailId.pid ? p : p.children.find((c) => c.pid === detailId.pid);
+        if (inst) {
+          cur = { name: detailId.name, pid: inst.pid, cpu: inst.cpu, memBytes: inst.memBytes, user: inst.user, ports: inst.ports };
+          break;
+        }
+      }
+    }
+    if (!cur) return; // process gone — freeze on the last sample rather than blank
+    setDetail(cur);
+    setDetailHistory((h) => [...h, { cpu: cur.cpu, mem: cur.memBytes }].slice(-DETAIL_HISTORY_CAP));
+  }, [stats, detailId]);
 
   const query_ = query.trim().toLowerCase();
 
@@ -264,7 +327,7 @@ export function SystemMonitor() {
   const historyMax = Math.max(20, ...(stats?.history ?? []).map((s) => s.cpu));
 
   const kill = async (pid: number, force: boolean) => {
-    setDetail(null);
+    closeDetail();
     try {
       const r = await fetch(apiPath("/api/system-stats/kill"), {
         method: "POST",
@@ -356,15 +419,18 @@ export function SystemMonitor() {
                         : undefined
                     }
                     onOpenDetail={() =>
-                      setDetail({
-                        name: p.name,
-                        pid: p.pid,
-                        cpu: p.cpu,
-                        memBytes: p.memBytes,
-                        user: p.user,
-                        ports: p.ports,
-                        count: p.count,
-                      })
+                      openDetail(
+                        {
+                          name: p.name,
+                          pid: p.pid,
+                          cpu: p.cpu,
+                          memBytes: p.memBytes,
+                          user: p.user,
+                          ports: p.ports,
+                          count: p.count,
+                        },
+                        p.count > 1,
+                      )
                     }
                   />
                   {open &&
@@ -381,14 +447,17 @@ export function SystemMonitor() {
                         cpuScale={cpuScale}
                         memScale={memScale}
                         onOpenDetail={() =>
-                          setDetail({
-                            name: p.name,
-                            pid: c.pid,
-                            cpu: c.cpu,
-                            memBytes: c.memBytes,
-                            user: c.user,
-                            ports: c.ports,
-                          })
+                          openDetail(
+                            {
+                              name: p.name,
+                              pid: c.pid,
+                              cpu: c.cpu,
+                              memBytes: c.memBytes,
+                              user: c.user,
+                              ports: c.ports,
+                            },
+                            false,
+                          )
                         }
                       />
                     ))}
@@ -444,7 +513,7 @@ export function SystemMonitor() {
       </div>
 
       {detail && (
-        <div className="ws-dialog-backdrop" onClick={() => setDetail(null)}>
+        <div className="ws-dialog-backdrop" onClick={closeDetail}>
           <div className="ws-dialog sysmon-detail" onClick={(e) => e.stopPropagation()}>
             <div className="sysmon-detail-head">
               <span className="sysmon-detail-icon" aria-hidden>
@@ -469,18 +538,14 @@ export function SystemMonitor() {
                   <span>CPU</span>
                   <b>{detail.cpu.toFixed(1)}%</b>
                 </div>
-                <div className="sysmon-detail-track">
-                  <i style={{ width: `${Math.min(100, (detail.cpu / cpuScale) * 100)}%` }} />
-                </div>
+                <MiniChart values={detailHistory.map((s) => s.cpu)} />
               </div>
               <div className="sysmon-detail-meter">
                 <div className="sysmon-detail-meter-top">
                   <span>{t("monitor.col.memory")}</span>
                   <b>{formatBytes(detail.memBytes)}</b>
                 </div>
-                <div className="sysmon-detail-track">
-                  <i className="mem" style={{ width: `${Math.min(100, (detail.memBytes / memScale) * 100)}%` }} />
-                </div>
+                <MiniChart values={detailHistory.map((s) => s.mem)} variant="mem" />
               </div>
             </div>
 
@@ -504,7 +569,7 @@ export function SystemMonitor() {
             )}
 
             <div className="ws-dialog-actions">
-              <button className="ws-dialog-btn" onClick={() => setDetail(null)}>
+              <button className="ws-dialog-btn" onClick={closeDetail}>
                 {t("monitor.close")}
               </button>
               <button className="ws-dialog-btn" onClick={() => void kill(detail.pid, true)}>
