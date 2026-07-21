@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
@@ -54,22 +54,154 @@ function isHtmlPath(path: string): boolean {
   return /\.(html|htm)$/i.test(path);
 }
 
-function inlineMarkdown(text: string): Array<string | JSX.Element> {
+function isSvgPath(path: string): boolean {
+  return /\.svg$/i.test(path);
+}
+
+function isCsvPath(path: string): boolean {
+  return /\.(csv|tsv)$/i.test(path);
+}
+
+/** Text files that have a rendered view to toggle to, alongside their source. */
+function hasRenderedView(path: string): boolean {
+  return isMarkdownPath(path) || isHtmlPath(path) || isSvgPath(path) || isCsvPath(path);
+}
+
+/** Rows beyond this aren't rendered — a big CSV would otherwise stall the DOM. */
+const CSV_ROW_LIMIT = 2000;
+
+function parseDelimited(text: string, delimiter: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch !== '"') field += ch;
+      else if (text[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else quoted = false;
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+    } else if (ch === delimiter) {
+      row.push(field);
+      field = "";
+    } else if (ch === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (ch !== "\r") {
+      field += ch;
+    }
+  }
+  if (field || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function CsvPreview({ path, content }: { path: string; content: string }) {
+  const rows = useMemo(
+    () => parseDelimited(content, /\.tsv$/i.test(path) ? "\t" : ","),
+    [path, content],
+  );
+  if (!rows.length) return <div className="file-tree-message">Empty file.</div>;
+  const [head, ...body] = rows;
+  const shown = body.slice(0, CSV_ROW_LIMIT);
+  // Ragged files are common (trailing commas, extra fields); size the table to
+  // the widest row shown so no cell is silently dropped.
+  const cols = shown.reduce((n, r) => Math.max(n, r.length), head.length);
+  return (
+    <div className="csv-preview">
+      <table>
+        <thead>
+          <tr>
+            {Array.from({ length: cols }, (_, i) => (
+              <th key={i}>{head[i] ?? ""}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((r, i) => (
+            <tr key={i}>
+              {Array.from({ length: cols }, (_, c) => (
+                <td key={c}>{r[c] ?? ""}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {body.length > shown.length && (
+        <div className="file-tree-message">
+          Showing the first {CSV_ROW_LIMIT} rows of {body.length}. Switch to the source view for the rest.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Directory part of a path — the base a markdown doc's relative links and
+ *  image sources resolve against. */
+function dirname(path: string): string {
+  const cut = path.replace(/[\\/]+$/, "").search(/[\\/][^\\/]*$/);
+  return cut < 0 ? "" : path.slice(0, cut);
+}
+
+/** Resolve a markdown link/image target to something the browser can load.
+ *  Absolute URLs and data: URIs pass through; a repo-relative path (the common
+ *  case — `docs/hero.png`) is resolved against the doc's own directory
+ *  and served through the media endpoint, since the web app has no filesystem. */
+function resolveDocUrl(target: string, baseDir: string): string {
+  if (/^(https?:|data:|mailto:|#)/i.test(target)) return target;
+  const abs = /^([\\/]|[A-Za-z]:)/.test(target) || !baseDir ? target : `${baseDir}/${target}`;
+  const parts: string[] = [];
+  for (const seg of abs.split(/[\\/]/)) {
+    if (seg === "." || seg === "") continue;
+    if (seg === "..") parts.pop();
+    else parts.push(seg);
+  }
+  const normalized = (abs.startsWith("/") ? "/" : "") + parts.join("/");
+  return `${apiUrl()}/api/fs/media?${new URLSearchParams({ path: normalized })}`;
+}
+
+/** `baseDir` is the containing directory of the markdown file being previewed;
+ *  it's what relative image sources resolve against. */
+function inlineMarkdown(text: string, baseDir = ""): Array<string | JSX.Element> {
   const out: Array<string | JSX.Element> = [];
-  const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  // Order matters. A linked image `[![alt](src)](href)` must be tried before
+  // the bare image inside it, and images before links, or each longer form
+  // gets shredded into a stray `[`/`!` plus whatever the shorter form matched.
+  const re =
+    /(`[^`]+`|\[!\[[^\]]*\]\([^)]+\)\]\([^)]+\)|!\[[^\]]*\]\([^)]+\)|\*\*(?:[^*]|\*(?!\*))+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
   let last = 0;
   let i = 0;
   for (const match of text.matchAll(re)) {
     if (match.index > last) out.push(text.slice(last, match.index));
     const token = match[0];
     if (token.startsWith("`")) out.push(<code key={i++}>{token.slice(1, -1)}</code>);
-    else if (token.startsWith("**")) out.push(<strong key={i++}>{token.slice(2, -2)}</strong>);
-    else if (token.startsWith("*")) out.push(<em key={i++}>{token.slice(1, -1)}</em>);
+    else if (token.startsWith("![")) {
+      const img = /^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/.exec(token);
+      if (img) out.push(<img key={i++} src={resolveDocUrl(img[2], baseDir)} alt={img[1]} />);
+      else out.push(token);
+    }
+    // Emphasis recurses: its content can itself hold links, code, or images.
+    else if (token.startsWith("**"))
+      out.push(<strong key={i++}>{inlineMarkdown(token.slice(2, -2), baseDir)}</strong>);
+    else if (token.startsWith("*"))
+      out.push(<em key={i++}>{inlineMarkdown(token.slice(1, -1), baseDir)}</em>);
     else {
-      const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      // Greedy label so a linked image `[![alt](src)](href)` splits at the
+      // final `](`; the label then recurses and renders as the image.
+      const link = /^\[(.+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/.exec(token);
       out.push(
         <a key={i++} href={link?.[2] ?? "#"} target="_blank" rel="noreferrer">
-          {link?.[1] ?? token}
+          {link ? inlineMarkdown(link[1], baseDir) : token}
         </a>
       );
     }
@@ -79,7 +211,7 @@ function inlineMarkdown(text: string): Array<string | JSX.Element> {
   return out;
 }
 
-function MarkdownPreview({ content }: { content: string }) {
+function MarkdownPreview({ content, baseDir }: { content: string; baseDir: string }) {
   const blocks: JSX.Element[] = [];
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
   let paragraph: string[] = [];
@@ -89,7 +221,7 @@ function MarkdownPreview({ content }: { content: string }) {
 
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    blocks.push(<p key={`p-${blocks.length}`}>{inlineMarkdown(paragraph.join(" "))}</p>);
+    blocks.push(<p key={`p-${blocks.length}`}>{inlineMarkdown(paragraph.join(" "), baseDir)}</p>);
     paragraph = [];
   };
   const flushList = () => {
@@ -99,7 +231,7 @@ function MarkdownPreview({ content }: { content: string }) {
     blocks.push(
       <Tag key={`l-${blocks.length}`}>
         {list.map((item, idx) => (
-          <li key={idx}>{inlineMarkdown(item.text)}</li>
+          <li key={idx}>{inlineMarkdown(item.text, baseDir)}</li>
         ))}
       </Tag>
     );
@@ -131,7 +263,7 @@ function MarkdownPreview({ content }: { content: string }) {
       flushList();
       const level = heading[1].length;
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
-      blocks.push(<Tag key={`h-${blocks.length}`}>{inlineMarkdown(heading[2])}</Tag>);
+      blocks.push(<Tag key={`h-${blocks.length}`}>{inlineMarkdown(heading[2], baseDir)}</Tag>);
       continue;
     }
     if (/^\s*[-*_]{3,}\s*$/.test(line)) {
@@ -144,7 +276,7 @@ function MarkdownPreview({ content }: { content: string }) {
     if (quote) {
       flushParagraph();
       flushList();
-      blocks.push(<blockquote key={`q-${blocks.length}`}>{inlineMarkdown(quote[1])}</blockquote>);
+      blocks.push(<blockquote key={`q-${blocks.length}`}>{inlineMarkdown(quote[1], baseDir)}</blockquote>);
       continue;
     }
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line);
@@ -307,7 +439,7 @@ function FilePreview({
   const [dirty, setDirty] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
-  const [markdownSource, setMarkdownSource] = useState(false);
+  const [showSource, setShowSource] = useState(false);
 
   // Reveal (not open) — opening a file with the OS default app needs a Tauri
   // permission (opener:allow-open-path) this app doesn't grant, and revealing
@@ -342,13 +474,13 @@ function FilePreview({
         {dirty && <span className="file-preview-dirty" title="Unsaved changes" />}
         {basename(selected.path)}
       </span>
-      {selected.status === "text" && (isMarkdownPath(selected.path) || isHtmlPath(selected.path)) && (
+      {selected.status === "text" && !selected.truncated && hasRenderedView(selected.path) && (
         <button
           className="pane-btn"
-          title={markdownSource ? "Show rendered preview" : "Show source"}
-          onClick={() => setMarkdownSource((v) => !v)}
+          title={showSource ? "Show rendered preview" : "Show source"}
+          onClick={() => setShowSource((v) => !v)}
         >
-          {markdownSource ? <PreviewIcon /> : <SourceIcon />}
+          {showSource ? <PreviewIcon /> : <SourceIcon />}
         </button>
       )}
       <button className="pane-btn" title="Reveal in Finder" onClick={() => revealInFinder(selected.path)}>
@@ -408,6 +540,21 @@ function FilePreview({
     );
   }
 
+  // Which rendered (non-source) view this file gets, if any. A truncated
+  // preview is only a prefix of the file, so it always falls back to source.
+  const rendered =
+    showSource || selected.truncated
+      ? null
+      : isMarkdownPath(selected.path)
+        ? "markdown"
+        : isHtmlPath(selected.path)
+          ? "html"
+          : isSvgPath(selected.path)
+            ? "svg"
+            : isCsvPath(selected.path)
+              ? "csv"
+              : null;
+
   return (
     <div className="file-preview-panel">
       {header}
@@ -419,15 +566,21 @@ function FilePreview({
       )}
       {saveError && <div className="file-tree-message file-preview-error">Save failed: {saveError}</div>}
       {openError && <div className="file-tree-message file-preview-error">{openError}</div>}
-      {isMarkdownPath(selected.path) && !markdownSource && !selected.truncated ? (
-        <MarkdownPreview content={selected.content ?? ""} />
-      ) : isHtmlPath(selected.path) && !markdownSource && !selected.truncated ? (
+      {rendered === "markdown" ? (
+        <MarkdownPreview content={selected.content ?? ""} baseDir={dirname(selected.path)} />
+      ) : rendered === "html" ? (
         <iframe
           className="html-preview"
           title={basename(selected.path)}
           sandbox=""
           srcDoc={selected.content ?? ""}
         />
+      ) : rendered === "svg" ? (
+        <div className="file-media-preview image">
+          <img src={`data:image/svg+xml;utf8,${encodeURIComponent(selected.content ?? "")}`} alt={basename(selected.path)} />
+        </div>
+      ) : rendered === "csv" ? (
+        <CsvPreview path={selected.path} content={selected.content ?? ""} />
       ) : (
         <CodeEditor
           path={selected.path}
