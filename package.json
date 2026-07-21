@@ -17,6 +17,7 @@
     "dev:app": "npm -w @termany/desktop run dev",
     "build:web": "npm -w @termany/web run build",
     "bundle:server": "node scripts/bundle-server.mjs",
+    "package:mac": "bash scripts/package-mac-local.sh",
     "release:mac": "bash scripts/release-mac.sh"
   },
   "devDependencies": {
