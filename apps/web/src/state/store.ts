@@ -187,6 +187,12 @@ interface State {
   /** Collapse every node in the active workspace's tree. */
   collapseAll: () => void;
   setActiveNode: (id: string) => void;
+  /** Select the previous / next currently visible page without wrapping. */
+  selectPreviousTreeNode: () => void;
+  selectNextTreeNode: () => void;
+  /** Standard tree navigation: expand then enter, or collapse then return. */
+  expandOrEnterTreeNode: () => void;
+  collapseOrExitTreeNode: () => void;
   /**
    * Jump straight to a page (and optionally a specific tab/pane within it),
    * expanding every collapsed ancestor along the way so the sidebar reveals
@@ -614,6 +620,51 @@ function findNode(nodes: TreeNode[], nodeId: string): TreeNode | undefined {
   return undefined;
 }
 
+/** Depth-first display order, excluding descendants hidden by collapsed parents. */
+function visibleTreeNodes(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
+  for (const node of nodes) {
+    out.push(node);
+    if (node.expanded) visibleTreeNodes(node.children, out);
+  }
+  return out;
+}
+
+/** Root-to-node path, used for parent navigation and hidden-selection recovery. */
+function findNodePath(
+  nodes: TreeNode[],
+  nodeId: string,
+  ancestors: TreeNode[] = []
+): TreeNode[] | undefined {
+  for (const node of nodes) {
+    const path = [...ancestors, node];
+    if (node.id === nodeId) return path;
+    const hit = findNodePath(node.children, nodeId, path);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+function selectAdjacentVisibleNode(ws: Workspace, offset: -1 | 1): Workspace {
+  const visible = visibleTreeNodes(ws.roots);
+  const index = visible.findIndex((node) => node.id === ws.activeNode);
+
+  // Collapse-all or a mouse collapse can leave the active page hidden. Bring
+  // selection back to its nearest visible ancestor before moving any farther.
+  if (index < 0) {
+    const path = findNodePath(ws.roots, ws.activeNode);
+    if (!path) return ws;
+    for (let i = path.length - 1; i >= 0; i--) {
+      if (visible.some((node) => node.id === path[i].id)) {
+        return { ...ws, activeNode: path[i].id };
+      }
+    }
+    return ws;
+  }
+
+  const target = visible[index + offset];
+  return target ? { ...ws, activeNode: target.id } : ws;
+}
+
 /** Expand every ancestor of `nodeId` (not the node itself) so it's visible in the tree. */
 function expandAncestorsOf(nodes: TreeNode[], nodeId: string): TreeNode[] {
   return nodes.map((n) => {
@@ -830,6 +881,48 @@ export const useStore = create<State>((set) => ({
 
   setActiveNode: (nodeId) =>
     set((s) => ({ workspaces: inActiveWs(s, (ws) => ({ ...ws, activeNode: nodeId })) })),
+
+  selectPreviousTreeNode: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => selectAdjacentVisibleNode(ws, -1)),
+    })),
+
+  selectNextTreeNode: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => selectAdjacentVisibleNode(ws, 1)),
+    })),
+
+  expandOrEnterTreeNode: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => {
+        const node = findNode(ws.roots, ws.activeNode);
+        if (!node?.children.length) return ws;
+        if (!node.expanded) {
+          return {
+            ...ws,
+            roots: updateNode(ws.roots, node.id, (n) => ({ ...n, expanded: true })),
+          };
+        }
+        return { ...ws, activeNode: node.children[0].id };
+      }),
+    })),
+
+  collapseOrExitTreeNode: () =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => {
+        const path = findNodePath(ws.roots, ws.activeNode);
+        const node = path?.[path.length - 1];
+        if (!node) return ws;
+        if (node.children.length && node.expanded) {
+          return {
+            ...ws,
+            roots: updateNode(ws.roots, node.id, (n) => ({ ...n, expanded: false })),
+          };
+        }
+        const parent = path?.[path.length - 2];
+        return parent ? { ...ws, activeNode: parent.id } : ws;
+      }),
+    })),
 
   jumpToResult: ({ workspaceId, nodeId, tabId, paneId }) =>
     set((s) => ({
