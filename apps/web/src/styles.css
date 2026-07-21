@@ -22,7 +22,18 @@
   --pane-gap: 8px;
   --pane-radius: 12px;
   --pane-border: 1px solid #232b35;
-  --pane-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04);
+  /* Each pane is its own card now, so this has to stay tighter than the gap
+     between them — a wide blur would bleed across the gutter and smudge the
+     neighbour's edge. The 1px border does the separating; this just lifts. */
+  --pane-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  /* Gutter between sibling panes: deliberately a bit tighter than --pane-gap
+     (which is the padding around the whole area) so the panes read as one
+     group inside a frame rather than as unrelated floating cards. Derived, so
+     a flat theme setting --pane-gap: 0 keeps its edge-to-edge split. */
+  --pane-split-gap: max(0px, var(--pane-gap) - 2px);
+  /* Panes get a slightly tighter radius than the area's outer frame — 12px on
+     a pane whose header is only 28px tall reads as bubbly once it's split. */
+  --pane-slot-radius: max(0px, var(--pane-radius) - 2px);
   /* Set by a theme's optional `background` (custom uploaded image). --pane-area-bg
      mirrors --bg-2 by default and only becomes translucent when an image is set. */
   --bg-image: none;
@@ -1588,11 +1599,13 @@ html.tauri #root {
   min-width: 0;
   min-height: 0;
 }
-/* Draggable divider between two cells. It's the gap between two pane cards —
-   no line of its own; a centred hairline only fades in on hover/drag so the
-   resize affordance shows up where the cursor already is. */
+/* Draggable divider between two cells: normally just the gap between two pane
+   cards, whose borders already do the separating. ::before is a centred 1px
+   line — invisible by default, accent on hover/drag; flush themes (--pane-gap:
+   0, no pane border) get it at rest via --split-gutter-line so they keep their
+   hairline dividers. ::after widens the mouse hit area past the visible gap. */
 .split-gutter {
-  flex: 0 0 var(--pane-gap);
+  flex: 0 0 var(--pane-split-gap);
   position: relative;
   z-index: 5;
 }
@@ -1607,22 +1620,36 @@ html.tauri #root {
   position: absolute;
   inset: 0;
   margin: auto;
-  border-radius: 1px;
-  opacity: 0;
-  transition: opacity 120ms ease;
+  background: var(--split-gutter-line, transparent);
+  transition: background 120ms ease;
+}
+.split-gutter.row::before {
+  width: 1px;
+}
+.split-gutter.col::before {
+  height: 1px;
+}
+.split-gutter:hover::before,
+.split-gutter:active::before {
   /* Themes can mute this via vars: { "--split-gutter-hover": ... } (falls
      back to --accent) — same escape hatch as --pane-focus-ring. */
   background: var(--split-gutter-hover, var(--accent));
 }
-.split-gutter.row::before {
-  width: 2px;
+.split-gutter::after {
+  content: "";
+  position: absolute;
 }
-.split-gutter.col::before {
-  height: 2px;
+.split-gutter.row::after {
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  right: -3px;
 }
-.split-gutter:hover::before,
-.split-gutter:active::before {
-  opacity: 1;
+.split-gutter.col::after {
+  left: 0;
+  right: 0;
+  top: -3px;
+  bottom: -3px;
 }
 /* Each leaf pane is its own rounded card floating on .pane-area's recessed
    background — the gutters between them are real gaps, not hairlines. */
@@ -1637,7 +1664,7 @@ html.tauri #root {
      so the window artwork reads through the terminals themselves. */
   background: var(--pane-bg, var(--bg));
   border: var(--pane-border);
-  border-radius: var(--pane-radius);
+  border-radius: var(--pane-slot-radius);
   box-shadow: var(--pane-shadow);
 }
 /* Draw the focus ring as a top-most overlay so it sits ABOVE the opaque header
@@ -1651,7 +1678,7 @@ html.tauri #root {
      back to --accent) — e.g. a flat, borderless theme that'd rather rely on
      the pane-head-title's dimmed/full-opacity contrast as the focus cue. */
   border: 1px solid var(--pane-focus-ring, var(--accent));
-  border-radius: var(--pane-radius);
+  border-radius: var(--pane-slot-radius);
   pointer-events: none;
   z-index: 6;
 }
