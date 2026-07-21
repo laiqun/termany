@@ -17,6 +17,7 @@ import {
   Folder,
   FolderOpen,
   FolderTree,
+  GitBranch,
   Globe,
   History,
   ExternalLink,
@@ -26,8 +27,10 @@ import {
   Bot,
   ChartColumn,
   Check,
+  Copy,
   FlaskConical,
   Loader2,
+  MessageSquareText,
   Maximize2,
   Minimize2,
   PanelLeft,
@@ -37,7 +40,9 @@ import {
   Plus,
   RotateCw,
   Search,
+  SendHorizontal,
   Settings,
+  Square,
   SquareTerminal,
   Trash2,
   X,
@@ -131,6 +136,18 @@ export function AgentIcon() {
   return <Bot {...base} />;
 }
 
+export function ChatIcon() {
+  return <MessageSquareText {...base} />;
+}
+
+export function SendIcon() {
+  return <SendHorizontal {...base} />;
+}
+
+export function StopIcon() {
+  return <Square {...base} size={12} fill="currentColor" />;
+}
+
 export function ExternalOpenIcon() {
   return <ExternalLink {...base} />;
 }
@@ -168,6 +185,11 @@ export function CheckIcon() {
   return <Check {...base} />;
 }
 
+/** Two stacked sheets — copy a message to the clipboard. */
+export function CopyIcon() {
+  return <Copy {...base} />;
+}
+
 /** Flask — run a provider connectivity test. */
 export function FlaskIcon() {
   return <FlaskConical {...base} />;
@@ -176,6 +198,11 @@ export function FlaskIcon() {
 /** Spinning loader for in-flight actions. */
 export function SpinnerIcon() {
   return <Loader2 {...base} className="spin" />;
+}
+
+/** Branch glyph — the git diff viewer. */
+export function GitBranchIcon() {
+  return <GitBranch {...base} />;
 }
 
 /** Pulse line — the system CPU/memory monitor. */

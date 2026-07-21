@@ -162,7 +162,16 @@ const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|build
 const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
 const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
 const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
-const AGENT_INPUT_PROMPT_RE = /(?:^|\n)\s*[›>]\s*[^\n]*$/;
+// Matches ONE row that agentInputPromptVisible() has already stripped of box
+// chrome: the agent's input marker, bare (idle) or with typed text after it.
+const AGENT_INPUT_PROMPT_RE = /^[›>](?:\s|$)/;
+// Vertical box-drawing edges + padding around that row. Agent CLIs draw their
+// input inside a border, so the raw row reads "│ › fix a bug in @file      │".
+const BOX_CHROME_RE = /^[\s│┃┆┊╎╏|]+|[\s│┃┆┊╎╏|]+$/g;
+// How many non-empty rows up from the bottom to search for the input row. It is
+// rarely the last one — a bottom border and a hint line ("? for shortcuts")
+// usually sit below it.
+const AGENT_PROMPT_SCAN_ROWS = 6;
 const DONE_ACTIVITY_TTL_MS = 30_000;
 const ERROR_ACTIVITY_TTL_MS = 5 * 60_000;
 const WORKING_ACTIVITY_STALE_MS = 2 * 60_000;
@@ -812,7 +821,7 @@ function getSession(id: string): Session {
             term.paste(`${paths.join(" ")} `);
           } else {
             term.write(
-              `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — switch to an agent prompt to paste it as an image.\x1b[0m\r\n`
+              `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — no agent prompt detected here, so the path was not inserted.\x1b[0m\r\n`
             );
           }
         }
@@ -1131,7 +1140,25 @@ export function sessionLooksLikeAgentInput(id: string): boolean {
   if (session.term.buffer.active.type === "alternate") return true;
   const visible = sessionVisibleText(id);
   if (AGENT_RE.test(visible)) return true;
-  return agentSessionKinds.has(id) && AGENT_INPUT_PROMPT_RE.test(visible);
+  return agentSessionKinds.has(id) && agentInputPromptVisible(visible);
+}
+
+/**
+ * Does the visible screen show an agent's input line?
+ *
+ * Scans the last few NON-EMPTY rows (the same shape as visibleScreenLooksIdle)
+ * instead of anchoring to the end of the text. An agent CLI wraps its input in
+ * a box and parks a bottom border plus a hint line under it, so the prompt is
+ * almost never the final character of the screen — an end-anchored match found
+ * it only in the degenerate case, which is why pasting an image at a Codex
+ * prompt fell through to the "no agent prompt" branch.
+ */
+function agentInputPromptVisible(visible: string): boolean {
+  const rows = visible
+    .split("\n")
+    .map((line) => line.replace(BOX_CHROME_RE, ""))
+    .filter(Boolean);
+  return rows.slice(-AGENT_PROMPT_SCAN_ROWS).some((row) => AGENT_INPUT_PROMPT_RE.test(row));
 }
 
 function sessionVisibleText(id: string): string {

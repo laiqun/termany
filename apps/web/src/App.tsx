@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentHistory } from "./components/AgentHistory";
 import { FindBar } from "./components/FindBar";
+import { GitDiff } from "./components/GitDiff";
 import { AgentUsage } from "./components/AgentUsage";
-import { SystemMonitor } from "./components/SystemMonitor";
 import { HTabBar } from "./components/HTabBar";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
@@ -14,7 +14,7 @@ import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
-import { activeHtab, activeNode, leafIds, useStore } from "./state/store";
+import { activeHtab, activeNode, focusedCwdSession, leafIds, useStore } from "./state/store";
 import {
   adjustTerminalFontSize,
   clearSession,
@@ -81,14 +81,27 @@ export function App() {
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [claudeHistoryOpen, setClaudeHistoryOpen] = useState(false);
   const [agentUsageOpen, setAgentUsageOpen] = useState(false);
-  const [systemMonitorOpen, setSystemMonitorOpen] = useState(false);
+  const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
   const focusedPane = htab?.focused;
+  const gitSession = useStore(focusedCwdSession);
 
   // The find bar targets one pane; if focus moves elsewhere, it would be
   // searching a terminal the user is no longer looking at — close it instead.
   useEffect(() => setFindOpen(false), [focusedPane]);
+
+  // Panes live far below this state, so their "manage models / agents" menu
+  // footers ask for a section over an event rather than a threaded-down prop.
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const section = (event as CustomEvent<SettingsSection>).detail;
+      lastSettingsSection.current = section;
+      setSettingsSection(section);
+    };
+    window.addEventListener("termany:open-settings", onOpen);
+    return () => window.removeEventListener("termany:open-settings", onOpen);
+  }, []);
 
   // Settings and Search are full-panel overlays, so blanket-hiding every
   // native webview in the workspace while either is open is correct. The
@@ -97,7 +110,11 @@ export function App() {
   // blanks the pane(s) it actually overlaps (see SideRail.tsx).
   useEffect(() => {
     const suppressed =
-      settingsOpen || searchOpen || claudeHistoryOpen || agentUsageOpen || systemMonitorOpen;
+      settingsOpen ||
+      searchOpen ||
+      claudeHistoryOpen ||
+      agentUsageOpen ||
+      gitDiffOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -108,7 +125,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, systemMonitorOpen]);
+  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, gitDiffOpen]);
 
   // What every bindable action DOES. The catalog itself (ids, labels, default
   // chords) lives in keybindings.ts; this is the other half. Two things drive
@@ -162,6 +179,17 @@ export function App() {
       toggleSidebar: (s) => s.toggleSidebar(),
       toggleRail: (s) => s.toggleRail(),
       openSettings,
+      showGitDiff: () => setGitDiffOpen(true),
+      // The theme picker is a Settings section rather than its own panel, so
+      // the chord jumps straight to it — and toggles back out, like the panels
+      // below, so the same keys that opened it put it away.
+      openThemePicker: () => {
+        lastSettingsSection.current = "appearance";
+        setSettingsSection((cur) => (cur === "appearance" ? null : "appearance"));
+      },
+      openAgentHistory: () => setClaudeHistoryOpen((o) => !o),
+      openAgentUsage: () => setAgentUsageOpen((o) => !o),
+      openSystemMonitor: (s) => s.addPane("monitor"),
       search: () => setSearchOpen((o) => !o),
       find: () => setFindOpen(true),
       findNext: (s) => {
@@ -320,7 +348,6 @@ export function App() {
           }}
           onOpenClaudeHistory={() => setClaudeHistoryOpen(true)}
           onOpenAgentUsage={() => setAgentUsageOpen(true)}
-          onOpenSystemMonitor={() => setSystemMonitorOpen(true)}
         />
       )}
       {settingsOpen && (
@@ -337,7 +364,7 @@ export function App() {
       )}
       {claudeHistoryOpen && <AgentHistory onClose={() => setClaudeHistoryOpen(false)} />}
       {agentUsageOpen && <AgentUsage onClose={() => setAgentUsageOpen(false)} />}
-      {systemMonitorOpen && <SystemMonitor onClose={() => setSystemMonitorOpen(false)} />}
+      {gitDiffOpen && <GitDiff session={gitSession} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>
   );
