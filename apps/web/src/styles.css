@@ -1409,18 +1409,12 @@ html.tauri #root {
   padding: var(--pane-gap);
   position: relative;
 }
-/* The floating terminal card (one per tab, splits divide it internally). */
+/* The frame the split tree lives in. Each leaf pane draws its own card
+   (see .pane-slot), so this stays a bare positioning context — the gaps
+   between cards let .pane-area's recessed background through. */
 .pane-card {
   position: relative;
   height: 100%;
-  /* --pane-bg is an optional theme override (vars: { "pane-bg": … }): art
-     themes set a translucent veil here (with a transparent xterm background)
-     so the window artwork reads through the terminals themselves. */
-  background: var(--pane-bg, var(--bg));
-  border: var(--pane-border);
-  border-radius: var(--pane-radius);
-  overflow: hidden;
-  box-shadow: var(--pane-shadow);
 }
 
 /* Right quick-action rail — full window height, mirrors .sidebar on the
@@ -1594,13 +1588,13 @@ html.tauri #root {
   min-width: 0;
   min-height: 0;
 }
-/* Draggable divider between two cells. The element is a thin visible line;
-   a ::before pseudo widens the mouse hit area without taking layout space. */
+/* Draggable divider between two cells. It's the gap between two pane cards —
+   no line of its own; a centred hairline only fades in on hover/drag so the
+   resize affordance shows up where the cursor already is. */
 .split-gutter {
-  flex: 0 0 1px;
+  flex: 0 0 var(--pane-gap);
   position: relative;
   z-index: 5;
-  background: var(--border);
 }
 .split-gutter.row {
   cursor: col-resize;
@@ -1611,37 +1605,44 @@ html.tauri #root {
 .split-gutter::before {
   content: "";
   position: absolute;
-}
-.split-gutter.row::before {
-  top: 0;
-  bottom: 0;
-  left: -3px;
-  right: -3px;
-}
-.split-gutter.col::before {
-  left: 0;
-  right: 0;
-  top: -3px;
-  bottom: -3px;
-}
-.split-gutter:hover {
+  inset: 0;
+  margin: auto;
+  border-radius: 1px;
+  opacity: 0;
+  transition: opacity 120ms ease;
   /* Themes can mute this via vars: { "--split-gutter-hover": ... } (falls
      back to --accent) — same escape hatch as --pane-focus-ring. */
   background: var(--split-gutter-hover, var(--accent));
 }
+.split-gutter.row::before {
+  width: 2px;
+}
+.split-gutter.col::before {
+  height: 2px;
+}
+.split-gutter:hover::before,
+.split-gutter:active::before {
+  opacity: 1;
+}
+/* Each leaf pane is its own rounded card floating on .pane-area's recessed
+   background — the gutters between them are real gaps, not hairlines. */
 .pane-slot {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* No own rounding — the pane-card clips corners, so a single pane fills the
-     rounded card and split cells stay square at the internal gutters. */
+  /* --pane-bg is an optional theme override (vars: { "pane-bg": … }): art
+     themes set a translucent veil here (with a transparent xterm background)
+     so the window artwork reads through the terminals themselves. */
+  background: var(--pane-bg, var(--bg));
+  border: var(--pane-border);
+  border-radius: var(--pane-radius);
+  box-shadow: var(--pane-shadow);
 }
 /* Draw the focus ring as a top-most overlay so it sits ABOVE the opaque header
-   (an inset box-shadow gets painted over by the header's background).
-   Radius matches the pane-card (minus its 1px border) so the ring follows the
-   card's rounded corners instead of getting clipped into a notch there. */
+   (an inset box-shadow gets painted over by the header's background). It lands
+   exactly on the card's own 1px border, recolouring the whole outline. */
 .pane-slot.focused::after {
   content: "";
   position: absolute;
@@ -1650,7 +1651,7 @@ html.tauri #root {
      back to --accent) — e.g. a flat, borderless theme that'd rather rely on
      the pane-head-title's dimmed/full-opacity contrast as the focus cue. */
   border: 1px solid var(--pane-focus-ring, var(--accent));
-  border-radius: calc(var(--pane-radius) - 1px);
+  border-radius: var(--pane-radius);
   pointer-events: none;
   z-index: 6;
 }
@@ -1715,6 +1716,8 @@ html.tauri #root {
 /* The zoomed pane's original cell in the dimmed tree — an intentional hole. */
 .pane-slot-ghost {
   background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 @keyframes zen-fade-in {
   from {
