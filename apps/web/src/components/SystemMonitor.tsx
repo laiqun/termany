@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
+import { ActivityIcon } from "./icons";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -124,22 +125,22 @@ function ProcessRow({
 }) {
   return (
     <div className={`sysmon-row ${child ? "child" : ""}`} onDoubleClick={onOpenDetail}>
+      {onToggle ? (
+        <button
+          className={`sysmon-twisty ${expanded ? "open" : ""}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+          aria-expanded={expanded}
+        >
+          ▸
+        </button>
+      ) : (
+        <span className="sysmon-twisty-spacer" />
+      )}
       <span className="sysmon-pid">{pid}</span>
       <span className="sysmon-name">
-        {onToggle ? (
-          <button
-            className={`sysmon-twisty ${expanded ? "open" : ""}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggle();
-            }}
-            aria-expanded={expanded}
-          >
-            ▸
-          </button>
-        ) : (
-          <span className="sysmon-twisty-spacer" />
-        )}
         <span className="sysmon-name-text" title={label}>
           {label}
         </span>
@@ -312,6 +313,7 @@ export function SystemMonitor() {
 
       <div className="sysmon-table">
         <div className="sysmon-row head">
+          <span className="sysmon-twisty-spacer" />
           <span className="sysmon-pid">{t("monitor.col.pid")}</span>
           <span className="sysmon-name">{header("name", t("monitor.col.process"))}</span>
           <span className="sysmon-num">{header("cpu", "CPU")}</span>
@@ -445,28 +447,62 @@ export function SystemMonitor() {
         <div className="ws-dialog-backdrop" onClick={() => setDetail(null)}>
           <div className="ws-dialog sysmon-detail" onClick={(e) => e.stopPropagation()}>
             <div className="sysmon-detail-head">
-              <span className="sysmon-detail-name" title={detail.name}>
-                {detail.name}
+              <span className="sysmon-detail-icon" aria-hidden>
+                <ActivityIcon />
               </span>
-              {detail.count && detail.count > 1 && (
-                <em className="sysmon-count">×{detail.count}</em>
+              <div className="sysmon-detail-title">
+                <div className="sysmon-detail-name" title={detail.name}>
+                  <span className="sysmon-detail-name-text">{detail.name}</span>
+                  {detail.count && detail.count > 1 && (
+                    <em className="sysmon-count">×{detail.count}</em>
+                  )}
+                </div>
+                <div className="sysmon-detail-sub">
+                  {t("monitor.col.pid")} {detail.pid} · {detail.user || "—"}
+                </div>
+              </div>
+            </div>
+
+            <div className="sysmon-detail-meters">
+              <div className="sysmon-detail-meter">
+                <div className="sysmon-detail-meter-top">
+                  <span>CPU</span>
+                  <b>{detail.cpu.toFixed(1)}%</b>
+                </div>
+                <div className="sysmon-detail-track">
+                  <i style={{ width: `${Math.min(100, (detail.cpu / cpuScale) * 100)}%` }} />
+                </div>
+              </div>
+              <div className="sysmon-detail-meter">
+                <div className="sysmon-detail-meter-top">
+                  <span>{t("monitor.col.memory")}</span>
+                  <b>{formatBytes(detail.memBytes)}</b>
+                </div>
+                <div className="sysmon-detail-track">
+                  <i className="mem" style={{ width: `${Math.min(100, (detail.memBytes / memScale) * 100)}%` }} />
+                </div>
+              </div>
+            </div>
+
+            <div className="sysmon-detail-ports-row">
+              <span className="sysmon-detail-ports-label">{t("monitor.col.ports")}</span>
+              {detail.ports.length ? (
+                <span className="sysmon-detail-ports">
+                  {detail.ports.map((p) => (
+                    <em key={p} className="sysmon-port">
+                      {p}
+                    </em>
+                  ))}
+                </span>
+              ) : (
+                <span className="sysmon-detail-none">—</span>
               )}
             </div>
-            <dl className="sysmon-detail-grid">
-              <dt>{t("monitor.col.pid")}</dt>
-              <dd>{detail.pid}</dd>
-              <dt>{t("monitor.col.user")}</dt>
-              <dd>{detail.user || "—"}</dd>
-              <dt>CPU</dt>
-              <dd>{detail.cpu.toFixed(1)}%</dd>
-              <dt>{t("monitor.col.memory")}</dt>
-              <dd>{formatBytes(detail.memBytes)}</dd>
-              <dt>{t("monitor.col.ports")}</dt>
-              <dd>{detail.ports.length ? detail.ports.join(", ") : "—"}</dd>
-            </dl>
+
             {detail.count && detail.count > 1 && (
               <p className="sysmon-detail-note">{t("monitor.detail.groupNote", { pid: detail.pid })}</p>
             )}
+
             <div className="ws-dialog-actions">
               <button className="ws-dialog-btn" onClick={() => setDetail(null)}>
                 {t("monitor.close")}
