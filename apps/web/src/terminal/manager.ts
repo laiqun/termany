@@ -1,15 +1,14 @@
 import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
-import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { apiUrl } from "../api";
 import { DemoBackend, demoInteracted, isDemo } from "../demo";
 import { ACTIONS, loadKeybindings, matchChord } from "../keybindings";
-import { openExternal } from "../openExternal";
 import { registerLocalPathLinks } from "./localLinks";
+import { registerWebLinks } from "./webLinks";
 
 /**
  * The terminal session registry.
@@ -679,16 +678,9 @@ function getSession(id: string): Session {
     });
   }
 
-  // Make URLs in terminal output clickable — open in the system browser on
-  // desktop, a new tab on web. (xterm only underlines/links on hover by default
-  // once this addon is loaded.)
-  term.loadAddon(
-    new WebLinksAddon((event, uri) => {
-      if (!event.metaKey) return;
-      event.preventDefault();
-      void openExternal(uri);
-    })
-  );
+  // Make URLs open on Cmd+click. The custom provider also joins links hard-
+  // wrapped by rich CLI output, which xterm's stock addon cannot do.
+  registerWebLinks(term);
   // Local file paths (including relative ones like `src/foo.ts`) are verified
   // and resolved by the server against this shell's live cwd. If the server
   // can't answer (demo mode, old server), fall back to trusting absolute
