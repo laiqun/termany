@@ -44,6 +44,17 @@ interface SystemStats {
 
 type SortKey = "name" | "cpu" | "mem";
 
+/** What the detail dialog shows — either one instance or a group's aggregate. */
+interface ProcessDetail {
+  name: string;
+  pid: number;
+  cpu: number;
+  memBytes: number;
+  user: string;
+  ports: number[];
+  count?: number;
+}
+
 const POLL_MS = 2000;
 
 function formatBytes(n: number): string {
@@ -92,11 +103,10 @@ function ProcessRow({
   count,
   child,
   expanded,
-  selected,
   cpuScale,
   memScale,
   onToggle,
-  onSelect,
+  onOpenDetail,
 }: {
   label: string;
   cpu: number;
@@ -107,17 +117,14 @@ function ProcessRow({
   count?: number;
   child?: boolean;
   expanded?: boolean;
-  selected: boolean;
   cpuScale: number;
   memScale: number;
   onToggle?: () => void;
-  onSelect: () => void;
+  onOpenDetail: () => void;
 }) {
   return (
-    <div
-      className={`sysmon-row ${child ? "child" : ""} ${selected ? "selected" : ""}`}
-      onClick={onSelect}
-    >
+    <div className={`sysmon-row ${child ? "child" : ""}`} onDoubleClick={onOpenDetail}>
+      <span className="sysmon-pid">{pid}</span>
       <span className="sysmon-name">
         {onToggle ? (
           <button
@@ -158,7 +165,6 @@ function ProcessRow({
         {ports.length > 3 && <em className="sysmon-port more">+{ports.length - 3}</em>}
       </span>
       <span className="sysmon-user">{user || "—"}</span>
-      <span className="sysmon-pid">{pid}</span>
     </div>
   );
 }
@@ -178,8 +184,10 @@ export function SystemMonitor() {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "cpu", desc: true });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selected, setSelected] = useState<{ pid: number; name: string } | null>(null);
-  const [confirming, setConfirming] = useState<{ pid: number; name: string } | null>(null);
+  // The process a double-clicked row opened — the detail dialog is where a
+  // process is inspected and terminated, so the table itself carries no
+  // selection state or action button.
+  const [detail, setDetail] = useState<ProcessDetail | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Keep the last good sample on screen if one poll fails, so the numbers
   // don't blink out on a transient hiccup.
@@ -255,7 +263,7 @@ export function SystemMonitor() {
   const historyMax = Math.max(20, ...(stats?.history ?? []).map((s) => s.cpu));
 
   const kill = async (pid: number, force: boolean) => {
-    setConfirming(null);
+    setDetail(null);
     try {
       const r = await fetch(apiPath("/api/system-stats/kill"), {
         method: "POST",
@@ -264,7 +272,6 @@ export function SystemMonitor() {
       });
       const body = (await r.json().catch(() => null)) as { error?: string } | null;
       if (!r.ok) throw new Error(body?.error || String(r.status));
-      setSelected(null);
       setNotice(null);
     } catch (e) {
       setNotice(t("monitor.killFailed", { reason: e instanceof Error ? e.message : String(e) }));
@@ -296,15 +303,6 @@ export function SystemMonitor() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        {selected && (
-          <button
-            className="sysmon-kill"
-            onClick={() => setConfirming(selected)}
-            title={t("monitor.pidTitle", { name: selected.name, pid: selected.pid })}
-          >
-            {t("monitor.kill")}
-          </button>
-        )}
         <span className="sysmon-toolbar-note">
           {t("monitor.meta", { cores: stats.cpu.cores, uptime: formatUptime(stats.uptimeSec, t) })}
         </span>
@@ -314,12 +312,12 @@ export function SystemMonitor() {
 
       <div className="sysmon-table">
         <div className="sysmon-row head">
+          <span className="sysmon-pid">{t("monitor.col.pid")}</span>
           <span className="sysmon-name">{header("name", t("monitor.col.process"))}</span>
           <span className="sysmon-num">{header("cpu", "CPU")}</span>
           <span className="sysmon-num">{header("mem", t("monitor.col.memory"))}</span>
           <span className="sysmon-ports">{t("monitor.col.ports")}</span>
           <span className="sysmon-user">{t("monitor.col.user")}</span>
-          <span className="sysmon-pid">{t("monitor.col.pid")}</span>
         </div>
         <div className="sysmon-rows">
           {stats.processes.length === 0 ? (
@@ -343,7 +341,6 @@ export function SystemMonitor() {
                     pid={p.pid}
                     count={p.count}
                     expanded={open}
-                    selected={selected?.pid === p.pid}
                     cpuScale={cpuScale}
                     memScale={memScale}
                     onToggle={
@@ -356,7 +353,17 @@ export function SystemMonitor() {
                             })
                         : undefined
                     }
-                    onSelect={() => setSelected({ pid: p.pid, name: p.name })}
+                    onOpenDetail={() =>
+                      setDetail({
+                        name: p.name,
+                        pid: p.pid,
+                        cpu: p.cpu,
+                        memBytes: p.memBytes,
+                        user: p.user,
+                        ports: p.ports,
+                        count: p.count,
+                      })
+                    }
                   />
                   {open &&
                     p.children.map((c) => (
@@ -369,10 +376,18 @@ export function SystemMonitor() {
                         ports={c.ports}
                         pid={c.pid}
                         child
-                        selected={selected?.pid === c.pid}
                         cpuScale={cpuScale}
                         memScale={memScale}
-                        onSelect={() => setSelected({ pid: c.pid, name: p.name })}
+                        onOpenDetail={() =>
+                          setDetail({
+                            name: p.name,
+                            pid: c.pid,
+                            cpu: c.cpu,
+                            memBytes: c.memBytes,
+                            user: c.user,
+                            ports: c.ports,
+                          })
+                        }
                       />
                     ))}
                 </div>
@@ -426,23 +441,43 @@ export function SystemMonitor() {
         </div>
       </div>
 
-      {confirming && (
-        <div className="ws-dialog-backdrop" onClick={() => setConfirming(null)}>
-          <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
-            <p className="quit-confirm-text">
-              {t("monitor.killConfirm", { name: confirming.name, pid: confirming.pid })}
-            </p>
+      {detail && (
+        <div className="ws-dialog-backdrop" onClick={() => setDetail(null)}>
+          <div className="ws-dialog sysmon-detail" onClick={(e) => e.stopPropagation()}>
+            <div className="sysmon-detail-head">
+              <span className="sysmon-detail-name" title={detail.name}>
+                {detail.name}
+              </span>
+              {detail.count && detail.count > 1 && (
+                <em className="sysmon-count">×{detail.count}</em>
+              )}
+            </div>
+            <dl className="sysmon-detail-grid">
+              <dt>{t("monitor.col.pid")}</dt>
+              <dd>{detail.pid}</dd>
+              <dt>{t("monitor.col.user")}</dt>
+              <dd>{detail.user || "—"}</dd>
+              <dt>CPU</dt>
+              <dd>{detail.cpu.toFixed(1)}%</dd>
+              <dt>{t("monitor.col.memory")}</dt>
+              <dd>{formatBytes(detail.memBytes)}</dd>
+              <dt>{t("monitor.col.ports")}</dt>
+              <dd>{detail.ports.length ? detail.ports.join(", ") : "—"}</dd>
+            </dl>
+            {detail.count && detail.count > 1 && (
+              <p className="sysmon-detail-note">{t("monitor.detail.groupNote", { pid: detail.pid })}</p>
+            )}
             <div className="ws-dialog-actions">
-              <button className="ws-dialog-btn" onClick={() => setConfirming(null)}>
-                {t("monitor.cancel")}
+              <button className="ws-dialog-btn" onClick={() => setDetail(null)}>
+                {t("monitor.close")}
               </button>
-              <button className="ws-dialog-btn" onClick={() => void kill(confirming.pid, true)}>
+              <button className="ws-dialog-btn" onClick={() => void kill(detail.pid, true)}>
                 {t("monitor.killForce")}
               </button>
               <button
-                className="ws-dialog-btn primary"
+                className="ws-dialog-btn danger"
                 autoFocus
-                onClick={() => void kill(confirming.pid, false)}
+                onClick={() => void kill(detail.pid, false)}
               >
                 {t("monitor.kill")}
               </button>
