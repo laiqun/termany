@@ -390,6 +390,23 @@ fn attach_server_log(app: &tauri::AppHandle, command: &mut Command) {
     log::info!("[termany] bundled server output: {path:?}");
 }
 
+/// Tauri returns extended-length paths such as `\\?\C:\...` for packaged
+/// resources on Windows. Rust's process launcher accepts them, but Node 24's
+/// entry-point resolver does not: it collapses the script argument to `C:` and
+/// exits with `EISDIR: lstat 'C:'`. Convert the two Windows verbatim forms back
+/// to regular DOS/UNC paths before handing them to Node.
+#[cfg(any(target_os = "windows", test))]
+fn node_compatible_windows_path(path: &std::path::Path) -> std::path::PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(rest);
+    }
+    path.to_owned()
+}
+
 fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
     let version = app.package_info().version.to_string();
     if existing_server_matches(&version) {
@@ -405,6 +422,8 @@ fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
             return None;
         }
     };
+    #[cfg(target_os = "windows")]
+    let resource_dir = node_compatible_windows_path(&resource_dir);
     // The bundled Node runtime is `node` on unix, `node.exe` on Windows.
     let node_bin = if cfg!(windows) { "node.exe" } else { "node" };
     // Tauri's resource glob (`resources/server/**/*`) preserves the leading
@@ -821,7 +840,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_termany_server_command, parse_pid_lines, parse_version_field};
+    use super::{
+        is_termany_server_command, node_compatible_windows_path, parse_pid_lines,
+        parse_version_field,
+    };
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn reads_the_version_out_of_a_json_body() {
@@ -862,5 +885,23 @@ mod tests {
         ));
         assert!(!is_termany_server_command("node unrelated-server.cjs"));
         assert!(!is_termany_server_command("node server.cjs"));
+    }
+
+    #[test]
+    fn removes_windows_verbatim_prefixes_before_launching_node() {
+        assert_eq!(
+            node_compatible_windows_path(Path::new(
+                r"\\?\C:\Users\mike\AppData\Local\Termany\resources\server"
+            )),
+            PathBuf::from(r"C:\Users\mike\AppData\Local\Termany\resources\server")
+        );
+        assert_eq!(
+            node_compatible_windows_path(Path::new(r"\\?\UNC\server\share\Termany")),
+            PathBuf::from(r"\\server\share\Termany")
+        );
+        assert_eq!(
+            node_compatible_windows_path(Path::new(r"C:\Termany\resources\server")),
+            PathBuf::from(r"C:\Termany\resources\server")
+        );
     }
 }
