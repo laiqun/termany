@@ -257,6 +257,16 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
     () => ""
   );
 
+  // Keyboard navigation can move beyond the scroll viewport. Keep the active
+  // row visible without stealing DOM focus from the terminal.
+  useEffect(() => {
+    if (collapsed) return;
+    const tree = treeRef.current;
+    const row = Array.from(tree?.querySelectorAll<HTMLElement>("[data-tree-node-id]") ?? [])
+      .find((candidate) => candidate.dataset.treeNodeId === ws.activeNode);
+    row?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [collapsed, ws.activeNode, ws.id]);
+
   const setDragUi = (next: NodeDragUi | null) => {
     dragUiRef.current = next;
     setNodeDrag(next);
