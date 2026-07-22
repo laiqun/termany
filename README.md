@@ -143,6 +143,11 @@ A starting set — all of them are rebindable in Settings → Keyboard.
 | ⌃⌘ ← ↑ ↓ →  | Resize the focused pane       |
 | ⌘K          | Clear the pane                |
 
+The desktop app can also summon (show / hide) its window from any app with a
+system-wide hotkey. It ships off by default — every "good" chord is already
+claimed somewhere (Spotlight, launchers, IMEs, media keys) — so pick your own
+in Settings → Keyboard → System-wide.
+
 ## Roadmap (next)
 
 - **AI layer** in `apps/web` — pipe terminal output to Claude for inline command

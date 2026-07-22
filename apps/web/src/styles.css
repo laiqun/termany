@@ -3647,6 +3647,25 @@ html.tauri #root {
   border-color: #e5736f;
   color: #e5736f;
 }
+/* A chord that is only a pending choice — picked, but not registered yet. */
+.kb-chord.idle {
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+.kb-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin: 6px 0 0;
+}
+.kb-note-warn {
+  color: #d9a441;
+}
+.kb-note-error {
+  color: #e5736f;
+}
 
 /* Model settings */
 .ms-head {
