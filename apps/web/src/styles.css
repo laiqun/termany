@@ -2648,9 +2648,8 @@ html.tauri #root {
 }
 
 /* Per-pane file tree — the pane's alternative body, toggled from its header.
-   Default: just the tree, filling the pane. Only while a file is open (which
-   also maximizes the pane) does a second, narrower column appear alongside a
-   fixed-width tree — see the two rules below. */
+   Default: just the tree, filling the pane. While a file is open, a preview
+   column appears alongside a resizable tree — see the two rules below. */
 .file-tree {
   position: absolute;
   inset: 0;
@@ -2665,8 +2664,11 @@ html.tauri #root {
 }
 .file-tree-split .file-tree {
   position: static;
-  flex: 0 0 360px;
-  min-width: 200px;
+  flex: 0 0 180px;
+  /* The preview lives inside the pane now, which can be a fraction of the
+     screen wide — never let the tree eat so much of it that there's nothing
+     left to read. */
+  max-width: 45%;
   overflow: hidden;
 }
 .file-tree-split.tree-collapsed .file-preview-panel {
