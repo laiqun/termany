@@ -530,7 +530,91 @@ fn webview_history(app: tauri::AppHandle, label: String, direction: String) -> R
 fn focus_main_window(app_handle: &tauri::AppHandle) {
     if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_windows_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::MenuBuilder;
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let menu = MenuBuilder::new(app)
+        .text("tray_open", "Open Termany")
+        .separator()
+        .text("tray_quit", "Quit Termany")
+        .build()?;
+
+    let mut tray = TrayIconBuilder::with_id("termany")
+        .menu(&menu)
+        .tooltip("Termany")
+        // A normal left click restores the app; the context menu stays on the
+        // conventional right click.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app_handle, event| match event.id().as_ref() {
+            "tray_open" => focus_main_window(app_handle),
+            "tray_quit" => {
+                focus_main_window(app_handle);
+                let _ = app_handle.emit_to("main", "quit-requested", ());
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                focus_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+/// Explorer keys its shortcut icon cache primarily by the stable executable
+/// path, so an in-place updater can leave a desktop shortcut showing an icon
+/// embedded by an older Termany release. Notify the shell once per app version
+/// after the new executable is running. The marker avoids doing a system-wide
+/// association refresh on every launch.
+#[cfg(target_os = "windows")]
+fn refresh_windows_shortcut_icon_once(app: &tauri::App) {
+    use std::ptr;
+    use windows_sys::Win32::UI::Shell::{
+        SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_FLUSH, SHCNF_IDLIST,
+    };
+
+    let Ok(data_dir) = app.path().app_local_data_dir() else {
+        return;
+    };
+    let marker = data_dir.join(format!(
+        ".shortcut-icon-refreshed-{}",
+        app.package_info().version
+    ));
+    if marker.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&data_dir).is_err() {
+        return;
+    }
+
+    // SAFETY: SHCNE_ASSOCCHANGED with SHCNF_IDLIST requires both item pointers
+    // to be null and does not retain them after this synchronous call.
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED as i32,
+            SHCNF_IDLIST | SHCNF_FLUSH,
+            ptr::null(),
+            ptr::null(),
+        );
+    }
+    if let Err(error) = std::fs::write(&marker, b"") {
+        log::warn!("[termany] could not persist shortcut icon refresh marker {marker:?}: {error}");
     }
 }
 
@@ -626,6 +710,11 @@ pub fn run() {
             app.manage(QuitState(AtomicBool::new(false)));
             #[cfg(target_os = "macos")]
             macos_services::install(app.handle().clone());
+            #[cfg(target_os = "windows")]
+            {
+                install_windows_tray(app)?;
+                refresh_windows_shortcut_icon_once(app);
+            }
 
             // Tauri auto-creates a default macOS menu bar when none is set,
             // and three of its predefined items actively fight this app:
@@ -695,8 +784,9 @@ pub fn run() {
             Ok(())
         })
         // macOS keeps the bundled server alive across an ordinary quit so live
-        // shells can resume. Windows has no tray/background-mode UI, so its
-        // confirmed quit path above stops the server and exits completely.
+        // shells can resume. Windows' confirmed quit path stops the server and
+        // exits completely; its tray icon is an open/quit affordance, not a
+        // hidden background mode.
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
