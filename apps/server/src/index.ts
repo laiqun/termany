@@ -33,6 +33,7 @@ import {
 import { gitDiffs, gitOverview } from "./git.js";
 import { pickFolder } from "./folderPicker.js";
 import { testProvider } from "./providerTest.js";
+import { ptyEnvironment } from "./ptyEnvironment.js";
 import { generateTheme } from "./theme.js";
 
 /** Read a JSON request body (capped) into an object. */
@@ -124,7 +125,7 @@ function mediaTypeForPath(filePath: string): string | null {
 
 // Dev runs on 5175 so it never collides with an INSTALLED Termany.app, whose
 // bundled server owns 5174 — that collision used to kill the dev server
-// silently mid-`pnpm desktop`, leaving the dev app talking to the old binary.
+// silently mid-`pnpm dev:desktop`, leaving the dev app talking to the old binary.
 // `npm_lifecycle_event` is "dev" only when launched via the `dev` script.
 const DEFAULT_PORT = process.env.npm_lifecycle_event === "dev" ? 5175 : 5174;
 const PORT = Number(process.env.TERMANY_PORT ?? DEFAULT_PORT);
@@ -1363,7 +1364,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
       cols: 80,
       rows: 24,
       cwd,
-      env: { ...process.env, TERM: "xterm-256color" },
+      env: ptyEnvironment(),
     });
   } catch (err) {
     // Never let one bad spawn take down the whole server.

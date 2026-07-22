@@ -84,7 +84,7 @@ while backgrounded — a build in one tab survives you switching away.
 
 ```bash
 npm install          # builds node-pty natively (needs Xcode CLT on macOS)
-npm run dev          # starts PTY server (:5174) + web (:5173)
+pnpm dev:web         # starts the dev PTY server (:5175) + web (:5173)
 ```
 
 Open http://localhost:5173.
@@ -96,7 +96,7 @@ Node PTY/API server alongside it (a bundled Node runtime + `node-pty`), so it ru
 fully offline with no separate install.
 
 ```bash
-npm run desktop      # dev: server + web + the Tauri shell, hot-reloading
+pnpm dev:desktop     # server (:5175) + web + the badged Tauri Dev app
 ```
 
 ### Build installers
@@ -119,10 +119,10 @@ stored locally in `~/.termany/termany.db`; no keys live in this repo. Optional e
 
 | Variable            | Default        | Purpose                                  |
 | ------------------- | -------------- | ---------------------------------------- |
-| `TERMANY_PORT`      | `5174`         | PTY/API server port                      |
+| `TERMANY_PORT`      | `5174` release / `5175` dev | PTY/API server port            |
 | `TERMANY_PASTE_DIR` | system temp    | Where pasted images are written          |
-| `VITE_PTY_URL`      | `ws://localhost:5174` | Web client → PTY WebSocket        |
-| `VITE_API_URL`      | `http://localhost:5174` | Web client → REST API           |
+| `VITE_PTY_URL`      | `ws://localhost:5174` release / `:5175` dev | Web client → PTY WebSocket |
+| `VITE_API_URL`      | follows `VITE_PTY_URL` | Web client → REST API                |
 
 ### Shortcuts
 

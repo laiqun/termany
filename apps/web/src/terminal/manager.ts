@@ -32,6 +32,8 @@ export interface Session {
   backend: ITerminalBackend;
   opened: boolean;
   followOutput: boolean;
+  /** Absolute buffer row held in view after the user scrolls away from live output. */
+  lockedViewportY: number | null;
   manualScrollUntil: number;
   deferredOutput: string[];
   deferredSince: number;
@@ -76,6 +78,37 @@ export function noteManualScroll(id: string) {
   const session = sessions.get(id);
   if (!session) return;
   session.manualScrollUntil = Date.now() + MANUAL_SCROLL_COOLDOWN_MS;
+  // Lock immediately, before the browser's native scroll event has necessarily
+  // updated xterm's viewportY. This closes the race where a PTY write lands
+  // between the wheel gesture and xterm noticing that it left the bottom.
+  session.followOutput = false;
+  session.lockedViewportY = session.term.buffer.active.viewportY;
+  requestAnimationFrame(() => {
+    const latest = sessions.get(id);
+    if (!latest) return;
+    const state = readScrollState(latest.term);
+    latest.followOutput = state.atBottom;
+    latest.lockedViewportY = state.atBottom ? null : latest.term.buffer.active.viewportY;
+    notifyScrollState(id);
+  });
+}
+
+function finishSessionWrite(id: string) {
+  const session = sessions.get(id);
+  if (!session) return;
+  completeAgentActivityIfIdle(id);
+  if (session.followOutput && Date.now() >= session.manualScrollUntil) {
+    settleSessionAtBottom(id);
+    return;
+  }
+  // A TUI can move xterm's viewport while repainting even though the user has
+  // deliberately scrolled away from the live edge. Restore the user's buffer
+  // row after every parsed write; term.write callbacks run before the render,
+  // so this does not create a visible snap down and back up.
+  if (session.lockedViewportY !== null) {
+    session.term.scrollToLine(Math.min(session.lockedViewportY, session.term.buffer.active.baseY));
+  }
+  notifyScrollState(id);
 }
 
 function writeSessionData(id: string, data: string) {
@@ -90,11 +123,7 @@ function writeSessionData(id: string, data: string) {
     scheduleDeferredFlush(id);
     return;
   }
-  session.term.write(data, () => {
-    completeAgentActivityIfIdle(id);
-    if (session.followOutput && Date.now() >= session.manualScrollUntil) settleSessionAtBottom(id);
-    else notifyScrollState(id);
-  });
+  session.term.write(data, () => finishSessionWrite(id));
 }
 
 function scheduleDeferredFlush(id: string) {
@@ -119,11 +148,7 @@ function flushDeferredOutput(id: string) {
   }
   const combined = session.deferredOutput.splice(0).join("");
   session.deferredSince = 0;
-  session.term.write(combined, () => {
-    completeAgentActivityIfIdle(id);
-    if (session.followOutput && Date.now() >= session.manualScrollUntil) settleSessionAtBottom(id);
-    else notifyScrollState(id);
-  });
+  session.term.write(combined, () => finishSessionWrite(id));
 }
 
 export type TerminalScrollState = {
@@ -140,7 +165,7 @@ export type AgentActivityStatus = "working" | "done" | "error";
 
 export type AgentActivity = {
   status: AgentActivityStatus;
-  agent?: "claude" | "codex";
+  agent?: "claude" | "codex" | "fastclaw";
   updatedAt: number;
 };
 
@@ -148,10 +173,11 @@ const agentActivities = new Map<string, AgentActivity>();
 const agentActivityListeners = new Set<() => void>();
 const agentSessionKinds = new Map<string, AgentActivity["agent"]>();
 
-const AGENT_RE = /\b(OpenAI Codex|Codex CLI|Claude Code)\b|Use \/skills|\/model to change|bypass permissions/i;
+const AGENT_RE = /\b(OpenAI Codex|Codex CLI|Claude Code|FastClaw)\b|Use \/skills|\/model to change|bypass permissions/i;
 const CODEX_RE = /\b(OpenAI Codex|Codex CLI)\b/i;
 const CLAUDE_RE = /\bClaude Code\b/i;
-const AGENT_COMMAND_RE = /^\s*(claude|codex)(?:\s|$)/i;
+const FASTCLAW_RE = /\bFastClaw\b/i;
+const AGENT_COMMAND_RE = /^\s*(claude|codex|fastclaw)(?:\s|$)/i;
 const ERROR_RE =
   /\b(error|failed|failure|exception|fatal|panic|permission denied|timed out|rate limit|quota|authentication|unauthorized|forbidden|command not found)\b/i;
 const BENIGN_ERROR_RE = /\b(no errors?|0 errors?|without errors?)\b/i;
@@ -161,16 +187,17 @@ const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|build
 const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
 const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
 const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
-// Matches ONE row that agentInputPromptVisible() has already stripped of box
-// chrome: the agent's input marker, bare (idle) or with typed text after it.
-const AGENT_INPUT_PROMPT_RE = /^[›>](?:\s|$)/;
-// Vertical box-drawing edges + padding around that row. Agent CLIs draw their
+// Matches ONE row that tuiInputPromptVisible() has already stripped of box
+// chrome. These markers are used by both known agents and otherwise unknown
+// chat-style TUIs, so image paste support does not depend on a vendor list.
+const TUI_INPUT_PROMPT_RE = /^[›>](?:\s|$)/;
+// Vertical box-drawing edges + padding around that row. Chat TUIs draw their
 // input inside a border, so the raw row reads "│ › fix a bug in @file      │".
 const BOX_CHROME_RE = /^[\s│┃┆┊╎╏|]+|[\s│┃┆┊╎╏|]+$/g;
 // How many non-empty rows up from the bottom to search for the input row. It is
 // rarely the last one — a bottom border and a hint line ("? for shortcuts")
 // usually sit below it.
-const AGENT_PROMPT_SCAN_ROWS = 6;
+const TUI_PROMPT_SCAN_ROWS = 6;
 const DONE_ACTIVITY_TTL_MS = 30_000;
 const ERROR_ACTIVITY_TTL_MS = 5 * 60_000;
 const WORKING_ACTIVITY_STALE_MS = 2 * 60_000;
@@ -232,6 +259,7 @@ function stripTerminalControls(data: string): string {
 function detectAgent(text: string): AgentActivity["agent"] | undefined {
   if (CLAUDE_RE.test(text)) return "claude";
   if (CODEX_RE.test(text)) return "codex";
+  if (FASTCLAW_RE.test(text)) return "fastclaw";
   return undefined;
 }
 
@@ -334,7 +362,14 @@ export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
 }
 
 export function agentActivityTitle(activity: AgentActivity): string {
-  const who = activity.agent === "claude" ? "Claude" : activity.agent === "codex" ? "Codex" : "Agent";
+  const who =
+    activity.agent === "claude"
+      ? "Claude"
+      : activity.agent === "codex"
+        ? "Codex"
+        : activity.agent === "fastclaw"
+          ? "FastClaw"
+          : "Agent";
   if (activity.status === "error") return `${who} reported an error`;
   if (activity.status === "done") return `${who} completed`;
   return `${who} is working`;
@@ -727,6 +762,7 @@ function getSession(id: string, cwdFrom?: string[]): Session {
     backend: initialBackend,
     opened: false,
     followOutput: true,
+    lockedViewportY: null,
     manualScrollUntil: 0,
     deferredOutput: [],
     deferredSince: 0,
@@ -776,11 +812,47 @@ function getSession(id: string, cwdFrom?: string[]): Session {
     session.backend.write(data);
   });
 
-  // Select-to-copy: when the mouse is released over a non-empty selection, copy
-  // it to the clipboard (iTerm/Terminal.app behaviour). The selection stays put.
-  el.addEventListener("mouseup", () => {
+  // Select-to-copy only after an actual selection gesture. The old listener
+  // copied on EVERY mouseup while any selection existed, so a plain click,
+  // right-click, or clicking an old selection silently overwrote the system
+  // clipboard. A small movement threshold also filters trackpad/mouse jitter.
+  const SELECTION_DRAG_PX = 4;
+  let selectionGesture: {
+    x: number;
+    y: number;
+    dragged: boolean;
+    clickCount: number;
+  } | null = null;
+  el.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) {
+      selectionGesture = null;
+      return;
+    }
+    selectionGesture = {
+      x: event.clientX,
+      y: event.clientY,
+      dragged: false,
+      clickCount: event.detail,
+    };
+  });
+  el.addEventListener("mousemove", (event) => {
+    if (!selectionGesture || !(event.buttons & 1)) return;
+    const dx = event.clientX - selectionGesture.x;
+    const dy = event.clientY - selectionGesture.y;
+    if (dx * dx + dy * dy >= SELECTION_DRAG_PX * SELECTION_DRAG_PX) {
+      selectionGesture.dragged = true;
+    }
+  });
+  el.addEventListener("mouseup", (event) => {
+    const gesture = selectionGesture;
+    selectionGesture = null;
+    if (event.button !== 0 || !gesture) return;
+    // Double/triple click deliberately selects a word/line without dragging.
+    if (!gesture.dragged && gesture.clickCount < 2) return;
     const sel = term.getSelection();
-    if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+    // Use trim only as an emptiness check. Copy the original selection so
+    // meaningful indentation and line breaks are preserved.
+    if (sel.trim()) navigator.clipboard?.writeText(sel).catch(() => {});
   });
 
   // Paste image blobs as local file paths only when the active program looks
@@ -819,7 +891,7 @@ function getSession(id: string, cwdFrom?: string[]): Session {
             term.paste(`${paths.join(" ")} `);
           } else {
             term.write(
-              `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — no agent prompt detected here, so the path was not inserted.\x1b[0m\r\n`
+              `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — no TUI input prompt detected here, so the path was not inserted.\x1b[0m\r\n`
             );
           }
         }
@@ -971,7 +1043,15 @@ export function attachSession(id: string, host: HTMLElement, cwdFrom?: string[])
     traceImeEvents(s.term);
     s.term.onScroll(() => {
       const scrollState = readScrollState(s.term);
-      s.followOutput = scrollState.atBottom;
+      // Only a scroll inside the user's wheel window may change follow mode.
+      // Output-driven TUI redraws also emit onScroll; allowing those to set
+      // followOutput=true is what used to pull readers back to the bottom.
+      if (Date.now() < s.manualScrollUntil) {
+        s.followOutput = scrollState.atBottom;
+        s.lockedViewportY = scrollState.atBottom ? null : s.term.buffer.active.viewportY;
+      } else if (s.followOutput) {
+        s.lockedViewportY = null;
+      }
       notifyScrollState(id);
     });
     s.opened = true;
@@ -991,6 +1071,7 @@ export function scrollSessionToTop(id: string) {
   const session = sessions.get(id);
   if (!session) return;
   session.followOutput = false;
+  session.lockedViewportY = 0;
   session.term.scrollToTop();
   notifyScrollState(id);
 }
@@ -999,6 +1080,7 @@ export function scrollSessionToBottom(id: string) {
   const session = sessions.get(id);
   if (!session) return;
   session.followOutput = true;
+  session.lockedViewportY = null;
   settleSessionAtBottom(id, true);
 }
 
@@ -1015,6 +1097,9 @@ export function fitSession(id: string) {
   try {
     s.fit.fit();
     s.backend.resize(s.term.cols, s.term.rows);
+    if (!s.followOutput && s.lockedViewportY !== null) {
+      s.term.scrollToLine(Math.min(s.lockedViewportY, s.term.buffer.active.baseY));
+    }
   } catch {
     /* container not laid out yet */
   }
@@ -1130,28 +1215,33 @@ export function sessionUsesAlternateBuffer(id: string): boolean {
 export function sessionLooksLikeAgentInput(id: string): boolean {
   const session = sessions.get(id);
   if (!session) return false;
+  // Full-screen TUIs conventionally use the alternate buffer. This is the
+  // strongest vendor-neutral signal available from a terminal emulator.
   if (session.term.buffer.active.type === "alternate") return true;
   const visible = sessionVisibleText(id);
   if (AGENT_RE.test(visible)) return true;
-  return agentSessionKinds.has(id) && agentInputPromptVisible(visible);
+  // Some chat TUIs (FastClaw included) deliberately stay in the normal
+  // buffer. Recognize their visible input row directly instead of requiring
+  // the command or product name to be registered with Termany.
+  return tuiInputPromptVisible(visible);
 }
 
 /**
- * Does the visible screen show an agent's input line?
+ * Does the visible screen show a chat-style TUI input line?
  *
  * Scans the last few NON-EMPTY rows (the same shape as visibleScreenLooksIdle)
  * instead of anchoring to the end of the text. An agent CLI wraps its input in
  * a box and parks a bottom border plus a hint line under it, so the prompt is
  * almost never the final character of the screen — an end-anchored match found
  * it only in the degenerate case, which is why pasting an image at a Codex
- * prompt fell through to the "no agent prompt" branch.
+ * prompt fell through to the "no TUI input prompt" branch.
  */
-function agentInputPromptVisible(visible: string): boolean {
+function tuiInputPromptVisible(visible: string): boolean {
   const rows = visible
     .split("\n")
     .map((line) => line.replace(BOX_CHROME_RE, ""))
     .filter(Boolean);
-  return rows.slice(-AGENT_PROMPT_SCAN_ROWS).some((row) => AGENT_INPUT_PROMPT_RE.test(row));
+  return rows.slice(-TUI_PROMPT_SCAN_ROWS).some((row) => TUI_INPUT_PROMPT_RE.test(row));
 }
 
 function sessionVisibleText(id: string): string {

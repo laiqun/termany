@@ -176,7 +176,7 @@ fn parse_version_field(body: &str) -> Option<String> {
 
 /// Is a server already listening on our port, and is it OURS?
 ///
-/// In a packaged build there is no `npm run dev` to start the backend, so the
+/// In a packaged build there is no `pnpm dev:web` to start the backend, so the
 /// app launches the bundled Node server itself (PTY over ws://localhost:5174 +
 /// the /api/* endpoints) — unless a usable one is already there.
 ///

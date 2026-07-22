@@ -21,8 +21,8 @@ npm install            # installs workspaces + builds node-pty
 ## Running
 
 ```bash
-npm run dev            # web only: PTY server (:5174) + web (:5173)
-npm run desktop        # desktop: server + web + Tauri shell, hot-reloading
+pnpm dev:web           # web: dev PTY server (:5175) + web (:5173)
+pnpm dev:desktop       # desktop: server + web + badged Tauri Dev app
 ```
 
 ## Project layout
@@ -42,7 +42,7 @@ environment you add a backend, not change the UI.
 
 - Branch off `main`; keep PRs focused and reasonably small.
 - Match the surrounding code style (the codebase favors small, well-commented modules).
-- Make sure `npm run dev` and, for desktop-touching changes, `npm run desktop` work.
+- Make sure `pnpm dev:web` and, for desktop-touching changes, `pnpm dev:desktop` work.
 - For changes to the build/bundle pipeline, note how you verified them.
 - Sign off your commits with `git commit -s` — see [License of contributions](#license-of-contributions).
 
