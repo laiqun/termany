@@ -67,6 +67,21 @@ function paneInDirection(fromId: string, dir: "left" | "right" | "up" | "down"):
   return best?.id ?? null;
 }
 
+const TREE_NAVIGATION_ACTION_IDS = new Set([
+  "previousPage",
+  "nextPage",
+  "enterPage",
+  "exitPage",
+]);
+
+/** Preserve native macOS cursor movement everywhere except xterm's hidden input. */
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  const element = target instanceof Element ? target : document.activeElement;
+  if (!(element instanceof Element) || element.closest(".xterm")) return false;
+  if (element.closest("input, textarea, select")) return true;
+  return element.closest<HTMLElement>("[contenteditable]")?.isContentEditable ?? false;
+}
+
 export function App() {
   const htab = useStore(activeHtab);
   const collapsed = useStore((s) => s.sidebarCollapsed);
@@ -168,6 +183,10 @@ export function App() {
       prevTab: (s) => s.prevHTab(),
       nextPane: (s) => s.nextPane(),
       prevPane: (s) => s.prevPane(),
+      previousPage: (s) => s.selectPreviousTreeNode(),
+      nextPage: (s) => s.selectNextTreeNode(),
+      enterPage: (s) => s.expandOrEnterTreeNode(),
+      exitPage: (s) => s.collapseOrExitTreeNode(),
       newPage: (s) => s.addRootNode(),
       newChildPage: (s) => {
         const current = activeNode(s);
@@ -259,6 +278,12 @@ export function App() {
       for (const action of ACTIONS) {
         const chord = s.keybindings[action.id] ?? action.default;
         if (matchChord(e, chord)) {
+          if (
+            TREE_NAVIGATION_ACTION_IDS.has(action.id) &&
+            (e.isComposing || isTextEditingTarget(e.target))
+          ) {
+            return;
+          }
           e.preventDefault();
           // This listener is on the capture phase, so it fires straight through
           // the ⌘P palette. Firing an action from the chord has to end the same

@@ -1,6 +1,6 @@
 {
   "name": "termany",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "Agent-native terminal — local-first, cloud-ready. Workspaces > vertical tabs > horizontal tabs.",
@@ -17,6 +17,7 @@
     "dev:app": "npm -w @termany/desktop run dev",
     "build:web": "npm -w @termany/web run build",
     "bundle:server": "node scripts/bundle-server.mjs",
+    "package:mac": "bash scripts/package-mac-local.sh",
     "release:mac": "bash scripts/release-mac.sh"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -12,9 +12,7 @@ mod macos_services {
 
     use objc2::rc::Retained;
     use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{
-        NSApp, NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL,
-    };
+    use objc2_app_kit::{NSApp, NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL};
     use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
     use tauri::{AppHandle, Url};
 
@@ -111,6 +109,19 @@ struct QuitState(AtomicBool);
 #[tauri::command]
 fn confirm_quit(app: tauri::AppHandle, quitting: tauri::State<'_, QuitState>) {
     quitting.0.store(true, Ordering::SeqCst);
+    // Windows has no tray/background-mode UI. Closing the window must therefore
+    // close both the Tauri process and its bundled Node server. This also cleans
+    // up a same-version server reused from an earlier launch, which is not held
+    // in ServerProcess and cannot be reached through kill_server alone.
+    #[cfg(target_os = "windows")]
+    {
+        // Dev uses port 5175 and may intentionally run beside an installed
+        // release on 5174; never let closing `tauri dev` kill that release.
+        if !cfg!(debug_assertions) {
+            kill_server(&app);
+            kill_termany_server_on_port();
+        }
+    }
     app.exit(0);
 }
 
@@ -141,8 +152,7 @@ fn server_get(path: &str) -> Option<String> {
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(250)).ok()?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(1000)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).ok()?;
     // `Connection: close` means the server ends the body by closing the socket,
     // so reading to EOF needs no Content-Length parsing.
@@ -187,7 +197,7 @@ fn existing_server_matches(expected: &str) -> bool {
     match parse_version_field(&body) {
         Some(found) if found == expected => true,
         Some(found) => {
-            eprintln!(
+            log::warn!(
                 "[termany] server on localhost:{SERVER_PORT} is version {found}, this app is {expected} — restarting it"
             );
             false
@@ -209,13 +219,7 @@ fn server_port_is_open() -> bool {
 #[cfg(unix)]
 fn listening_pids_on_server_port() -> Vec<String> {
     let Ok(output) = Command::new("lsof")
-        .args([
-            "-nP",
-            "-a",
-            "-iTCP:5174",
-            "-sTCP:LISTEN",
-            "-Fp",
-        ])
+        .args(["-nP", "-a", "-iTCP:5174", "-sTCP:LISTEN", "-Fp"])
         .output()
     else {
         return Vec::new();
@@ -243,15 +247,70 @@ fn command_for_pid(pid: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn parse_pid_lines(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|pid| !pid.is_empty() && pid.chars().all(|c| c.is_ascii_digit()))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn hidden_windows_command(program: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut command = Command::new(program);
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn listening_pids_on_server_port() -> Vec<String> {
+    let script = format!(
+        "Get-NetTCPConnection -State Listen -LocalPort {SERVER_PORT} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique"
+    );
+    let Ok(output) = hidden_windows_command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_pid_lines(&output.stdout)
+}
+
+#[cfg(target_os = "windows")]
+fn command_for_pid(pid: &str) -> Option<String> {
+    if !pid.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let script = format!(
+        "(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}' -ErrorAction SilentlyContinue).CommandLine"
+    );
+    let output = hidden_windows_command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!command.is_empty()).then_some(command)
+}
+
 fn is_termany_server_command(command: &str) -> bool {
+    let command = command.to_ascii_lowercase();
     command.contains("server.cjs")
-        && (command.contains("/Termany.app/")
+        && (command.contains("/termany.app/")
             || command.contains("/termany/")
-            || command.contains("\\Termany\\")
             || command.contains("\\termany\\"))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, target_os = "windows"))]
 fn kill_termany_server_on_port() {
     if !server_port_is_open() {
         return;
@@ -262,11 +321,27 @@ fn kill_termany_server_on_port() {
             continue;
         };
         if !is_termany_server_command(&command) {
-            eprintln!("[termany] localhost:{SERVER_PORT} is occupied by a non-Termany process: {command}");
+            log::warn!(
+                "[termany] localhost:{SERVER_PORT} is occupied by a non-Termany process: {command}"
+            );
             continue;
         }
-        eprintln!("[termany] killing unresponsive PTY server pid {pid}: {command}");
+        log::warn!("[termany] killing stale PTY server pid {pid}: {command}");
+        #[cfg(unix)]
         let _ = Command::new("kill").arg(&pid).status();
+        #[cfg(target_os = "windows")]
+        match hidden_windows_command("taskkill.exe")
+            .args(["/PID", &pid, "/T", "/F"])
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                log::error!("[termany] taskkill failed for stale PTY server pid {pid}: {status}")
+            }
+            Err(error) => log::error!(
+                "[termany] could not run taskkill for stale PTY server pid {pid}: {error}"
+            ),
+        }
     }
 
     for _ in 0..20 {
@@ -277,13 +352,48 @@ fn kill_termany_server_on_port() {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, target_os = "windows")))]
 fn kill_termany_server_on_port() {}
+
+fn attach_server_log(app: &tauri::AppHandle, command: &mut Command) {
+    let Ok(log_dir) = app.path().app_log_dir() else {
+        log::warn!("[termany] could not resolve app log directory for bundled server");
+        return;
+    };
+    if let Err(error) = std::fs::create_dir_all(&log_dir) {
+        log::warn!("[termany] could not create app log directory {log_dir:?}: {error}");
+        return;
+    }
+    let path = log_dir.join("server.log");
+    let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        log::warn!("[termany] could not open bundled server log {path:?}");
+        return;
+    };
+    // Keep diagnostics bounded while retaining multiple watchdog attempts from
+    // the same failure. The next launch starts a fresh log once it exceeds 2 MB.
+    if file
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() > 2 * 1024 * 1024)
+    {
+        let _ = file.set_len(0);
+    }
+    let Ok(stdout) = file.try_clone() else {
+        return;
+    };
+    command
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(file));
+    log::info!("[termany] bundled server output: {path:?}");
+}
 
 fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
     let version = app.package_info().version.to_string();
     if existing_server_matches(&version) {
-        eprintln!("[termany] reusing existing PTY server on localhost:{SERVER_PORT}");
+        log::info!("[termany] reusing existing PTY server on localhost:{SERVER_PORT}");
         return None;
     }
     kill_termany_server_on_port();
@@ -291,7 +401,7 @@ fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
     let resource_dir = match app.path().resource_dir() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[termany] no resource dir: {e}");
+            log::error!("[termany] no resource dir: {e}");
             return None;
         }
     };
@@ -311,6 +421,7 @@ fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
 
     let mut command = Command::new(&node);
     command.arg(&entry).current_dir(&server_dir);
+    attach_server_log(app, &mut command);
     // On Windows, spawning a console subprocess flashes a black cmd window;
     // CREATE_NO_WINDOW (0x0800_0000) keeps the bundled server headless.
     #[cfg(windows)]
@@ -322,7 +433,7 @@ fn spawn_server_child(app: &tauri::AppHandle) -> Option<Child> {
     match command.spawn() {
         Ok(child) => Some(child),
         Err(e) => {
-            eprintln!("[termany] failed to start server ({node:?}): {e}");
+            log::error!("[termany] failed to start server ({node:?}): {e}");
             None
         }
     }
@@ -371,10 +482,10 @@ fn monitor_server(app: tauri::AppHandle) {
         .map(|s| s.0.fetch_add(1, Ordering::SeqCst) + 1)
         .unwrap_or(u32::MAX);
     if attempts > MAX_AUTO_RESTARTS {
-        eprintln!("[termany] bundled server exited unexpectedly {attempts} times — giving up on auto-restart");
+        log::error!("[termany] bundled server exited unexpectedly {attempts} times — giving up on auto-restart");
         return;
     }
-    eprintln!("[termany] bundled server exited unexpectedly — restarting (attempt {attempts}/{MAX_AUTO_RESTARTS})");
+    log::warn!("[termany] bundled server exited unexpectedly — restarting (attempt {attempts}/{MAX_AUTO_RESTARTS})");
     start_server(&app);
 }
 
@@ -383,6 +494,7 @@ fn kill_server(app: &tauri::AppHandle) {
         if let Ok(mut guard) = state.0.lock() {
             if let Some(mut child) = guard.take() {
                 let _ = child.kill();
+                let _ = child.wait();
             }
         }
     }
@@ -418,7 +530,91 @@ fn webview_history(app: tauri::AppHandle, label: String, direction: String) -> R
 fn focus_main_window(app_handle: &tauri::AppHandle) {
     if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.show();
+        let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_windows_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::MenuBuilder;
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let menu = MenuBuilder::new(app)
+        .text("tray_open", "Open Termany")
+        .separator()
+        .text("tray_quit", "Quit Termany")
+        .build()?;
+
+    let mut tray = TrayIconBuilder::with_id("termany")
+        .menu(&menu)
+        .tooltip("Termany")
+        // A normal left click restores the app; the context menu stays on the
+        // conventional right click.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app_handle, event| match event.id().as_ref() {
+            "tray_open" => focus_main_window(app_handle),
+            "tray_quit" => {
+                focus_main_window(app_handle);
+                let _ = app_handle.emit_to("main", "quit-requested", ());
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                focus_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+/// Explorer keys its shortcut icon cache primarily by the stable executable
+/// path, so an in-place updater can leave a desktop shortcut showing an icon
+/// embedded by an older Termany release. Notify the shell once per app version
+/// after the new executable is running. The marker avoids doing a system-wide
+/// association refresh on every launch.
+#[cfg(target_os = "windows")]
+fn refresh_windows_shortcut_icon_once(app: &tauri::App) {
+    use std::ptr;
+    use windows_sys::Win32::UI::Shell::{
+        SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_FLUSH, SHCNF_IDLIST,
+    };
+
+    let Ok(data_dir) = app.path().app_local_data_dir() else {
+        return;
+    };
+    let marker = data_dir.join(format!(
+        ".shortcut-icon-refreshed-{}",
+        app.package_info().version
+    ));
+    if marker.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&data_dir).is_err() {
+        return;
+    }
+
+    // SAFETY: SHCNE_ASSOCCHANGED with SHCNF_IDLIST requires both item pointers
+    // to be null and does not retain them after this synchronous call.
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED as i32,
+            SHCNF_IDLIST | SHCNF_FLUSH,
+            ptr::null(),
+            ptr::null(),
+        );
+    }
+    if let Err(error) = std::fs::write(&marker, b"") {
+        log::warn!("[termany] could not persist shortcut icon refresh marker {marker:?}: {error}");
     }
 }
 
@@ -468,13 +664,36 @@ pub fn run() {
         }));
     }
     builder = builder
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             stop_server,
             frontend_ready_for_open_paths,
             webview_history,
             confirm_quit
-        ]);
+        ])
+        // Intercept the main window's close request before the webview is
+        // destroyed. Waiting until RunEvent::ExitRequested is too late on
+        // Windows: the event loop can be kept alive after the only window
+        // (and the listener that shows the confirmation dialog) is gone.
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let Some(quitting) = window.app_handle().try_state::<QuitState>() else {
+                    return;
+                };
+                if !quitting.0.load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    let _ = window.emit("quit-requested", ());
+                }
+            }
+        });
     // Self-update: version check + install (desktop only; mobile stores handle it).
     #[cfg(desktop)]
     {
@@ -491,6 +710,11 @@ pub fn run() {
             app.manage(QuitState(AtomicBool::new(false)));
             #[cfg(target_os = "macos")]
             macos_services::install(app.handle().clone());
+            #[cfg(target_os = "windows")]
+            {
+                install_windows_tray(app)?;
+                refresh_windows_shortcut_icon_once(app);
+            }
 
             // Tauri auto-creates a default macOS menu bar when none is set,
             // and three of its predefined items actively fight this app:
@@ -552,24 +776,17 @@ pub fn run() {
                 });
             }
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            } else {
+            if !cfg!(debug_assertions) {
                 app.manage(ServerRestartAttempts(AtomicU32::new(0)));
                 start_server(app.handle());
             }
 
             Ok(())
         })
-        // No window/app-exit server kill here on purpose: the bundled server
-        // (and the shells it holds) is meant to keep running across an
-        // ordinary quit + relaunch, so terminal sessions resume instead of
-        // being lost. It only ever stops via `stop_server` (self-update) or by
-        // the user killing the process directly.
+        // macOS keeps the bundled server alive across an ordinary quit so live
+        // shells can resume. Windows' confirmed quit path stops the server and
+        // exits completely; its tray icon is an open/quit affordance, not a
+        // hidden background mode.
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
@@ -604,11 +821,14 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_version_field;
+    use super::{is_termany_server_command, parse_pid_lines, parse_version_field};
 
     #[test]
     fn reads_the_version_out_of_a_json_body() {
-        assert_eq!(parse_version_field(r#"{"version":"0.1.17"}"#).as_deref(), Some("0.1.17"));
+        assert_eq!(
+            parse_version_field(r#"{"version":"0.1.17"}"#).as_deref(),
+            Some("0.1.17")
+        );
         // Whitespace and extra keys are what a different serializer might emit.
         assert_eq!(
             parse_version_field(r#"{"ok":true, "version": "1.2.3" }"#).as_deref(),
@@ -622,5 +842,25 @@ mod tests {
         assert_eq!(parse_version_field("{}"), None);
         assert_eq!(parse_version_field("not json at all"), None);
         assert_eq!(parse_version_field(r#"{"version":"#), None);
+    }
+
+    #[test]
+    fn parses_only_numeric_listener_pids() {
+        assert_eq!(
+            parse_pid_lines(b"1234\r\n 5678 \r\nName\r\n\r\n"),
+            vec!["1234", "5678"]
+        );
+    }
+
+    #[test]
+    fn identifies_only_bundled_termany_server_commands() {
+        assert!(is_termany_server_command(
+            r#"\"C:\\Users\\me\\AppData\\Local\\Termany\\resources\\server\\node.exe\" server.cjs"#
+        ));
+        assert!(is_termany_server_command(
+            "/Applications/Termany.app/Contents/Resources/server/node server.cjs"
+        ));
+        assert!(!is_termany_server_command("node unrelated-server.cjs"));
+        assert!(!is_termany_server_command("node server.cjs"));
     }
 }
