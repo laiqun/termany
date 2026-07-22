@@ -19,9 +19,18 @@ function normalizeUrl(value: string): string {
   return `https://${raw}`;
 }
 
-export function WebBrowserPane({ id }: { id: string }) {
-  const [url, setUrl] = useState(DEFAULT_URL);
-  const [draftUrl, setDraftUrl] = useState(DEFAULT_URL);
+export function WebBrowserPane({
+  id,
+  initialUrl,
+  onUrlChange,
+}: {
+  id: string;
+  initialUrl?: string;
+  onUrlChange?: (url: string) => void;
+}) {
+  const startingUrl = normalizeUrl(initialUrl ?? DEFAULT_URL);
+  const [url, setUrl] = useState(startingUrl);
+  const [draftUrl, setDraftUrl] = useState(startingUrl);
   const [viewKey, setViewKey] = useState(0);
   const [nativeState, setNativeState] = useState<"loading" | "ready" | "error">(
     isTauri ? "loading" : "ready",
@@ -45,6 +54,7 @@ export function WebBrowserPane({ id }: { id: string }) {
     const next = normalizeUrl(draftUrl);
     setDraftUrl(next);
     setUrl(next);
+    onUrlChange?.(next);
     setViewKey((n) => n + 1);
   };
 

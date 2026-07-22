@@ -230,6 +230,7 @@ function PaneSlot({
 }) {
   const focused = useStore((s) => activeHtab(s)?.focused === leaf.id);
   const setFocusedPane = useStore((s) => s.setFocusedPane);
+  const setPaneWebUrl = useStore((s) => s.setPaneWebUrl);
   const dropEdge = dropTarget?.id === leaf.id ? dropTarget.edge : null;
 
   useEffect(() => {
@@ -261,7 +262,11 @@ function PaneSlot({
         ) : leaf.view === "monitor" ? (
           <SystemMonitor />
         ) : leaf.view === "web" ? (
-          <WebBrowserPane id={leaf.id} />
+          <WebBrowserPane
+            id={leaf.id}
+            initialUrl={leaf.webUrl}
+            onUrlChange={(url) => setPaneWebUrl(leaf.id, url)}
+          />
         ) : leaf.view === "agent" ? (
           <AgentPane leaf={leaf} />
         ) : (

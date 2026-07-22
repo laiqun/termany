@@ -69,6 +69,8 @@ export type Pane =
       filesRoot?: string;
       /** File to preview when opening this pane in files view. */
       filesSelected?: string;
+      /** Last URL explicitly opened in this pane's browser view. */
+      webUrl?: string;
       /** Which agent CLI conversation this pane hosts, registered when the
        *  session-history browser resumes into it — lets a later click on the
        *  same conversation jump here instead of resuming a second copy. */
@@ -254,6 +256,8 @@ interface State {
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
   setPaneView: (leafId: string, view: PaneView) => void;
+  /** Persist the browser view's address across remounts and relaunches. */
+  setPaneWebUrl: (leafId: string, url: string) => void;
   /** Open a dropped local path in this pane's files view. */
   openPathInPane: (leafId: string, root: string, selectedFile?: string) => void;
   /** Forget a one-shot dropped file/tree target after it no longer applies. */
@@ -1314,6 +1318,14 @@ export const useStore = create<State>((set) => ({
             return { ...h, layout: setView(h.layout) };
           }),
         })),
+      })),
+    })),
+
+  setPaneWebUrl: (leafId, url) =>
+    set((s) => ({
+      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+        ...leaf,
+        webUrl: url,
       })),
     })),
 
