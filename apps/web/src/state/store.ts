@@ -5,7 +5,7 @@ import {
   loadKeybindings,
   saveKeybindings,
 } from "../keybindings";
-import { disposeSession } from "../terminal/manager";
+import { disposePaneSessions } from "../terminal/manager";
 import { applyTheme, loadThemeId, THEMES } from "../themes";
 
 /**
@@ -71,6 +71,12 @@ export type Pane =
       filesSelected?: string;
       /** Last URL explicitly opened in this pane's browser view. */
       webUrl?: string;
+      /** OpenSSH destination for a remote terminal. When absent this pane runs
+       *  the local login shell. Kept in layout state so relaunch reconnects to
+       *  the same host. */
+      sshTarget?: string;
+      /** Human-readable profile name shown in the terminal header. */
+      sshLabel?: string;
       /** Which agent CLI conversation this pane hosts, registered when the
        *  session-history browser resumes into it — lets a later click on the
        *  same conversation jump here instead of resuming a second copy. */
@@ -264,6 +270,8 @@ interface State {
   clearPathInPane: (leafId: string) => void;
   /** Split the focused pane, creating a new leaf that opens directly in `view`. */
   addPane: (view: PaneView, title?: string, cwdFrom?: string) => string | null;
+  /** Show the pane's cached local shell or an OpenSSH destination. */
+  setPaneSshTarget: (leafId: string, target?: string, label?: string) => void;
   /** Close a specific pane; closes the whole tab if it was the last pane. */
   closePane: (leafId: string) => void;
   /** Toggle magnify on a pane (show it alone, filling the tab). */
@@ -718,7 +726,7 @@ function closeLeaf(s: State, leafId: string): Partial<State> {
   const node = activeNode(s);
   const htab = node?.htabs.find((h) => h.id === node.activeHTab);
   if (!node || !htab) return {};
-  disposeSession(leafId);
+  disposePaneSessions(leafId);
   const layout = removeLeaf(htab.layout, leafId);
   return {
     workspaces: inActiveWs(s, (ws) => ({
@@ -834,7 +842,7 @@ export const useStore = create<State>((set) => ({
       if (s.workspaces.length <= 1) return s;
       const target = s.workspaces.find((w) => w.id === wsId);
       if (!target) return s;
-      target.roots.flatMap(subtreeLeafIds).forEach(disposeSession);
+      target.roots.flatMap(subtreeLeafIds).forEach(disposePaneSessions);
       const workspaces = s.workspaces.filter((w) => w.id !== wsId);
       const activeWorkspace =
         s.activeWorkspace === wsId ? workspaces[0].id : s.activeWorkspace;
@@ -958,7 +966,7 @@ export const useStore = create<State>((set) => ({
       workspaces: inActiveWs(s, (ws) => {
         const target = findNode(ws.roots, nodeId);
         if (!target) return ws;
-        subtreeLeafIds(target).forEach(disposeSession);
+        subtreeLeafIds(target).forEach(disposePaneSessions);
         let roots = removeNode(ws.roots, nodeId);
         if (roots.length === 0) roots = [makeNode("page 1")];
         const activeNode = findNode(roots, ws.activeNode) ? ws.activeNode : roots[0].id;
@@ -1022,7 +1030,7 @@ export const useStore = create<State>((set) => ({
         ...ws,
         roots: updateNode(ws.roots, ws.activeNode, (n) => {
           const target = n.htabs.find((h) => h.id === hId);
-          if (target) leafIds(target.layout).forEach(disposeSession);
+          if (target) leafIds(target.layout).forEach(disposePaneSessions);
           const htabs = n.htabs.filter((h) => h.id !== hId);
           if (htabs.length === 0) {
             const h = makeHTab(1);
@@ -1280,19 +1288,21 @@ export const useStore = create<State>((set) => ({
             const flip = (p: Pane): Pane =>
               p.kind === "leaf"
                 ? p.id === leafId
-                  ? {
-                      ...p,
-                      view:
-                        p.view === "files"
-                          ? "git"
-                          : p.view === "git"
-                            ? "agent"
-                            : p.view === "agent"
-                              ? "web"
-                              : p.view === "web"
-                                ? "terminal"
-                                : "files",
-                    }
+                  ? p.sshTarget
+                    ? { ...p, view: "terminal" }
+                    : {
+                        ...p,
+                        view:
+                          p.view === "files"
+                            ? "git"
+                            : p.view === "git"
+                              ? "agent"
+                              : p.view === "agent"
+                                ? "web"
+                                : p.view === "web"
+                                  ? "terminal"
+                                  : "files",
+                      }
                   : p
                 : { ...p, children: p.children.map(flip) };
             return { ...h, layout: flip(h.layout) };
@@ -1312,7 +1322,7 @@ export const useStore = create<State>((set) => ({
             const setView = (p: Pane): Pane =>
               p.kind === "leaf"
                 ? p.id === leafId
-                  ? { ...p, view }
+                  ? { ...p, view: p.sshTarget ? "terminal" : view }
                   : p
                 : { ...p, children: p.children.map(setView) };
             return { ...h, layout: setView(h.layout) };
@@ -1402,6 +1412,18 @@ export const useStore = create<State>((set) => ({
       })),
     }));
     return created;
+  },
+
+  setPaneSshTarget: (leafId, target, label) => {
+    const destination = target?.trim() || undefined;
+    set((s) => ({
+      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+        ...leaf,
+        view: "terminal",
+        sshTarget: destination,
+        sshLabel: destination ? label?.trim() || destination : undefined,
+      })),
+    }));
   },
 
   toggleMaximize: (leafId) =>

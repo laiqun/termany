@@ -25,6 +25,7 @@ import {
   ArrowRight,
   Activity,
   Bot,
+  Cable,
   ChartColumn,
   Check,
   Copy,
@@ -121,6 +122,11 @@ export function TrashIcon() {
 /** Terminal in a rounded square — the per-pane header marker. */
 export function TerminalIcon() {
   return <SquareTerminal {...base} />;
+}
+
+/** Network cable — open a remote terminal over SSH. */
+export function SshIcon() {
+  return <Cable {...base} />;
 }
 
 /** ⌘ glyph — a runnable action in the command palette. */
