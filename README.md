@@ -84,10 +84,10 @@ while backgrounded — a build in one tab survives you switching away.
 
 ```bash
 npm install          # builds node-pty natively (needs Xcode CLT on macOS)
-pnpm dev:web         # starts the dev PTY server (:5175) + web (:5173)
+pnpm dev:web         # starts the dev PTY server (:5175) + web (:15173)
 ```
 
-Open http://localhost:5173.
+Open http://localhost:15173.
 
 ## Desktop app
 

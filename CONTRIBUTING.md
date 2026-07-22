@@ -21,7 +21,7 @@ npm install            # installs workspaces + builds node-pty
 ## Running
 
 ```bash
-pnpm dev:web           # web: dev PTY server (:5175) + web (:5173)
+pnpm dev:web           # web: dev PTY server (:5175) + web (:15173)
 pnpm dev:desktop       # desktop: server + web + badged Tauri Dev app
 ```
 

@@ -8,6 +8,8 @@ import {
   scrollSessionToBottom,
   scrollSessionToTop,
   subscribeTerminalScrollState,
+  subscribeSshNaturalExit,
+  terminalSessionId,
   type TerminalScrollState,
 } from "../terminal/manager";
 import { subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
@@ -56,7 +58,8 @@ function extractDroppedPaths(dt: DataTransfer): string[] {
  * only DETACH the node — the session keeps living in the registry so its shell
  * and scrollback survive being backgrounded.
  */
-export function TerminalPane({ id }: { id: string }) {
+export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string }) {
+  const sessionId = terminalSessionId(id, sshTarget);
   const hostRef = useRef<HTMLDivElement>(null);
   const scrollJumpTimer = useRef<number | null>(null);
   const sawInitialScrollState = useRef(false);
@@ -68,11 +71,15 @@ export function TerminalPane({ id }: { id: string }) {
     atBottom: true,
   });
 
+  useEffect(() => subscribeSshNaturalExit(id, () => {
+    useStore.getState().setPaneSshTarget(id);
+  }), [id]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    attachSession(id, host, cwdCandidates(useStore.getState(), id));
-    const unsubscribeScrollState = subscribeTerminalScrollState(id, setScrollState);
+    attachSession(sessionId, host, cwdCandidates(useStore.getState(), id), sshTarget, id);
+    const unsubscribeScrollState = subscribeTerminalScrollState(sessionId, setScrollState);
 
     // Coalesce resize bursts (window/split-drag fires RO every frame) to ONE fit
     // per animation frame — fit.fit() measures + reflows the grid and sends a PTY
@@ -82,7 +89,7 @@ export function TerminalPane({ id }: { id: string }) {
       if (raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
-        fitSession(id);
+        fitSession(sessionId);
       });
     });
     ro.observe(host);
@@ -91,9 +98,9 @@ export function TerminalPane({ id }: { id: string }) {
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       unsubscribeScrollState();
-      detachSession(id, host);
+      detachSession(sessionId, host);
     };
-  }, [id]);
+  }, [id, sessionId, sshTarget]);
 
   const revealScrollJump = () => {
     if (!scrollState.hasOverflow) return;
@@ -153,9 +160,9 @@ export function TerminalPane({ id }: { id: string }) {
       <div
         className="term-pane-host"
         ref={hostRef}
-        onMouseDown={() => focusSession(id)}
+        onMouseDown={() => focusSession(sessionId)}
         onWheel={() => {
-          noteManualScroll(id);
+          noteManualScroll(sessionId);
           revealScrollJump();
         }}
         onDragOver={(e) => {
@@ -179,7 +186,7 @@ export function TerminalPane({ id }: { id: string }) {
             title="Scroll to top"
             disabled={scrollState.atTop}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => scrollSessionToTop(id)}
+            onClick={() => scrollSessionToTop(sessionId)}
           >
             <ChevronIcon dir="up" />
           </button>
@@ -188,7 +195,7 @@ export function TerminalPane({ id }: { id: string }) {
             title="Scroll to bottom"
             disabled={scrollState.atBottom}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => scrollSessionToBottom(id)}
+            onClick={() => scrollSessionToBottom(sessionId)}
           >
             <ChevronIcon dir="down" />
           </button>

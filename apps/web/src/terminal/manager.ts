@@ -1,4 +1,5 @@
 import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
+import { getLanguage, translate } from "../i18n";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -40,6 +41,11 @@ export interface Session {
   deferredFlushTimer: number | null;
   spawnedAt: number;
   restartAttempts: number;
+  /** A remote SSH process exited and is waiting for explicit reconnection. */
+  ended: boolean;
+  /** Start a replacement backend after an ended remote session is selected. */
+  restart?: () => void;
+  connectionState?: "connecting" | "connected" | "disconnected";
 }
 
 /**
@@ -158,8 +164,47 @@ export type TerminalScrollState = {
 };
 
 const sessions = new Map<string, Session>();
+// A pane may keep a local shell and several SSH shells alive simultaneously.
+// Only one is mounted, but switching does not tear down the others.
+const activeSessionByPane = new Map<string, string>();
+const sessionIdsByPane = new Map<string, Set<string>>();
 const pendingCommands = new Map<string, string[]>();
 const scrollListeners = new Map<string, Set<(state: TerminalScrollState) => void>>();
+const connectionStatusListeners = new Set<() => void>();
+const SSH_EXIT_EVENT = "termany:ssh-session-exited";
+
+function notifyConnectionStatus() {
+  for (const listener of connectionStatusListeners) listener();
+}
+
+export function subscribeTerminalConnectionStatus(listener: () => void): () => void {
+  connectionStatusListeners.add(listener);
+  return () => connectionStatusListeners.delete(listener);
+}
+
+export function terminalConnectionStatus(
+  paneId: string,
+  sshTarget: string
+): "idle" | "connecting" | "connected" | "disconnected" {
+  return sessions.get(terminalSessionId(paneId, sshTarget))?.connectionState ?? "idle";
+}
+
+export function subscribeSshNaturalExit(paneId: string, listener: () => void): () => void {
+  const onExit = (event: Event) => {
+    if ((event as CustomEvent<{ paneId: string }>).detail?.paneId === paneId) listener();
+  };
+  window.addEventListener(SSH_EXIT_EVENT, onExit);
+  return () => window.removeEventListener(SSH_EXIT_EVENT, onExit);
+}
+
+export function terminalSessionId(paneId: string, sshTarget?: string): string {
+  return sshTarget ? `${paneId}:ssh:${encodeURIComponent(sshTarget)}` : paneId;
+}
+
+/** Accept a pane id from app actions or an already-resolved runtime id. */
+function activeSessionId(id: string): string {
+  return activeSessionByPane.get(id) ?? id;
+}
 
 export type AgentActivityStatus = "working" | "done" | "error";
 
@@ -339,6 +384,7 @@ export function subscribeAgentActivity(listener: () => void): () => void {
 
 export function agentActivitySnapshot(ids: string[]): string {
   return ids.map((id) => {
+    id = activeSessionId(id);
     const activity = agentActivities.get(id);
     return activity ? `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}` : `${id}:`;
   }).join("|");
@@ -348,7 +394,7 @@ export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
   let best: AgentActivity | null = null;
   const rank: Record<AgentActivityStatus, number> = { error: 3, working: 2, done: 1 };
   for (const id of ids) {
-    const activity = agentActivities.get(id);
+    const activity = agentActivities.get(activeSessionId(id));
     if (!activity) continue;
     if (
       !best ||
@@ -493,6 +539,7 @@ const MIN_FONT_SIZE = 9;
 const MAX_FONT_SIZE = 32;
 
 function applyTerminalFontSize(id: string, next: number) {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return;
   const size = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, next));
@@ -502,6 +549,7 @@ function applyTerminalFontSize(id: string, next: number) {
 }
 
 export function adjustTerminalFontSize(id: string, delta: number) {
+  id = activeSessionId(id);
   const current = sessions.get(id)?.term.options.fontSize ?? DEFAULT_FONT_SIZE;
   applyTerminalFontSize(id, current + delta);
 }
@@ -644,7 +692,7 @@ export function applyTermTheme(theme: ITheme) {
   for (const s of sessions.values()) s.term.options.theme = theme;
 }
 
-function getSession(id: string, cwdFrom?: string[]): Session {
+function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
 
@@ -728,22 +776,24 @@ function getSession(id: string, cwdFrom?: string[]): Session {
   // and resolved by the server against this shell's live cwd. If the server
   // can't answer (demo mode, old server), fall back to trusting absolute
   // paths unverified so links don't disappear entirely.
-  registerLocalPathLinks(term, async (paths) => {
-    const fallback = () => paths.map((p) => (/^(?:\/|~\/|[A-Za-z]:[\\/])/.test(p) ? p : null));
-    if (isDemo) return fallback();
-    try {
-      const res = await fetch(`${apiUrl()}/api/resolve-paths`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session: id, paths }),
-      });
-      if (!res.ok) return fallback();
-      const payload = await readJsonResponse(res);
-      return Array.isArray(payload.resolved) ? payload.resolved : fallback();
-    } catch {
-      return fallback();
-    }
-  });
+  if (!sshTarget) {
+    registerLocalPathLinks(term, async (paths) => {
+      const fallback = () => paths.map((p) => (/^(?:\/|~\/|[A-Za-z]:[\\/])/.test(p) ? p : null));
+      if (isDemo) return fallback();
+      try {
+        const res = await fetch(`${apiUrl()}/api/resolve-paths`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session: id, paths }),
+        });
+        if (!res.ok) return fallback();
+        const payload = await readJsonResponse(res);
+        return Array.isArray(payload.resolved) ? payload.resolved : fallback();
+      } catch {
+        return fallback();
+      }
+    });
+  }
 
   // Reconnecting with the same session id spawns a fresh shell server-side
   // once the old one has exited (see apps/server's ptySessions registry) —
@@ -751,7 +801,11 @@ function getSession(id: string, cwdFrom?: string[]): Session {
   const spawnBackend = (): ITerminalBackend =>
     isDemo
       ? new DemoBackend(id)
-      : new WebSocketBackend(WS_URL, { session: id, cwdFrom: cwdFrom?.length ? cwdFrom.join(",") : undefined });
+      : new WebSocketBackend(WS_URL, {
+          session: id,
+          cwdFrom: cwdFrom?.length ? cwdFrom.join(",") : undefined,
+          ssh: sshTarget,
+        });
 
   const initialBackend = spawnBackend();
   const session: Session = {
@@ -769,11 +823,18 @@ function getSession(id: string, cwdFrom?: string[]): Session {
     deferredFlushTimer: null,
     spawnedAt: Date.now(),
     restartAttempts: 0,
+    ended: false,
+    connectionState: sshTarget ? "connecting" : undefined,
   };
   sessions.set(id, session);
+  if (sshTarget) notifyConnectionStatus();
 
   const wireBackend = (b: ITerminalBackend) => {
     b.onData((data) => {
+      if (sshTarget && session.connectionState !== "connected") {
+        session.connectionState = "connected";
+        notifyConnectionStatus();
+      }
       updateAgentActivityFromOutput(id, data);
       if (replaying) {
         pendingOutput.push(data);
@@ -783,6 +844,18 @@ function getSession(id: string, cwdFrom?: string[]): Session {
     });
     b.onExit((reason) => {
       if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
+      if (sshTarget) {
+        session.ended = true;
+        session.connectionState = "disconnected";
+        notifyConnectionStatus();
+        if (!reason) {
+          window.dispatchEvent(new CustomEvent(SSH_EXIT_EVENT, { detail: { paneId } }));
+          return;
+        }
+        const message = translate(getLanguage(), reason ? "ssh.sessionError" : "ssh.sessionEnded", reason ? { reason } : undefined);
+        term.write(`\r\n\x1b[2m[${message}]\x1b[0m\r\n`);
+        return;
+      }
       // A truthy reason means the WebSocket itself couldn't connect, which
       // already exhausted its own retry budget (see WebSocketBackend) before
       // giving up — not worth immediately repeating that losing battle. Only
@@ -806,8 +879,26 @@ function getSession(id: string, cwdFrom?: string[]): Session {
   };
   wireBackend(initialBackend);
 
+  session.restart = () => {
+    if (!session.ended) return;
+    session.ended = false;
+    session.connectionState = "connecting";
+    notifyConnectionStatus();
+    const next = spawnBackend();
+    session.backend = next;
+    session.spawnedAt = Date.now();
+    wireBackend(next);
+  };
+
   term.onData((data) => {
     if (IME_DEBUG) imeLog(`→PTY ${JSON.stringify(data)}`);
+    if (sshTarget && session.ended) {
+      if (/[\r\n]/.test(data)) {
+        term.write("\r\n");
+        session.restart?.();
+      }
+      return;
+    }
     noteAgentInput(id, data);
     session.backend.write(data);
   });
@@ -1023,8 +1114,22 @@ function fixAbandonedImeFinalize(term: Terminal) {
 }
 
 /** Attach the session's element into `host` and open the terminal (once). */
-export function attachSession(id: string, host: HTMLElement, cwdFrom?: string[]) {
-  const s = getSession(id, cwdFrom);
+export function attachSession(
+  id: string,
+  host: HTMLElement,
+  cwdFrom?: string[],
+  sshTarget?: string,
+  paneId = id
+) {
+  activeSessionByPane.set(paneId, id);
+  let owned = sessionIdsByPane.get(paneId);
+  if (!owned) {
+    owned = new Set();
+    sessionIdsByPane.set(paneId, owned);
+  }
+  owned.add(id);
+  const s = getSession(id, cwdFrom, sshTarget, paneId);
+  if (sshTarget && s.ended) s.restart?.();
   host.appendChild(s.el);
   if (!s.opened) {
     s.term.open(s.el); // el is now in the document — renderer initialises correctly
@@ -1058,8 +1163,9 @@ export function attachSession(id: string, host: HTMLElement, cwdFrom?: string[])
   }
   fitSession(id);
   focusSession(id);
-  const queued = pendingCommands.get(id);
+  const queued = pendingCommands.get(paneId) ?? pendingCommands.get(id);
   if (queued?.length) {
+    pendingCommands.delete(paneId);
     pendingCommands.delete(id);
     window.setTimeout(() => {
       for (const command of queued) sendCommand(id, command);
@@ -1068,6 +1174,7 @@ export function attachSession(id: string, host: HTMLElement, cwdFrom?: string[])
 }
 
 export function scrollSessionToTop(id: string) {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return;
   session.followOutput = false;
@@ -1077,6 +1184,7 @@ export function scrollSessionToTop(id: string) {
 }
 
 export function scrollSessionToBottom(id: string) {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return;
   session.followOutput = true;
@@ -1092,6 +1200,7 @@ export function detachSession(id: string, host: HTMLElement) {
 
 /** Refit to the current container size and tell the PTY the new dimensions. */
 export function fitSession(id: string) {
+  id = activeSessionId(id);
   const s = sessions.get(id);
   if (!s || !s.opened) return;
   try {
@@ -1106,6 +1215,7 @@ export function fitSession(id: string) {
 }
 
 export function focusSession(id: string) {
+  id = activeSessionId(id);
   // In the landing-page demo iframe, programmatic focus on load would steal
   // the visitor's keyboard/scroll — hold off until they click into the demo.
   if (isDemo && !demoInteracted()) return;
@@ -1125,6 +1235,7 @@ export function focusSession(id: string) {
  * TUI's own repaint if one is in front.
  */
 export function clearSession(id: string) {
+  id = activeSessionId(id);
   sessions.get(id)?.backend.write("\x0c");
 }
 
@@ -1145,6 +1256,7 @@ const SEARCH_DECORATIONS = {
 let lastQuery = "";
 
 export function findInSession(id: string, term: string, dir: "next" | "prev" = "next"): boolean {
+  id = activeSessionId(id);
   const s = sessions.get(id);
   if (!s) return false;
   if (!term) {
@@ -1163,6 +1275,7 @@ export function repeatFind(id: string, dir: "next" | "prev"): boolean {
 
 /** Drop search highlighting — called when the find bar closes. */
 export function clearSessionSearch(id: string) {
+  id = activeSessionId(id);
   sessions.get(id)?.search.clearDecorations();
 }
 
@@ -1174,6 +1287,7 @@ export function onSearchResults(
   id: string,
   cb: (r: { index: number; count: number }) => void
 ): () => void {
+  id = activeSessionId(id);
   const s = sessions.get(id);
   if (!s) return () => {};
   const sub = s.search.onDidChangeResults((r) => cb({ index: r.resultIndex, count: r.resultCount }));
@@ -1187,13 +1301,14 @@ export function onSearchResults(
  * session yet, same as clearSession above.
  */
 export function sendCommand(id: string, command: string) {
+  id = activeSessionId(id);
   const agent = AGENT_COMMAND_RE.exec(command)?.[1]?.toLowerCase() as AgentActivity["agent"] | undefined;
   if (agent) setAgentActivity(id, "working", agent);
   sessions.get(id)?.backend.write(`${command}\r`);
 }
 
 export function queueCommand(id: string, command: string) {
-  if (sessions.has(id)) {
+  if (sessions.has(activeSessionId(id))) {
     sendCommand(id, command);
     return;
   }
@@ -1205,14 +1320,17 @@ export function queueCommand(id: string, command: string) {
  *  paste on (vim, claude, modern shells) see it as one paste, not typed
  *  keystrokes. Used for dropping a file/folder from Finder onto the pane. */
 export function pasteIntoSession(id: string, text: string) {
+  id = activeSessionId(id);
   sessions.get(id)?.term.paste(text);
 }
 
 export function sessionUsesAlternateBuffer(id: string): boolean {
+  id = activeSessionId(id);
   return sessions.get(id)?.term.buffer.active.type === "alternate";
 }
 
 export function sessionLooksLikeAgentInput(id: string): boolean {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return false;
   // Full-screen TUIs conventionally use the alternate buffer. This is the
@@ -1265,6 +1383,7 @@ export function disposeSession(id: string) {
   s.term.dispose();
   s.el.remove();
   sessions.delete(id);
+  notifyConnectionStatus();
   if (agentActivities.delete(id)) notifyAgentActivity();
   agentSessionKinds.delete(id);
   restoreSnapshots.delete(id);
@@ -1274,5 +1393,32 @@ export function disposeSession(id: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: [id] }),
+  }).catch(() => {});
+}
+
+/** Close every cached local/SSH session owned by a pane. */
+export function disposePaneSessions(paneId: string) {
+  const ids = [...(sessionIdsByPane.get(paneId) ?? new Set([paneId]))];
+  activeSessionByPane.delete(paneId);
+  sessionIdsByPane.delete(paneId);
+  pendingCommands.delete(paneId);
+  for (const id of ids) {
+    const s = sessions.get(id);
+    if (s) {
+      s.backend.dispose();
+      s.term.dispose();
+      s.el.remove();
+      sessions.delete(id);
+    }
+    restoreSnapshots.delete(id);
+    if (agentActivities.delete(id)) notifyAgentActivity();
+    agentSessionKinds.delete(id);
+  }
+  notifyConnectionStatus();
+  if (isDemo || !ids.length) return;
+  fetch(`${apiUrl()}/api/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, paneIds: [paneId] }),
   }).catch(() => {});
 }

@@ -16,6 +16,7 @@ import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import { acpRuntimeCwd, closeAcpRuntimes, closeAllAcpRuntimes, promptAcpRuntime, respondAcpPermission } from "./acpRuntime.js";
 import { KillError, killProcess, readSystemStats } from "./systemStats.js";
+import { listSshConnections, listSshProfiles, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, testSshProfile } from "./ssh.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
 import {
@@ -374,6 +375,8 @@ interface PtySession {
   ring: ScrollRing;
   ws: WebSocket | null;
   detachedAt: number | null;
+  /** Null is the local login shell; otherwise the OpenSSH destination. */
+  sshTarget: string | null;
 }
 
 const ptySessions = new Map<string, PtySession>();
@@ -399,9 +402,14 @@ function wireSession(id: string | undefined, session: PtySession): void {
       `[termany] shell exited (pid: ${session.pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
     );
     if (isOpen(session.ws)) {
-      session.ws.send(
-        `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
-      );
+      // Local shells retain the detailed exit line before the frontend starts
+      // a replacement. SSH exits are rendered by the frontend so the message
+      // can follow the selected interface language.
+      if (!session.sshTarget) {
+        session.ws.send(
+          `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
+        );
+      }
       session.ws.close();
     }
     if (id) {
@@ -541,6 +549,34 @@ const http = createServer((req, res) => {
   if (req.method === "PUT" && req.url === "/api/agents") {
     readJson(req)
       .then((body) => json(200, { agents: saveAgentConfigs(body?.agents) }))
+      .catch(fail);
+    return;
+  }
+
+  // Only app-managed profiles appear in the connection picker.
+  if (req.method === "GET" && req.url === "/api/ssh/connections") {
+    json(200, { connections: listSshConnections() });
+    return;
+  }
+  if (req.method === "GET" && req.url === "/api/ssh/profiles") {
+    json(200, { profiles: listSshProfiles() });
+    return;
+  }
+  if (req.method === "PUT" && req.url === "/api/ssh/profiles") {
+    readJson(req)
+      .then((body) => json(200, { profiles: saveSshProfiles(body?.profiles) }))
+      .catch(fail);
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/ssh/profiles/from-target") {
+    readJson(req)
+      .then((body) => json(200, { profile: saveSshProfileFromTarget(String(body?.target ?? "")) }))
+      .catch(fail);
+    return;
+  }
+  if (req.method === "POST" && req.url === "/api/ssh/test") {
+    readJson(req)
+      .then(async (body) => json(200, await testSshProfile(body?.profile ?? {})))
       .catch(fail);
     return;
   }
@@ -741,9 +777,19 @@ const http = createServer((req, res) => {
     readJson(req)
       .then((body) => {
         const ids = Array.isArray(body?.ids) ? body.ids.map(String) : [];
-        for (const id of ids) killSession(id);
-        closeAcpRuntimes(ids);
-        forgetSessions(ids);
+        const paneIds = Array.isArray(body?.paneIds) ? body.paneIds.map(String) : [];
+        // A pane can cache several local/SSH sessions. Include any live remote
+        // variants even when this frontend instance never attached them (for
+        // example, they survived an app-window restart in the server process).
+        for (const paneId of paneIds) {
+          for (const sessionId of ptySessions.keys()) {
+            if (sessionId === paneId || sessionId.startsWith(`${paneId}:ssh:`)) ids.push(sessionId);
+          }
+        }
+        const uniqueIds = [...new Set(ids)];
+        for (const id of uniqueIds) killSession(id);
+        closeAcpRuntimes(uniqueIds);
+        forgetSessions(uniqueIds);
         json(200, { ok: true });
       })
       .catch(fail);
@@ -1246,11 +1292,12 @@ wss.on("connection", async (ws: WebSocket, req) => {
 
   const url = new URL(req.url ?? "/", "ws://localhost");
   const sessionId = url.searchParams.get("session");
+  const sshTarget = url.searchParams.get("ssh");
 
   // --- Reattach: the session's shell is still running (detached or stolen
   // from a stale connection) — resume it instead of spawning a fresh one.
   const existing = sessionId ? ptySessions.get(sessionId) : undefined;
-  if (existing) {
+  if (existing && existing.sshTarget === sshTarget) {
     console.log(`[termany] client #${cid} reattached to session ${sessionId} (pid ${existing.pty.pid})`);
     if (existing.ws && existing.ws !== ws) {
       try {
@@ -1291,6 +1338,15 @@ wss.on("connection", async (ws: WebSocket, req) => {
       }
     });
     return;
+  }
+
+  // The same pane changed its connection selector (local ↔ SSH, or host A ↔
+  // host B). Its old process and replay history belong to a different machine,
+  // so replace both rather than reattaching merely because the pane id matches.
+  if (existing && sessionId) {
+    existing.ring.dirty = false;
+    killSession(sessionId);
+    forgetSessions([sessionId]);
   }
 
   console.log(`[termany] client #${cid} connected`);
@@ -1354,12 +1410,24 @@ wss.on("connection", async (ws: WebSocket, req) => {
     }
   });
 
+  let sshArgs: string[] | undefined;
+  try {
+    if (sshTarget) sshArgs = sshArgsForConnection(sshTarget);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(`\r\n\x1b[31m[termany] ${msg}\x1b[0m\r\n`);
+      ws.close();
+    }
+    return;
+  }
+
   const cwd = await resolveSpawnCwd(url.searchParams.get("cwdFrom"), sessionId);
   if (closed) return;
 
   let pty: ReturnType<typeof spawn>;
   try {
-    pty = spawn(SHELL, SHELL_ARGS, {
+    pty = spawn(sshArgs ? "ssh" : SHELL, sshArgs ?? SHELL_ARGS, {
       name: "xterm-256color",
       cols: 80,
       rows: 24,
@@ -1369,15 +1437,21 @@ wss.on("connection", async (ws: WebSocket, req) => {
   } catch (err) {
     // Never let one bad spawn take down the whole server.
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[termany] failed to spawn shell:", msg);
+    console.error(`[termany] failed to spawn ${sshArgs ? "ssh" : "shell"}:`, msg);
     if (ws.readyState === ws.OPEN) {
-      ws.send(`\r\n\x1b[31m[termany] failed to spawn shell: ${msg}\x1b[0m\r\n`);
+      ws.send(`\r\n\x1b[31m[termany] failed to spawn ${sshArgs ? "ssh" : "shell"}: ${msg}\x1b[0m\r\n`);
       ws.close();
     }
     return;
   }
 
-  session = { pty, ring: sessionId ? newRing(sessionId) : { chunks: [], bytes: 0, dirty: false }, ws, detachedAt: null };
+  session = {
+    pty,
+    ring: sessionId ? newRing(sessionId) : { chunks: [], bytes: 0, dirty: false },
+    ws,
+    detachedAt: null,
+    sshTarget,
+  };
   if (sessionId) ptySessions.set(sessionId, session);
   else ephemeralSessions.add(session);
   wireSession(sessionId ?? undefined, session);
