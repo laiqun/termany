@@ -106,7 +106,7 @@ const HELP: [string, string][] = [
   ["help", "this list"],
   ["fastfetch", "system info card"],
   ["ls / cat README.md", "poke around a fake repo"],
-  ["pnpm dev", "start a (simulated) dev server"],
+  ["pnpm dev:web", "start a (simulated) dev server"],
   ["claude / codex", "launch an agent (simulated)"],
   ["ai <question>", "what the AI layer feels like"],
   ["clear", "wipe the screen (or ⌃L)"],

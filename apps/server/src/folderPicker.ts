@@ -11,7 +11,7 @@ function appleScriptString(value: string): string {
 /**
  * Open the OS-native "choose a folder" dialog and return the picked absolute
  * path, or null when the user cancels. The server runs on the user's own
- * machine (Tauri shell or `npm run dev`), so the dialog appears locally even
+ * machine (Tauri shell or `pnpm dev:web`), so the dialog appears locally even
  * when the UI itself lives in a browser tab.
  */
 export async function pickFolder(prompt: string, defaultPath?: string): Promise<string | null> {

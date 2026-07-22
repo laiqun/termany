@@ -1,4 +1,4 @@
-import type { IBufferCell, IBufferLine, ILink, Terminal } from "@xterm/xterm";
+import type { IBufferCell, ILink, ILinkProvider, Terminal } from "@xterm/xterm";
 import { revealPath } from "../openExternal";
 
 /** Resolve candidate path strings to absolute paths (null = not a real file). */
@@ -23,6 +23,7 @@ const TRAILING_PUNCT_RE = /[),.;\]]+$/;
 const LINE_SUFFIX_RE = /:\d+(?::\d+)?$/;
 
 const MAX_CANDIDATES_PER_LINE = 16;
+const MAX_WINDOW_LINES = 16;
 const CACHE_TTL_MS = 5_000;
 const CACHE_MAX = 200;
 
@@ -90,10 +91,15 @@ function findCandidates(line: string): Candidate[] {
 
 interface MappedLine {
   text: string;
-  /** 0-based buffer column of each string index. */
-  cols: number[];
-  /** cell width (1 or 2) of the char at each string index. */
-  widths: number[];
+  positions: CellPosition[];
+  isWrapped: boolean;
+  reachesRightEdge: boolean;
+}
+
+interface CellPosition {
+  x: number;
+  y: number;
+  width: number;
 }
 
 /**
@@ -102,22 +108,41 @@ interface MappedLine {
  * occupy two cells but one string char, so string index ≠ column and every
  * link range after a Chinese character would be shifted left.
  */
-function mapBufferLine(line: IBufferLine, cell: IBufferCell): MappedLine {
+function mapLine(terminal: Terminal, y: number, cell: IBufferCell): MappedLine | null {
+  const line = terminal.buffer.active.getLine(y);
+  if (!line) return null;
+
   let text = "";
-  const cols: number[] = [];
-  const widths: number[] = [];
+  const positions: CellPosition[] = [];
   for (let x = 0; x < line.length; x++) {
     if (!line.getCell(x, cell)) break;
     const width = cell.getWidth();
     if (width === 0) continue; // trailing half of a wide char
     const chars = cell.getChars() || " "; // empty cell renders as a space
     for (let i = 0; i < chars.length; i++) {
-      cols.push(x);
-      widths.push(width);
+      positions.push({ x, y, width });
     }
     text += chars;
   }
-  return { text, cols, widths };
+
+  const trimmedLength = text.trimEnd().length;
+  text = text.slice(0, trimmedLength);
+  positions.length = trimmedLength;
+  const last = positions.at(-1);
+  return {
+    text,
+    positions,
+    isWrapped: line.isWrapped,
+    reachesRightEdge: !!last && last.x + last.width >= terminal.cols,
+  };
+}
+
+function continues(previous: MappedLine, next: MappedLine): boolean {
+  if (!next.text || /^\s/.test(next.text)) return false;
+  // Natural terminal wrapping marks the continuation row. Rich CLI output may
+  // instead insert CRLF itself, so also join a non-indented row after a line
+  // that filled the terminal width.
+  return next.isWrapped || previous.reachesRightEdge;
 }
 
 /**
@@ -142,47 +167,83 @@ export function registerLocalPathLinks(term: Terminal, resolvePaths: ResolvePath
     return result;
   };
 
-  let workCell: IBufferCell | undefined;
-
-  term.registerLinkProvider({
+  const provider: ILinkProvider = {
     provideLinks(bufferLineNumber, callback) {
-      const bufLine = term.buffer.active.getLine(bufferLineNumber - 1);
-      if (!bufLine) {
-        callback(undefined);
-        return;
-      }
-      workCell ??= term.buffer.active.getNullCell();
-      const mapped = mapBufferLine(bufLine, workCell);
-      const candidates = findCandidates(mapped.text);
-      if (!candidates.length) {
-        callback(undefined);
-        return;
-      }
-
-      void resolveCached(candidates.map((c) => pathFromLinkText(c.text)))
-        .then((resolved) => {
-          const links: ILink[] = [];
-          candidates.forEach((candidate, i) => {
-            const target = resolved[i];
-            if (!target) return;
-            const last = candidate.index + candidate.text.length - 1;
-            links.push({
-              range: {
-                // 1-based, end-inclusive buffer coordinates.
-                start: { x: mapped.cols[candidate.index] + 1, y: bufferLineNumber },
-                end: { x: mapped.cols[last] + mapped.widths[last], y: bufferLineNumber },
-              },
-              text: candidate.text,
-              activate: async (event) => {
-                if (!event.metaKey) return;
-                const error = await revealPath(target);
-                if (error) console.warn("[termany] failed to reveal path:", error);
-              },
-            });
-          });
-          callback(links.length ? links : undefined);
-        })
+      void computeLocalLinks(bufferLineNumber, term, resolveCached)
+        .then((links) => callback(links.length ? links : undefined))
         .catch(() => callback(undefined));
     },
+  };
+  term.registerLinkProvider(provider);
+}
+
+/** Build and verify local-path links for the physical row xterm is querying. */
+export async function computeLocalLinks(
+  bufferLineNumber: number,
+  terminal: Terminal,
+  resolvePaths: ResolvePaths
+): Promise<ILink[]> {
+  const requestedY = bufferLineNumber - 1;
+  const cell = terminal.buffer.active.getNullCell();
+  const cache = new Map<number, MappedLine>();
+  const mapped = (y: number) => {
+    if (!cache.has(y)) {
+      const line = mapLine(terminal, y, cell);
+      if (line) cache.set(y, line);
+    }
+    return cache.get(y);
+  };
+
+  if (!mapped(requestedY)) return [];
+
+  let top = requestedY;
+  for (let i = 0; i < MAX_WINDOW_LINES && top > 0; i++) {
+    const previous = mapped(top - 1);
+    const current = mapped(top);
+    if (!previous || !current || !continues(previous, current)) break;
+    top--;
+  }
+
+  let bottom = requestedY;
+  for (let i = 0; i < MAX_WINDOW_LINES; i++) {
+    const current = mapped(bottom);
+    const next = mapped(bottom + 1);
+    if (!current || !next || !continues(current, next)) break;
+    bottom++;
+  }
+
+  let virtualText = "";
+  const positions: CellPosition[] = [];
+  for (let y = top; y <= bottom; y++) {
+    const line = mapped(y)!;
+    virtualText += line.text;
+    positions.push(...line.positions);
+  }
+
+  const candidates = findCandidates(virtualText);
+  if (!candidates.length) return [];
+  const resolved = await resolvePaths(candidates.map((candidate) => pathFromLinkText(candidate.text)));
+  const links: ILink[] = [];
+
+  candidates.forEach((candidate, i) => {
+    const target = resolved[i];
+    if (!target) return;
+    const start = positions[candidate.index];
+    const end = positions[candidate.index + candidate.text.length - 1];
+    if (!start || !end || requestedY < start.y || requestedY > end.y) return;
+    links.push({
+      range: {
+        start: { x: start.x + 1, y: start.y + 1 },
+        end: { x: end.x + end.width, y: end.y + 1 },
+      },
+      text: candidate.text,
+      activate: async (event) => {
+        if (!event.metaKey) return;
+        event.preventDefault();
+        const error = await revealPath(target);
+        if (error) console.warn("[termany] failed to reveal path:", error);
+      },
+    });
   });
+  return links;
 }

@@ -22,9 +22,9 @@ export default defineConfig(({ command }) => ({
       ? { "import.meta.env.VITE_PTY_URL": JSON.stringify("ws://localhost:5175") }
       : {},
   server: {
-    port: 5173,
+    port: 15173,
     // Never silently hop to another port. If Vite stole the PTY server's port
-    // (because 5173 was busy), the terminal backend would collide and die.
+    // (because 15173 was busy), the terminal backend would collide and die.
     // Failing loudly here makes a stale instance obvious instead of cryptic.
     strictPort: true,
   },

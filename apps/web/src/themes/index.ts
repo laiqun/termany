@@ -159,13 +159,17 @@ function applyThemeObject(theme: Theme) {
   root.style.setProperty("--top-bar-border", borderRule(theme.chrome?.topBarBorder, colors.border));
   root.style.setProperty("--active-tab", theme.chrome?.activeTab ?? colors.bg);
   root.style.setProperty("--active-row", theme.chrome?.activeRow ?? colors.bg3);
-  root.style.setProperty("--pane-gap", theme.chrome?.paneGap ?? "8px");
+  const paneGap = theme.chrome?.paneGap ?? "5px";
+  root.style.setProperty("--pane-gap", paneGap);
+  // Flush themes (no gap between panes) have no visible seam of their own, so
+  // the split gutter draws the hairline instead. Themes with a gap don't: the
+  // pane cards' own borders separate them, and a line in the gap would double up.
+  root.style.setProperty("--split-gutter-line", parseFloat(paneGap) === 0 ? colors.border : "transparent");
   root.style.setProperty("--pane-radius", theme.chrome?.paneRadius ?? radius.lg);
   root.style.setProperty("--pane-border", borderRule(theme.chrome?.paneBorder, colors.border));
-  root.style.setProperty(
-    "--pane-shadow",
-    theme.chrome?.paneShadow ?? "0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04)"
-  );
+  // Kept tight on purpose: it's a per-pane shadow, and a wide blur bleeds
+  // across the split gutter onto the neighbouring pane. See styles.css.
+  root.style.setProperty("--pane-shadow", theme.chrome?.paneShadow ?? "0 1px 2px rgba(0, 0, 0, 0.05)");
   // Escape hatch: arbitrary CSS-var overrides, applied last so they win.
   lastCustomVarKeys = Object.keys(theme.vars ?? {}).map((k) => (k.startsWith("--") ? k : `--${k}`));
   for (const [k, v] of Object.entries(theme.vars ?? {})) {

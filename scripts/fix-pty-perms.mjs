@@ -6,9 +6,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const prebuilds = join(root, "node_modules", "node-pty", "prebuilds");
+const nodeModules = join(root, "node_modules");
+const prebuildDirs = [join(nodeModules, "node-pty", "prebuilds")];
+const pnpmStore = join(nodeModules, ".pnpm");
 
-if (existsSync(prebuilds)) {
+if (existsSync(pnpmStore)) {
+  for (const entry of readdirSync(pnpmStore)) {
+    if (entry.startsWith("node-pty@")) {
+      prebuildDirs.push(join(pnpmStore, entry, "node_modules", "node-pty", "prebuilds"));
+    }
+  }
+}
+
+for (const prebuilds of prebuildDirs) {
+  if (!existsSync(prebuilds)) continue;
   for (const platform of readdirSync(prebuilds)) {
     const helper = join(prebuilds, platform, "spawn-helper");
     if (existsSync(helper)) {

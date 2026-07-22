@@ -37,12 +37,32 @@ export interface ActionDef {
   hideInPalette?: true;
 }
 
+/** The platform's conventional application-shortcut modifier. */
+export const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+
+/**
+ * Action definitions are written in the macOS notation used by the original
+ * catalog. Translate Command to Control elsewhere. A macOS Control+Command
+ * chord becomes Control+Alt on Windows/Linux so the two distinct modifiers do
+ * not collapse into one key.
+ */
+export function chordForPlatform(chord: Chord, isMac = IS_MAC): Chord {
+  if (isMac || !chord.meta) return { ...chord };
+  return {
+    ...chord,
+    meta: undefined,
+    ctrl: true,
+    alt: chord.alt || chord.ctrl || undefined,
+  };
+}
+
 /**
  * The catalog of bindable actions. The dispatch behaviour for each id lives in
  * App.tsx (keeps this module free of any store/UI coupling). To add a shortcut:
  * append an entry here and a matching case in App.tsx's handler map.
  */
-export const ACTIONS: ActionDef[] = [
+const ACTION_DEFINITIONS: ActionDef[] = [
   { id: "newTab", label: "New terminal tab", group: "Tabs & panes", default: { code: "KeyT", meta: true } },
   { id: "closePane", label: "Close pane / tab", group: "Tabs & panes", default: { code: "KeyW", meta: true } },
   { id: "splitRight", label: "Split right", group: "Tabs & panes", default: { code: "KeyD", meta: true } },
@@ -79,6 +99,10 @@ export const ACTIONS: ActionDef[] = [
   { id: "prevPane", label: "Previous pane", group: "Tabs & panes", default: { code: "BracketLeft", meta: true } },
   { id: "scrollTop", label: "Scroll to top", group: "Navigation", default: { code: "Home", meta: true } },
   { id: "scrollBottom", label: "Scroll to bottom", group: "Navigation", default: { code: "End", meta: true } },
+  { id: "previousPage", label: "Previous visible page", group: "Navigation", default: { code: "ArrowUp", meta: true } },
+  { id: "nextPage", label: "Next visible page", group: "Navigation", default: { code: "ArrowDown", meta: true } },
+  { id: "enterPage", label: "Expand / enter page", group: "Navigation", default: { code: "ArrowRight", meta: true } },
+  { id: "exitPage", label: "Collapse / parent page", group: "Navigation", default: { code: "ArrowLeft", meta: true } },
   { id: "newPage", label: "New page", group: "Navigation", default: { code: "KeyN", meta: true } },
   { id: "newChildPage", label: "New child page", group: "Navigation", default: { code: "Enter", meta: true } },
   { id: "newWorkspace", label: "New workspace", group: "Navigation", default: { code: "KeyN", meta: true, shift: true } },
@@ -105,6 +129,12 @@ export const ACTIONS: ActionDef[] = [
   { id: "openAgentUsage", label: "Open agent token usage", group: "General", default: { code: "KeyU", meta: true, shift: true } },
   { id: "openSystemMonitor", label: "Open system monitor", group: "General", default: { code: "KeyM", meta: true, shift: true } },
 ];
+
+/** Platform-native action catalog consumed by matching, settings and xterm. */
+export const ACTIONS: ActionDef[] = ACTION_DEFINITIONS.map((action) => ({
+  ...action,
+  default: chordForPlatform(action.default),
+}));
 
 /** Codes that are modifiers themselves — never a valid chord on their own. */
 const MODIFIER_CODES = new Set([
@@ -201,14 +231,24 @@ function codeLabel(code: string): string {
   return map[code] ?? code;
 }
 
-/** Mac-style display string, e.g. "⌘⇧D". Modifier order: ⌃⌥⇧⌘. */
+/** Platform-native display string, e.g. "⌘⇧D" or "Ctrl+Shift+D". */
 export function formatChord(c: Chord): string {
+  const shiftedPlus = c.shift && c.code === "Equal";
+  if (!IS_MAC) {
+    const modifiers: string[] = [];
+    if (c.ctrl) modifiers.push("Ctrl");
+    if (c.alt) modifiers.push("Alt");
+    if (c.shift && !shiftedPlus) modifiers.push("Shift");
+    if (c.meta) modifiers.push("Win");
+    const key = shiftedPlus ? "+" : codeLabel(c.code);
+    return modifiers.length ? `${modifiers.join("+")}+${key}` : key;
+  }
+
   let s = "";
   if (c.ctrl) s += "⌃";
   if (c.alt) s += "⌥";
   // The shifted Equal key is conventionally presented as "+" on macOS
   // (⌘+), rather than exposing its physical-key implementation (⇧⌘=).
-  const shiftedPlus = c.shift && c.code === "Equal";
   if (c.shift && !shiftedPlus) s += "⇧";
   if (c.meta) s += "⌘";
   return s + (shiftedPlus ? "+" : codeLabel(c.code));

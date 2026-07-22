@@ -1,6 +1,6 @@
 {
   "name": "termany",
-  "version": "0.1.21",
+  "version": "0.1.23",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "Agent-native terminal — local-first, cloud-ready. Workspaces > vertical tabs > horizontal tabs.",
@@ -10,10 +10,12 @@
   ],
   "scripts": {
     "postinstall": "node scripts/fix-pty-perms.mjs",
-    "dev": "concurrently -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web\"",
-    "desktop": "concurrently -k -n server,web,app -c green,cyan,magenta \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:app\"",
+    "dev": "npm run dev:web",
+    "desktop": "npm run dev:desktop",
+    "dev:web": "concurrently -k -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web-client\"",
+    "dev:desktop": "concurrently -k -n server,web,app -c green,cyan,magenta \"npm:dev:server\" \"npm:dev:web-client\" \"npm:dev:app\"",
     "dev:server": "npm -w @termany/server run dev",
-    "dev:web": "npm -w @termany/web run dev",
+    "dev:web-client": "npm -w @termany/web run dev",
     "dev:app": "npm -w @termany/desktop run dev",
     "build:web": "npm -w @termany/web run build",
     "bundle:server": "node scripts/bundle-server.mjs",

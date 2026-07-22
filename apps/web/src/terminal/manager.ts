@@ -1,4 +1,5 @@
 import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
+import { getLanguage, translate } from "../i18n";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -32,12 +33,19 @@ export interface Session {
   backend: ITerminalBackend;
   opened: boolean;
   followOutput: boolean;
+  /** Absolute buffer row held in view after the user scrolls away from live output. */
+  lockedViewportY: number | null;
   manualScrollUntil: number;
   deferredOutput: string[];
   deferredSince: number;
   deferredFlushTimer: number | null;
   spawnedAt: number;
   restartAttempts: number;
+  /** A remote SSH process exited and is waiting for explicit reconnection. */
+  ended: boolean;
+  /** Start a replacement backend after an ended remote session is selected. */
+  restart?: () => void;
+  connectionState?: "connecting" | "connected" | "disconnected";
 }
 
 /**
@@ -76,6 +84,37 @@ export function noteManualScroll(id: string) {
   const session = sessions.get(id);
   if (!session) return;
   session.manualScrollUntil = Date.now() + MANUAL_SCROLL_COOLDOWN_MS;
+  // Lock immediately, before the browser's native scroll event has necessarily
+  // updated xterm's viewportY. This closes the race where a PTY write lands
+  // between the wheel gesture and xterm noticing that it left the bottom.
+  session.followOutput = false;
+  session.lockedViewportY = session.term.buffer.active.viewportY;
+  requestAnimationFrame(() => {
+    const latest = sessions.get(id);
+    if (!latest) return;
+    const state = readScrollState(latest.term);
+    latest.followOutput = state.atBottom;
+    latest.lockedViewportY = state.atBottom ? null : latest.term.buffer.active.viewportY;
+    notifyScrollState(id);
+  });
+}
+
+function finishSessionWrite(id: string) {
+  const session = sessions.get(id);
+  if (!session) return;
+  completeAgentActivityIfIdle(id);
+  if (session.followOutput && Date.now() >= session.manualScrollUntil) {
+    settleSessionAtBottom(id);
+    return;
+  }
+  // A TUI can move xterm's viewport while repainting even though the user has
+  // deliberately scrolled away from the live edge. Restore the user's buffer
+  // row after every parsed write; term.write callbacks run before the render,
+  // so this does not create a visible snap down and back up.
+  if (session.lockedViewportY !== null) {
+    session.term.scrollToLine(Math.min(session.lockedViewportY, session.term.buffer.active.baseY));
+  }
+  notifyScrollState(id);
 }
 
 function writeSessionData(id: string, data: string) {
@@ -90,11 +129,7 @@ function writeSessionData(id: string, data: string) {
     scheduleDeferredFlush(id);
     return;
   }
-  session.term.write(data, () => {
-    completeAgentActivityIfIdle(id);
-    if (session.followOutput && Date.now() >= session.manualScrollUntil) settleSessionAtBottom(id);
-    else notifyScrollState(id);
-  });
+  session.term.write(data, () => finishSessionWrite(id));
 }
 
 function scheduleDeferredFlush(id: string) {
@@ -119,11 +154,7 @@ function flushDeferredOutput(id: string) {
   }
   const combined = session.deferredOutput.splice(0).join("");
   session.deferredSince = 0;
-  session.term.write(combined, () => {
-    completeAgentActivityIfIdle(id);
-    if (session.followOutput && Date.now() >= session.manualScrollUntil) settleSessionAtBottom(id);
-    else notifyScrollState(id);
-  });
+  session.term.write(combined, () => finishSessionWrite(id));
 }
 
 export type TerminalScrollState = {
@@ -133,15 +164,53 @@ export type TerminalScrollState = {
 };
 
 const sessions = new Map<string, Session>();
-const pendingCwdFrom = new Map<string, string>();
+// A pane may keep a local shell and several SSH shells alive simultaneously.
+// Only one is mounted, but switching does not tear down the others.
+const activeSessionByPane = new Map<string, string>();
+const sessionIdsByPane = new Map<string, Set<string>>();
 const pendingCommands = new Map<string, string[]>();
 const scrollListeners = new Map<string, Set<(state: TerminalScrollState) => void>>();
+const connectionStatusListeners = new Set<() => void>();
+const SSH_EXIT_EVENT = "termany:ssh-session-exited";
+
+function notifyConnectionStatus() {
+  for (const listener of connectionStatusListeners) listener();
+}
+
+export function subscribeTerminalConnectionStatus(listener: () => void): () => void {
+  connectionStatusListeners.add(listener);
+  return () => connectionStatusListeners.delete(listener);
+}
+
+export function terminalConnectionStatus(
+  paneId: string,
+  sshTarget: string
+): "idle" | "connecting" | "connected" | "disconnected" {
+  return sessions.get(terminalSessionId(paneId, sshTarget))?.connectionState ?? "idle";
+}
+
+export function subscribeSshNaturalExit(paneId: string, listener: () => void): () => void {
+  const onExit = (event: Event) => {
+    if ((event as CustomEvent<{ paneId: string }>).detail?.paneId === paneId) listener();
+  };
+  window.addEventListener(SSH_EXIT_EVENT, onExit);
+  return () => window.removeEventListener(SSH_EXIT_EVENT, onExit);
+}
+
+export function terminalSessionId(paneId: string, sshTarget?: string): string {
+  return sshTarget ? `${paneId}:ssh:${encodeURIComponent(sshTarget)}` : paneId;
+}
+
+/** Accept a pane id from app actions or an already-resolved runtime id. */
+function activeSessionId(id: string): string {
+  return activeSessionByPane.get(id) ?? id;
+}
 
 export type AgentActivityStatus = "working" | "done" | "error";
 
 export type AgentActivity = {
   status: AgentActivityStatus;
-  agent?: "claude" | "codex";
+  agent?: "claude" | "codex" | "fastclaw";
   updatedAt: number;
 };
 
@@ -149,10 +218,11 @@ const agentActivities = new Map<string, AgentActivity>();
 const agentActivityListeners = new Set<() => void>();
 const agentSessionKinds = new Map<string, AgentActivity["agent"]>();
 
-const AGENT_RE = /\b(OpenAI Codex|Codex CLI|Claude Code)\b|Use \/skills|\/model to change|bypass permissions/i;
+const AGENT_RE = /\b(OpenAI Codex|Codex CLI|Claude Code|FastClaw)\b|Use \/skills|\/model to change|bypass permissions/i;
 const CODEX_RE = /\b(OpenAI Codex|Codex CLI)\b/i;
 const CLAUDE_RE = /\bClaude Code\b/i;
-const AGENT_COMMAND_RE = /^\s*(claude|codex)(?:\s|$)/i;
+const FASTCLAW_RE = /\bFastClaw\b/i;
+const AGENT_COMMAND_RE = /^\s*(claude|codex|fastclaw)(?:\s|$)/i;
 const ERROR_RE =
   /\b(error|failed|failure|exception|fatal|panic|permission denied|timed out|rate limit|quota|authentication|unauthorized|forbidden|command not found)\b/i;
 const BENIGN_ERROR_RE = /\b(no errors?|0 errors?|without errors?)\b/i;
@@ -162,16 +232,17 @@ const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|build
 const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
 const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
 const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
-// Matches ONE row that agentInputPromptVisible() has already stripped of box
-// chrome: the agent's input marker, bare (idle) or with typed text after it.
-const AGENT_INPUT_PROMPT_RE = /^[›>](?:\s|$)/;
-// Vertical box-drawing edges + padding around that row. Agent CLIs draw their
+// Matches ONE row that tuiInputPromptVisible() has already stripped of box
+// chrome. These markers are used by both known agents and otherwise unknown
+// chat-style TUIs, so image paste support does not depend on a vendor list.
+const TUI_INPUT_PROMPT_RE = /^[›>](?:\s|$)/;
+// Vertical box-drawing edges + padding around that row. Chat TUIs draw their
 // input inside a border, so the raw row reads "│ › fix a bug in @file      │".
 const BOX_CHROME_RE = /^[\s│┃┆┊╎╏|]+|[\s│┃┆┊╎╏|]+$/g;
 // How many non-empty rows up from the bottom to search for the input row. It is
 // rarely the last one — a bottom border and a hint line ("? for shortcuts")
 // usually sit below it.
-const AGENT_PROMPT_SCAN_ROWS = 6;
+const TUI_PROMPT_SCAN_ROWS = 6;
 const DONE_ACTIVITY_TTL_MS = 30_000;
 const ERROR_ACTIVITY_TTL_MS = 5 * 60_000;
 const WORKING_ACTIVITY_STALE_MS = 2 * 60_000;
@@ -233,6 +304,7 @@ function stripTerminalControls(data: string): string {
 function detectAgent(text: string): AgentActivity["agent"] | undefined {
   if (CLAUDE_RE.test(text)) return "claude";
   if (CODEX_RE.test(text)) return "codex";
+  if (FASTCLAW_RE.test(text)) return "fastclaw";
   return undefined;
 }
 
@@ -312,6 +384,7 @@ export function subscribeAgentActivity(listener: () => void): () => void {
 
 export function agentActivitySnapshot(ids: string[]): string {
   return ids.map((id) => {
+    id = activeSessionId(id);
     const activity = agentActivities.get(id);
     return activity ? `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}` : `${id}:`;
   }).join("|");
@@ -321,7 +394,7 @@ export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
   let best: AgentActivity | null = null;
   const rank: Record<AgentActivityStatus, number> = { error: 3, working: 2, done: 1 };
   for (const id of ids) {
-    const activity = agentActivities.get(id);
+    const activity = agentActivities.get(activeSessionId(id));
     if (!activity) continue;
     if (
       !best ||
@@ -335,7 +408,14 @@ export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
 }
 
 export function agentActivityTitle(activity: AgentActivity): string {
-  const who = activity.agent === "claude" ? "Claude" : activity.agent === "codex" ? "Codex" : "Agent";
+  const who =
+    activity.agent === "claude"
+      ? "Claude"
+      : activity.agent === "codex"
+        ? "Codex"
+        : activity.agent === "fastclaw"
+          ? "FastClaw"
+          : "Agent";
   if (activity.status === "error") return `${who} reported an error`;
   if (activity.status === "done") return `${who} completed`;
   return `${who} is working`;
@@ -459,6 +539,7 @@ const MIN_FONT_SIZE = 9;
 const MAX_FONT_SIZE = 32;
 
 function applyTerminalFontSize(id: string, next: number) {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return;
   const size = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, next));
@@ -468,6 +549,7 @@ function applyTerminalFontSize(id: string, next: number) {
 }
 
 export function adjustTerminalFontSize(id: string, delta: number) {
+  id = activeSessionId(id);
   const current = sessions.get(id)?.term.options.fontSize ?? DEFAULT_FONT_SIZE;
   applyTerminalFontSize(id, current + delta);
 }
@@ -610,7 +692,7 @@ export function applyTermTheme(theme: ITheme) {
   for (const s of sessions.values()) s.term.options.theme = theme;
 }
 
-function getSession(id: string): Session {
+function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
 
@@ -694,22 +776,24 @@ function getSession(id: string): Session {
   // and resolved by the server against this shell's live cwd. If the server
   // can't answer (demo mode, old server), fall back to trusting absolute
   // paths unverified so links don't disappear entirely.
-  registerLocalPathLinks(term, async (paths) => {
-    const fallback = () => paths.map((p) => (/^(?:\/|~\/|[A-Za-z]:[\\/])/.test(p) ? p : null));
-    if (isDemo) return fallback();
-    try {
-      const res = await fetch(`${apiUrl()}/api/resolve-paths`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session: id, paths }),
-      });
-      if (!res.ok) return fallback();
-      const payload = await readJsonResponse(res);
-      return Array.isArray(payload.resolved) ? payload.resolved : fallback();
-    } catch {
-      return fallback();
-    }
-  });
+  if (!sshTarget) {
+    registerLocalPathLinks(term, async (paths) => {
+      const fallback = () => paths.map((p) => (/^(?:\/|~\/|[A-Za-z]:[\\/])/.test(p) ? p : null));
+      if (isDemo) return fallback();
+      try {
+        const res = await fetch(`${apiUrl()}/api/resolve-paths`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session: id, paths }),
+        });
+        if (!res.ok) return fallback();
+        const payload = await readJsonResponse(res);
+        return Array.isArray(payload.resolved) ? payload.resolved : fallback();
+      } catch {
+        return fallback();
+      }
+    });
+  }
 
   // Reconnecting with the same session id spawns a fresh shell server-side
   // once the old one has exited (see apps/server's ptySessions registry) —
@@ -717,10 +801,13 @@ function getSession(id: string): Session {
   const spawnBackend = (): ITerminalBackend =>
     isDemo
       ? new DemoBackend(id)
-      : new WebSocketBackend(WS_URL, { session: id, cwdFrom: pendingCwdFrom.get(id) });
+      : new WebSocketBackend(WS_URL, {
+          session: id,
+          cwdFrom: cwdFrom?.length ? cwdFrom.join(",") : undefined,
+          ssh: sshTarget,
+        });
 
   const initialBackend = spawnBackend();
-  pendingCwdFrom.delete(id);
   const session: Session = {
     el,
     term,
@@ -729,17 +816,25 @@ function getSession(id: string): Session {
     backend: initialBackend,
     opened: false,
     followOutput: true,
+    lockedViewportY: null,
     manualScrollUntil: 0,
     deferredOutput: [],
     deferredSince: 0,
     deferredFlushTimer: null,
     spawnedAt: Date.now(),
     restartAttempts: 0,
+    ended: false,
+    connectionState: sshTarget ? "connecting" : undefined,
   };
   sessions.set(id, session);
+  if (sshTarget) notifyConnectionStatus();
 
   const wireBackend = (b: ITerminalBackend) => {
     b.onData((data) => {
+      if (sshTarget && session.connectionState !== "connected") {
+        session.connectionState = "connected";
+        notifyConnectionStatus();
+      }
       updateAgentActivityFromOutput(id, data);
       if (replaying) {
         pendingOutput.push(data);
@@ -749,6 +844,18 @@ function getSession(id: string): Session {
     });
     b.onExit((reason) => {
       if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
+      if (sshTarget) {
+        session.ended = true;
+        session.connectionState = "disconnected";
+        notifyConnectionStatus();
+        if (!reason) {
+          window.dispatchEvent(new CustomEvent(SSH_EXIT_EVENT, { detail: { paneId } }));
+          return;
+        }
+        const message = translate(getLanguage(), reason ? "ssh.sessionError" : "ssh.sessionEnded", reason ? { reason } : undefined);
+        term.write(`\r\n\x1b[2m[${message}]\x1b[0m\r\n`);
+        return;
+      }
       // A truthy reason means the WebSocket itself couldn't connect, which
       // already exhausted its own retry budget (see WebSocketBackend) before
       // giving up — not worth immediately repeating that losing battle. Only
@@ -772,17 +879,71 @@ function getSession(id: string): Session {
   };
   wireBackend(initialBackend);
 
+  session.restart = () => {
+    if (!session.ended) return;
+    session.ended = false;
+    session.connectionState = "connecting";
+    notifyConnectionStatus();
+    const next = spawnBackend();
+    session.backend = next;
+    session.spawnedAt = Date.now();
+    wireBackend(next);
+  };
+
   term.onData((data) => {
     if (IME_DEBUG) imeLog(`→PTY ${JSON.stringify(data)}`);
+    if (sshTarget && session.ended) {
+      if (/[\r\n]/.test(data)) {
+        term.write("\r\n");
+        session.restart?.();
+      }
+      return;
+    }
     noteAgentInput(id, data);
     session.backend.write(data);
   });
 
-  // Select-to-copy: when the mouse is released over a non-empty selection, copy
-  // it to the clipboard (iTerm/Terminal.app behaviour). The selection stays put.
-  el.addEventListener("mouseup", () => {
+  // Select-to-copy only after an actual selection gesture. The old listener
+  // copied on EVERY mouseup while any selection existed, so a plain click,
+  // right-click, or clicking an old selection silently overwrote the system
+  // clipboard. A small movement threshold also filters trackpad/mouse jitter.
+  const SELECTION_DRAG_PX = 4;
+  let selectionGesture: {
+    x: number;
+    y: number;
+    dragged: boolean;
+    clickCount: number;
+  } | null = null;
+  el.addEventListener("mousedown", (event) => {
+    if (event.button !== 0) {
+      selectionGesture = null;
+      return;
+    }
+    selectionGesture = {
+      x: event.clientX,
+      y: event.clientY,
+      dragged: false,
+      clickCount: event.detail,
+    };
+  });
+  el.addEventListener("mousemove", (event) => {
+    if (!selectionGesture || !(event.buttons & 1)) return;
+    const dx = event.clientX - selectionGesture.x;
+    const dy = event.clientY - selectionGesture.y;
+    if (dx * dx + dy * dy >= SELECTION_DRAG_PX * SELECTION_DRAG_PX) {
+      selectionGesture.dragged = true;
+    }
+  });
+  el.addEventListener("mouseup", (event) => {
+    const gesture = selectionGesture;
+    selectionGesture = null;
+    if (event.button !== 0 || !gesture) return;
+    // Double/triple click deliberately selects a word/line without dragging.
+    if (!gesture.dragged && gesture.clickCount < 2) return;
     const sel = term.getSelection();
-    if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+    // Use trim only as an emptiness check. Copy the original selection so
+    // meaningful indentation and line breaks are preserved.
+    if (sel.trim()) navigator.clipboard?.writeText(sel).catch(() => {});
   });
 
   // Paste image blobs as local file paths only when the active program looks
@@ -821,7 +982,7 @@ function getSession(id: string): Session {
             term.paste(`${paths.join(" ")} `);
           } else {
             term.write(
-              `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — no agent prompt detected here, so the path was not inserted.\x1b[0m\r\n`
+              `\r\n\x1b[2m[termany] image saved: ${paths.join(" ")} — no TUI input prompt detected here, so the path was not inserted.\x1b[0m\r\n`
             );
           }
         }
@@ -953,8 +1114,22 @@ function fixAbandonedImeFinalize(term: Terminal) {
 }
 
 /** Attach the session's element into `host` and open the terminal (once). */
-export function attachSession(id: string, host: HTMLElement) {
-  const s = getSession(id);
+export function attachSession(
+  id: string,
+  host: HTMLElement,
+  cwdFrom?: string[],
+  sshTarget?: string,
+  paneId = id
+) {
+  activeSessionByPane.set(paneId, id);
+  let owned = sessionIdsByPane.get(paneId);
+  if (!owned) {
+    owned = new Set();
+    sessionIdsByPane.set(paneId, owned);
+  }
+  owned.add(id);
+  const s = getSession(id, cwdFrom, sshTarget, paneId);
+  if (sshTarget && s.ended) s.restart?.();
   host.appendChild(s.el);
   if (!s.opened) {
     s.term.open(s.el); // el is now in the document — renderer initialises correctly
@@ -973,15 +1148,24 @@ export function attachSession(id: string, host: HTMLElement) {
     traceImeEvents(s.term);
     s.term.onScroll(() => {
       const scrollState = readScrollState(s.term);
-      s.followOutput = scrollState.atBottom;
+      // Only a scroll inside the user's wheel window may change follow mode.
+      // Output-driven TUI redraws also emit onScroll; allowing those to set
+      // followOutput=true is what used to pull readers back to the bottom.
+      if (Date.now() < s.manualScrollUntil) {
+        s.followOutput = scrollState.atBottom;
+        s.lockedViewportY = scrollState.atBottom ? null : s.term.buffer.active.viewportY;
+      } else if (s.followOutput) {
+        s.lockedViewportY = null;
+      }
       notifyScrollState(id);
     });
     s.opened = true;
   }
   fitSession(id);
   focusSession(id);
-  const queued = pendingCommands.get(id);
+  const queued = pendingCommands.get(paneId) ?? pendingCommands.get(id);
   if (queued?.length) {
+    pendingCommands.delete(paneId);
     pendingCommands.delete(id);
     window.setTimeout(() => {
       for (const command of queued) sendCommand(id, command);
@@ -990,17 +1174,21 @@ export function attachSession(id: string, host: HTMLElement) {
 }
 
 export function scrollSessionToTop(id: string) {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return;
   session.followOutput = false;
+  session.lockedViewportY = 0;
   session.term.scrollToTop();
   notifyScrollState(id);
 }
 
 export function scrollSessionToBottom(id: string) {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return;
   session.followOutput = true;
+  session.lockedViewportY = null;
   settleSessionAtBottom(id, true);
 }
 
@@ -1012,17 +1200,22 @@ export function detachSession(id: string, host: HTMLElement) {
 
 /** Refit to the current container size and tell the PTY the new dimensions. */
 export function fitSession(id: string) {
+  id = activeSessionId(id);
   const s = sessions.get(id);
   if (!s || !s.opened) return;
   try {
     s.fit.fit();
     s.backend.resize(s.term.cols, s.term.rows);
+    if (!s.followOutput && s.lockedViewportY !== null) {
+      s.term.scrollToLine(Math.min(s.lockedViewportY, s.term.buffer.active.baseY));
+    }
   } catch {
     /* container not laid out yet */
   }
 }
 
 export function focusSession(id: string) {
+  id = activeSessionId(id);
   // In the landing-page demo iframe, programmatic focus on load would steal
   // the visitor's keyboard/scroll — hold off until they click into the demo.
   if (isDemo && !demoInteracted()) return;
@@ -1042,6 +1235,7 @@ export function focusSession(id: string) {
  * TUI's own repaint if one is in front.
  */
 export function clearSession(id: string) {
+  id = activeSessionId(id);
   sessions.get(id)?.backend.write("\x0c");
 }
 
@@ -1062,6 +1256,7 @@ const SEARCH_DECORATIONS = {
 let lastQuery = "";
 
 export function findInSession(id: string, term: string, dir: "next" | "prev" = "next"): boolean {
+  id = activeSessionId(id);
   const s = sessions.get(id);
   if (!s) return false;
   if (!term) {
@@ -1080,6 +1275,7 @@ export function repeatFind(id: string, dir: "next" | "prev"): boolean {
 
 /** Drop search highlighting — called when the find bar closes. */
 export function clearSessionSearch(id: string) {
+  id = activeSessionId(id);
   sessions.get(id)?.search.clearDecorations();
 }
 
@@ -1091,15 +1287,11 @@ export function onSearchResults(
   id: string,
   cb: (r: { index: number; count: number }) => void
 ): () => void {
+  id = activeSessionId(id);
   const s = sessions.get(id);
   if (!s) return () => {};
   const sub = s.search.onDidChangeResults((r) => cb({ index: r.resultIndex, count: r.resultCount }));
   return () => sub.dispose();
-}
-
-/** Ask the server to start a not-yet-created session in another session's cwd. */
-export function inheritSessionCwd(id: string, fromId: string) {
-  if (!sessions.has(id)) pendingCwdFrom.set(id, fromId);
 }
 
 /**
@@ -1109,13 +1301,14 @@ export function inheritSessionCwd(id: string, fromId: string) {
  * session yet, same as clearSession above.
  */
 export function sendCommand(id: string, command: string) {
+  id = activeSessionId(id);
   const agent = AGENT_COMMAND_RE.exec(command)?.[1]?.toLowerCase() as AgentActivity["agent"] | undefined;
   if (agent) setAgentActivity(id, "working", agent);
   sessions.get(id)?.backend.write(`${command}\r`);
 }
 
 export function queueCommand(id: string, command: string) {
-  if (sessions.has(id)) {
+  if (sessions.has(activeSessionId(id))) {
     sendCommand(id, command);
     return;
   }
@@ -1127,38 +1320,46 @@ export function queueCommand(id: string, command: string) {
  *  paste on (vim, claude, modern shells) see it as one paste, not typed
  *  keystrokes. Used for dropping a file/folder from Finder onto the pane. */
 export function pasteIntoSession(id: string, text: string) {
+  id = activeSessionId(id);
   sessions.get(id)?.term.paste(text);
 }
 
 export function sessionUsesAlternateBuffer(id: string): boolean {
+  id = activeSessionId(id);
   return sessions.get(id)?.term.buffer.active.type === "alternate";
 }
 
 export function sessionLooksLikeAgentInput(id: string): boolean {
+  id = activeSessionId(id);
   const session = sessions.get(id);
   if (!session) return false;
+  // Full-screen TUIs conventionally use the alternate buffer. This is the
+  // strongest vendor-neutral signal available from a terminal emulator.
   if (session.term.buffer.active.type === "alternate") return true;
   const visible = sessionVisibleText(id);
   if (AGENT_RE.test(visible)) return true;
-  return agentSessionKinds.has(id) && agentInputPromptVisible(visible);
+  // Some chat TUIs (FastClaw included) deliberately stay in the normal
+  // buffer. Recognize their visible input row directly instead of requiring
+  // the command or product name to be registered with Termany.
+  return tuiInputPromptVisible(visible);
 }
 
 /**
- * Does the visible screen show an agent's input line?
+ * Does the visible screen show a chat-style TUI input line?
  *
  * Scans the last few NON-EMPTY rows (the same shape as visibleScreenLooksIdle)
  * instead of anchoring to the end of the text. An agent CLI wraps its input in
  * a box and parks a bottom border plus a hint line under it, so the prompt is
  * almost never the final character of the screen — an end-anchored match found
  * it only in the degenerate case, which is why pasting an image at a Codex
- * prompt fell through to the "no agent prompt" branch.
+ * prompt fell through to the "no TUI input prompt" branch.
  */
-function agentInputPromptVisible(visible: string): boolean {
+function tuiInputPromptVisible(visible: string): boolean {
   const rows = visible
     .split("\n")
     .map((line) => line.replace(BOX_CHROME_RE, ""))
     .filter(Boolean);
-  return rows.slice(-AGENT_PROMPT_SCAN_ROWS).some((row) => AGENT_INPUT_PROMPT_RE.test(row));
+  return rows.slice(-TUI_PROMPT_SCAN_ROWS).some((row) => TUI_INPUT_PROMPT_RE.test(row));
 }
 
 function sessionVisibleText(id: string): string {
@@ -1182,6 +1383,7 @@ export function disposeSession(id: string) {
   s.term.dispose();
   s.el.remove();
   sessions.delete(id);
+  notifyConnectionStatus();
   if (agentActivities.delete(id)) notifyAgentActivity();
   agentSessionKinds.delete(id);
   restoreSnapshots.delete(id);
@@ -1191,5 +1393,32 @@ export function disposeSession(id: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: [id] }),
+  }).catch(() => {});
+}
+
+/** Close every cached local/SSH session owned by a pane. */
+export function disposePaneSessions(paneId: string) {
+  const ids = [...(sessionIdsByPane.get(paneId) ?? new Set([paneId]))];
+  activeSessionByPane.delete(paneId);
+  sessionIdsByPane.delete(paneId);
+  pendingCommands.delete(paneId);
+  for (const id of ids) {
+    const s = sessions.get(id);
+    if (s) {
+      s.backend.dispose();
+      s.term.dispose();
+      s.el.remove();
+      sessions.delete(id);
+    }
+    restoreSnapshots.delete(id);
+    if (agentActivities.delete(id)) notifyAgentActivity();
+    agentSessionKinds.delete(id);
+  }
+  notifyConnectionStatus();
+  if (isDemo || !ids.length) return;
+  fetch(`${apiUrl()}/api/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, paneIds: [paneId] }),
   }).catch(() => {});
 }

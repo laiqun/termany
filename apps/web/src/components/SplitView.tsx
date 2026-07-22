@@ -23,6 +23,7 @@ import {
 } from "./icons";
 import { AgentPane } from "./AgentPane";
 import { SystemMonitor } from "./SystemMonitor";
+import { SshConnections } from "./SshConnections";
 import { TerminalPane } from "./TerminalPane";
 import { WebBrowserPane } from "./WebBrowserPane";
 
@@ -92,6 +93,9 @@ function PaneViewMenu({ leaf }: { leaf: Leaf }) {
 
   const current = leaf.view ?? "terminal";
   const CurrentIcon = PANE_VIEWS.find((entry) => entry.view === current)!.Icon;
+  const availableViews = leaf.sshTarget
+    ? PANE_VIEWS.filter((entry) => entry.view === "terminal")
+    : PANE_VIEWS;
   return (
     <div className="pane-view-menu" ref={rootRef}>
       <button
@@ -106,7 +110,7 @@ function PaneViewMenu({ leaf }: { leaf: Leaf }) {
       </button>
       {open && (
         <div className="pop-panel pane-view-panel" role="menu" ref={panelRef}>
-          {PANE_VIEWS.map(({ view, labelKey, Icon }) => (
+          {availableViews.map(({ view, labelKey, Icon }) => (
             <button
               key={view}
               type="button"
@@ -162,7 +166,14 @@ function PaneHeader({
       onDoubleClick={onHeaderDoubleClick}
     >
       <span className="pane-head-name">
-        {editing ? (
+        {(leaf.view ?? "terminal") === "terminal" ? (
+          <SshConnections
+            paneId={leaf.id}
+            currentTarget={leaf.sshTarget}
+            currentLabel={leaf.sshLabel}
+            localLabel={/^pane \d+$/i.test(leaf.title.trim()) ? undefined : leaf.title}
+          />
+        ) : editing ? (
           <input
             className="pane-head-rename"
             style={{ width: renameWidth }}
@@ -230,6 +241,7 @@ function PaneSlot({
 }) {
   const focused = useStore((s) => activeHtab(s)?.focused === leaf.id);
   const setFocusedPane = useStore((s) => s.setFocusedPane);
+  const setPaneWebUrl = useStore((s) => s.setPaneWebUrl);
   const dropEdge = dropTarget?.id === leaf.id ? dropTarget.edge : null;
 
   useEffect(() => {
@@ -261,11 +273,15 @@ function PaneSlot({
         ) : leaf.view === "monitor" ? (
           <SystemMonitor />
         ) : leaf.view === "web" ? (
-          <WebBrowserPane id={leaf.id} />
+          <WebBrowserPane
+            id={leaf.id}
+            initialUrl={leaf.webUrl}
+            onUrlChange={(url) => setPaneWebUrl(leaf.id, url)}
+          />
         ) : leaf.view === "agent" ? (
           <AgentPane leaf={leaf} />
         ) : (
-          <TerminalPane id={leaf.id} />
+          <TerminalPane id={leaf.id} sshTarget={leaf.sshTarget} />
         )}
         {dropEdge && <div className={`drop-ind drop-ind-${dropEdge}`} />}
       </div>

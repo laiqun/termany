@@ -11,37 +11,73 @@ name: Build and Release
 #   windows-x64  → Termany_X.Y.Z_x64-setup.exe        (NSIS, unsigned)
 #   linux-x64    → Termany_X.Y.Z_amd64.AppImage/.deb  (unsigned)
 #
-# Runs on release tags only (plus manual dispatch) — the macOS jobs bill at
-# 10x and a per-push matrix burned the org's whole free Actions quota. To
-# ship: bump the version, then `git tag v<version> && git push origin v<version>`.
+# Tag pushes build every platform and attach the results to a release. Manual
+# runs can select one platform and upload a test artifact without touching a
+# release — useful for quickly validating a Windows fix without paying for the
+# macOS runners. To ship: bump the version, then
+# `git tag v<version> && git push origin v<version>`.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build (manual test artifact only)
+        required: true
+        default: windows-x64
+        type: choice
+        options:
+          - windows-x64
+          - linux-x64
+          - macos-arm64
+          - macos-x64
+          - all
 
 env:
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: short
 
 jobs:
+  select-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select build matrix
+        id: select
+        shell: bash
+        env:
+          REQUESTED_PLATFORM: ${{ inputs.platform || 'all' }}
+        run: |
+          case "$REQUESTED_PLATFORM" in
+            windows-x64)
+              matrix='{"include":[{"platform":"windows-x64","runner":"windows-latest"}]}'
+              ;;
+            linux-x64)
+              matrix='{"include":[{"platform":"linux-x64","runner":"ubuntu-22.04"}]}'
+              ;;
+            macos-arm64)
+              matrix='{"include":[{"platform":"macos-arm64","runner":"macos-latest"}]}'
+              ;;
+            macos-x64)
+              matrix='{"include":[{"platform":"macos-x64","runner":"macos-15-intel"}]}'
+              ;;
+            all)
+              matrix='{"include":[{"platform":"macos-arm64","runner":"macos-latest"},{"platform":"macos-x64","runner":"macos-15-intel"},{"platform":"windows-x64","runner":"windows-latest"},{"platform":"linux-x64","runner":"ubuntu-22.04"}]}'
+              ;;
+            *)
+              echo "Unsupported platform: $REQUESTED_PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: select-matrix
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # macos-latest is Apple Silicon (arm64).
-          - platform: macos-arm64
-            runner: macos-latest
-          # GitHub's last Intel macOS runner (announced through Aug 2027).
-          # If this label ever disappears, an x86_64 cross-build needs real
-          # work in bundle-server.mjs — don't just swap the label.
-          - platform: macos-x64
-            runner: macos-15-intel
-          - platform: windows-x64
-            runner: windows-latest
-          - platform: linux-x64
-            runner: ubuntu-22.04
+      matrix: ${{ fromJSON(needs.select-matrix.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -118,6 +154,7 @@ jobs:
           rm -f "$CERT_PATH"
 
       - name: Build, bundle & attach to the draft release
+        if: github.event_name == 'push'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -144,3 +181,29 @@ jobs:
           releaseBody: "macOS: download the .dmg for your chip (aarch64 = Apple Silicon, x64 = Intel). Windows: the -setup.exe. Linux: the AppImage."
           releaseDraft: true
           prerelease: false
+
+      - name: Build manual test artifact
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: apps/desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri -- build
+
+      - name: Upload manual test artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Termany-${{ matrix.platform }}-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/desktop/src-tauri/target/release/bundle/deb/*.deb

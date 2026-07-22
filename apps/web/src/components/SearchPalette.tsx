@@ -200,6 +200,10 @@ export function SearchPalette({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  // WebKit fires compositionend BEFORE the keydown that confirmed the IME
+  // text (Chrome fires it after), so on that Enter/Escape `isComposing` is
+  // already false — track the commit ourselves to swallow those keys.
+  const compositionEndedAt = useRef(0);
 
   const actionRows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -287,8 +291,14 @@ export function SearchPalette({
             value={query}
             placeholder={t("search.placeholder")}
             onChange={(e) => setQuery(e.target.value)}
+            onCompositionEnd={(e) => {
+              compositionEndedAt.current = e.timeStamp;
+            }}
             onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing) return;
+              // The 100ms window (same as AgentPane's composer) catches
+              // WebKit's post-compositionend keydown — same key gesture, a few
+              // ms later — without eating a genuine follow-up keypress.
+              if (e.nativeEvent.isComposing || e.timeStamp - compositionEndedAt.current < 100) return;
               if (e.key === "Escape") {
                 onClose();
               } else if (e.key === "ArrowDown") {

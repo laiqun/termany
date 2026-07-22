@@ -1,0 +1,30 @@
+{
+  "$schema": "../../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Termany Dev",
+  "app": {
+    "windows": [
+      {
+        "title": "Termany Dev",
+        "width": 1280,
+        "height": 832,
+        "minWidth": 720,
+        "minHeight": 480,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "dragDropEnabled": true
+      }
+    ]
+  },
+  "bundle": {
+    "icon": [
+      "icons-dev/generated/32x32.png",
+      "icons-dev/generated/128x128.png",
+      "icons-dev/generated/128x128@2x.png",
+      "icons-dev/generated/icon.icns",
+      "icons-dev/generated/icon.ico"
+    ]
+  }
+}
