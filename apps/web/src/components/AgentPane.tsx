@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
-import { useStore, type AgentMessage, type AgentPart, type Pane } from "../state/store";
-import { inheritSessionCwd, queueCommand } from "../terminal/manager";
+import { cwdCandidates, useStore, type AgentMessage, type AgentPart, type Pane } from "../state/store";
+import { queueCommand } from "../terminal/manager";
 import { CheckIcon, ChevronIcon, CopyIcon, FolderIcon, SendIcon, SpinnerIcon, StopIcon, TerminalIcon } from "./icons";
 import { Markdown } from "./Markdown";
 import { PopMenu } from "./PopMenu";
@@ -227,7 +227,7 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
     let live = true;
     const params = new URLSearchParams({ paneId: leaf.id });
     if (leaf.agentCwd) params.set("cwd", leaf.agentCwd);
-    params.set("cwdFrom", leaf.cwdFrom ?? leaf.id);
+    params.set("cwdFrom", cwdCandidates(useStore.getState(), leaf.id).join(","));
     fetch(apiPath(`/api/agent/acp/cwd?${params}`))
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
       .then((data: { cwd: string; home: string; explicit: boolean }) => {
@@ -304,7 +304,7 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
                 paneId: leaf.id,
                 agentId: selectedRuntime,
                 cwd: leaf.agentCwd || undefined,
-                cwdFrom: leaf.cwdFrom ?? leaf.id,
+                cwdFrom: cwdCandidates(useStore.getState(), leaf.id).join(","),
                 prompt: content,
               }
             : {
@@ -413,9 +413,8 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
   /** Run a code block from a reply in a fresh terminal pane, in the same
    *  folder the agent works in (explicit pick first, else the inherited cwd). */
   const runSnippet = (code: string) => {
-    const paneId = addPane("terminal");
+    const paneId = addPane("terminal", undefined, leaf.id);
     if (!paneId) return;
-    if (leaf.cwdFrom) inheritSessionCwd(paneId, leaf.cwdFrom);
     if (leaf.agentCwd) queueCommand(paneId, `cd '${leaf.agentCwd.replace(/'/g, "'\\''")}'`);
     queueCommand(paneId, code);
   };

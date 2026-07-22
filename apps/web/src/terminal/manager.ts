@@ -134,7 +134,6 @@ export type TerminalScrollState = {
 };
 
 const sessions = new Map<string, Session>();
-const pendingCwdFrom = new Map<string, string>();
 const pendingCommands = new Map<string, string[]>();
 const scrollListeners = new Map<string, Set<(state: TerminalScrollState) => void>>();
 
@@ -611,7 +610,7 @@ export function applyTermTheme(theme: ITheme) {
   for (const s of sessions.values()) s.term.options.theme = theme;
 }
 
-function getSession(id: string): Session {
+function getSession(id: string, cwdFrom?: string[]): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
 
@@ -725,10 +724,9 @@ function getSession(id: string): Session {
   const spawnBackend = (): ITerminalBackend =>
     isDemo
       ? new DemoBackend(id)
-      : new WebSocketBackend(WS_URL, { session: id, cwdFrom: pendingCwdFrom.get(id) });
+      : new WebSocketBackend(WS_URL, { session: id, cwdFrom: cwdFrom?.length ? cwdFrom.join(",") : undefined });
 
   const initialBackend = spawnBackend();
-  pendingCwdFrom.delete(id);
   const session: Session = {
     el,
     term,
@@ -961,8 +959,8 @@ function fixAbandonedImeFinalize(term: Terminal) {
 }
 
 /** Attach the session's element into `host` and open the terminal (once). */
-export function attachSession(id: string, host: HTMLElement) {
-  const s = getSession(id);
+export function attachSession(id: string, host: HTMLElement, cwdFrom?: string[]) {
+  const s = getSession(id, cwdFrom);
   host.appendChild(s.el);
   if (!s.opened) {
     s.term.open(s.el); // el is now in the document — renderer initialises correctly
@@ -1103,11 +1101,6 @@ export function onSearchResults(
   if (!s) return () => {};
   const sub = s.search.onDidChangeResults((r) => cb({ index: r.resultIndex, count: r.resultCount }));
   return () => sub.dispose();
-}
-
-/** Ask the server to start a not-yet-created session in another session's cwd. */
-export function inheritSessionCwd(id: string, fromId: string) {
-  if (!sessions.has(id)) pendingCwdFrom.set(id, fromId);
 }
 
 /**
