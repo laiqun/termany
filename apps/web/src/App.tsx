@@ -251,6 +251,10 @@ export function App() {
   // the live binding map.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Keys pressed while an IME is composing aren't commands — without
+      // this, a composition keystroke whose physical code happens to match a
+      // chord would fire that action.
+      if (e.isComposing) return;
       const s = useStore.getState();
       for (const action of ACTIONS) {
         const chord = s.keybindings[action.id] ?? action.default;
