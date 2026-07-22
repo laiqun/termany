@@ -11,7 +11,7 @@ import {
   type TerminalScrollState,
 } from "../terminal/manager";
 import { subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
-import { activeHtab, useStore } from "../state/store";
+import { activeHtab, cwdCandidates, useStore } from "../state/store";
 import { openLocalPathsInSession } from "../terminal/openLocalPath";
 import { ChevronIcon } from "./icons";
 
@@ -71,7 +71,7 @@ export function TerminalPane({ id }: { id: string }) {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    attachSession(id, host);
+    attachSession(id, host, cwdCandidates(useStore.getState(), id));
     const unsubscribeScrollState = subscribeTerminalScrollState(id, setScrollState);
 
     // Coalesce resize bursts (window/split-drag fires RO every frame) to ONE fit

@@ -5,7 +5,7 @@ import {
   loadKeybindings,
   saveKeybindings,
 } from "../keybindings";
-import { disposeSession, inheritSessionCwd } from "../terminal/manager";
+import { disposeSession } from "../terminal/manager";
 import { applyTheme, loadThemeId, THEMES } from "../themes";
 
 /**
@@ -58,9 +58,11 @@ export type Pane =
       id: string;
       title: string;
       view?: PaneView;
-      /** For a files-view leaf created via addPane: whose live cwd the file
-       *  tree should open in, since this leaf has no PTY session of its own
-       *  to resolve a directory from. Unused once the tree is loaded. */
+      /** Directory anchor: the pane whose directory this leaf resolves its
+       *  own from while it has no shell of its own — the file tree's root,
+       *  an agent's working folder and a terminal's first-spawn cwd all
+       *  follow it. Set at creation to the pane the user was coming from;
+       *  anchors form a chain that is walked at spawn (see cwdCandidates). */
       cwdFrom?: string;
       /** Explicit directory root requested by an external action, such as
        *  dropping a folder/file from Finder onto this pane. */
@@ -257,7 +259,7 @@ interface State {
   /** Forget a one-shot dropped file/tree target after it no longer applies. */
   clearPathInPane: (leafId: string) => void;
   /** Split the focused pane, creating a new leaf that opens directly in `view`. */
-  addPane: (view: PaneView, title?: string) => string | null;
+  addPane: (view: PaneView, title?: string, cwdFrom?: string) => string | null;
   /** Close a specific pane; closes the whole tab if it was the last pane. */
   closePane: (leafId: string) => void;
   /** Toggle magnify on a pane (show it alone, filling the tab). */
@@ -296,8 +298,8 @@ const id = () => crypto.randomUUID();
 // Rearranging (movePane) doesn't change the count, so it isn't gated by this.
 const MAX_PANES_PER_TAB = 6;
 
-function makeLeaf(title = "pane 1"): Pane & { kind: "leaf" } {
-  return { kind: "leaf", id: id(), title };
+function makeLeaf(title = "pane 1", cwdFrom?: string): Pane & { kind: "leaf" } {
+  return { kind: "leaf", id: id(), title, cwdFrom };
 }
 
 /** Default pane labels are scoped to a tab and keep increasing even if an
@@ -311,8 +313,8 @@ function nextPaneTitle(layout: Pane): string {
   return `pane ${highest + 1}`;
 }
 
-function makeHTab(n: number): HTab {
-  const leaf = makeLeaf();
+function makeHTab(n: number, cwdFrom?: string): HTab {
+  const leaf = makeLeaf(undefined, cwdFrom);
   return { id: id(), title: `tab ${n}`, layout: leaf, focused: leaf.id };
 }
 
@@ -528,32 +530,26 @@ function setSizesAt(pane: Pane, path: number[], sizes: number[]): Pane {
   };
 }
 
-function makeNode(title: string): TreeNode {
-  const h = makeHTab(1);
+function makeNode(title: string, cwdFrom?: string): TreeNode {
+  const h = makeHTab(1, cwdFrom);
   return { id: id(), title, expanded: true, children: [], htabs: [h], activeHTab: h.id };
 }
 
 /**
- * Which pane's directory a tab "is in" — the one the user last had focused
- * there. A tab has no cwd of its own; only its leaves' shells do.
+ * Which pane's directory a tab "is in" — the focused leaf's own shell, or,
+ * for a shell-less view (files/git/agent), the pane that leaf anchors to.
+ * A tab has no cwd of its own; only its leaves' shells do.
  */
 function tabCwdSource(h: HTab): string {
-  return findLeaf(h.layout, h.focused) ? h.focused : firstLeaf(h.layout);
+  const leaf = findLeaf(h.layout, h.focused);
+  if (!leaf) return firstLeaf(h.layout);
+  return leaf.view && leaf.view !== "terminal" ? (leaf.cwdFrom ?? leaf.id) : leaf.id;
 }
 
 /** Same idea one level up: a page's directory is its active tab's directory. */
 function nodeCwdSource(n: TreeNode): string | undefined {
   const h = n.htabs.find((t) => t.id === n.activeHTab) ?? n.htabs[0];
   return h ? tabCwdSource(h) : undefined;
-}
-
-/**
- * Start `node`'s first shell wherever `source` is, so a freshly created page
- * doesn't drop the user back in their home directory. No-op without a source
- * (a first root page has nothing to inherit from).
- */
-function inheritNodeCwd(node: TreeNode, source: string | undefined) {
-  if (source) inheritSessionCwd(node.htabs[0].focused, source);
 }
 
 function initialWorkspace(title: string): Workspace {
@@ -844,9 +840,9 @@ export const useStore = create<State>((set) => ({
   addRootNode: () =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => {
-        const node = makeNode(`page ${ws.roots.length + 1}`);
-        // Lands after the last root, so that's the page it sits next to.
-        inheritNodeCwd(node, ws.roots.length ? nodeCwdSource(ws.roots[ws.roots.length - 1]) : undefined);
+        // Lands after the last root, so that's the page it opens next to.
+        const source = ws.roots.length ? nodeCwdSource(ws.roots[ws.roots.length - 1]) : undefined;
+        const node = makeNode(`page ${ws.roots.length + 1}`, source);
         return { ...ws, roots: [...ws.roots, node], activeNode: node.id };
       }),
     })),
@@ -854,12 +850,9 @@ export const useStore = create<State>((set) => ({
   addChildNode: (parentId) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => {
-        const child = makeNode("untitled");
-        // Inherit from the sibling it lands next to; the first child of a page
-        // has no sibling, so it follows the parent page instead.
+        // A child page opens where its parent page is.
         const parent = findNode(ws.roots, parentId);
-        const prev = parent?.children[parent.children.length - 1];
-        inheritNodeCwd(child, (prev && nodeCwdSource(prev)) ?? (parent && nodeCwdSource(parent)));
+        const child = makeNode("untitled", parent && nodeCwdSource(parent));
         return { ...ws, roots: insertChild(ws.roots, parentId, child), activeNode: child.id };
       }),
     })),
@@ -992,11 +985,9 @@ export const useStore = create<State>((set) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
         roots: updateNode(ws.roots, ws.activeNode, (n) => {
-          const h = makeHTab(n.htabs.length + 1);
           // Follow the tab the user is coming from — which is also what the
           // page's directory means, so the no-tabs case needs no separate path.
-          const source = nodeCwdSource(n);
-          if (source) inheritSessionCwd(h.focused, source);
+          const h = makeHTab(n.htabs.length + 1, nodeCwdSource(n));
           return { ...n, htabs: [...n.htabs, h], activeHTab: h.id };
         }),
       })),
@@ -1109,8 +1100,7 @@ export const useStore = create<State>((set) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
-            const leaf = makeLeaf(nextPaneTitle(h.layout));
-            inheritSessionCwd(leaf.id, h.focused);
+            const leaf = makeLeaf(nextPaneTitle(h.layout), h.focused);
             return {
               ...h,
               layout: splitPane(h.layout, h.focused, dir, leaf),
@@ -1372,7 +1362,7 @@ export const useStore = create<State>((set) => ({
       })),
     })),
 
-  addPane: (view, title) => {
+  addPane: (view, title, cwdFrom) => {
     let created: string | null = null;
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -1381,16 +1371,14 @@ export const useStore = create<State>((set) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
-            // Non-terminal views that work on a directory follow the pane that
-            // was focused when they were created, because they have no PTY of
-            // their own from which to resolve a live cwd.
+            // Anchor to the pane that was focused at creation (or an explicit
+            // source the caller names), so a directory view knows what to show
+            // and a terminal knows where to spawn.
             const leaf = {
-              ...makeLeaf(title ?? nextPaneTitle(h.layout)),
+              ...makeLeaf(title ?? nextPaneTitle(h.layout), cwdFrom ?? h.focused),
               view,
-              cwdFrom: view === "files" || view === "git" || view === "agent" ? h.focused : undefined,
             };
             created = leaf.id;
-            inheritSessionCwd(leaf.id, h.focused);
             return {
               ...h,
               layout: tileLayout(h.layout, leaf),
@@ -1671,14 +1659,51 @@ export function activeNode(s: State): TreeNode | undefined {
 /**
  * The session a repo-scoped panel (the git diff viewer) should follow. Usually
  * the focused leaf, but a files/git/web leaf has no shell of its own to resolve
- * a directory from — it follows the pane it was created beside, the same anchor
- * the file tree uses.
+ * a directory from — it follows its anchor pane, the same rule tabCwdSource
+ * applies everywhere else.
  */
 export function focusedCwdSession(s: State): string | undefined {
   const h = activeHtab(s);
-  if (!h) return undefined;
-  const leaf = findLeaf(h.layout, h.focused);
-  return leaf?.cwdFrom ?? h.focused;
+  return h ? tabCwdSource(h) : undefined;
+}
+
+/** Find a leaf by id anywhere — anchors can point across pages and workspaces. */
+function findLeafGlobal(s: State, leafId: string): (Pane & { kind: "leaf" }) | undefined {
+  const inNodes = (nodes: TreeNode[]): (Pane & { kind: "leaf" }) | undefined => {
+    for (const n of nodes) {
+      for (const h of n.htabs) {
+        const hit = findLeaf(h.layout, leafId);
+        if (hit) return hit;
+      }
+      const hit = inNodes(n.children);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  for (const ws of s.workspaces) {
+    const hit = inNodes(ws.roots);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/**
+ * Ordered cwd candidates for spawning a shell (or resolving an agent's
+ * folder): the pane itself first — its live shell or last-known directory
+ * always beats inheritance — then its anchor chain. The chain exists because
+ * an anchor may itself never have opened a shell; the server tries each
+ * candidate in turn and uses the first that resolves to a directory.
+ */
+export function cwdCandidates(s: State, leafId: string): string[] {
+  const out = [leafId];
+  const seen = new Set(out);
+  let cur = findLeafGlobal(s, leafId)?.cwdFrom;
+  while (cur && !seen.has(cur) && out.length < 8) {
+    out.push(cur);
+    seen.add(cur);
+    cur = findLeafGlobal(s, cur)?.cwdFrom;
+  }
+  return out;
 }
 
 export function activeHtab(s: State): HTab | undefined {

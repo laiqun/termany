@@ -1192,20 +1192,20 @@ async function sessionCwd(sessionId: string): Promise<string> {
 }
 
 /**
- * Where to start a new shell. A new pane/tab/page inherits its source pane's
- * live cwd (`cwdFrom`); otherwise a restored pane lands in its own last-known
- * directory (persisted by the periodic sweep); failing both, the home directory.
+ * Where to start a new shell. `cwdFrom` is a comma-separated list of session
+ * ids in priority order — the pane itself first, then the anchor chain it was
+ * created from (see cwdCandidates in the web app). For each candidate a live
+ * PTY's cwd wins, then its swept directory; the chain exists because an
+ * anchor may never have opened a shell of its own. Failing all of that, a
+ * restored pane lands in its own last-known directory; failing that, home.
  */
 async function resolveSpawnCwd(cwdFrom: string | null, sessionId: string | null): Promise<string> {
   const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
-  if (cwdFrom) {
-    const source = ptySessions.get(cwdFrom)?.pty;
-    const live = await dirIfValid(source ? await cwdForPid(source.pid) : undefined);
+  for (const source of (cwdFrom ?? "").split(",").filter(Boolean).slice(0, 8)) {
+    const pty = ptySessions.get(source)?.pty;
+    const live = await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined);
     if (live) return live;
-    // A new tab or page inherits from a pane the user may not have opened this
-    // run, so there's no PTY to read a live cwd from. Its swept directory is
-    // the next best thing — without this the inheritance silently lands in home.
-    const remembered = await dirIfValid(getSessionCwd(cwdFrom) ?? undefined);
+    const remembered = await dirIfValid(getSessionCwd(source) ?? undefined);
     if (remembered) return remembered;
   }
   if (sessionId) {
