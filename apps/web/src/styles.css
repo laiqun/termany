@@ -5029,6 +5029,15 @@ html.tauri #root {
   flex-shrink: 0;
   color: var(--fg-dim);
 }
+/* Ties the compare picker to its meaning; pulled toward the select so the
+   pair reads as one control despite the toolbar's gap. */
+.gd-vs {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: -4px;
+  color: var(--fg-dim);
+}
 .gd-summary {
   display: flex;
   align-items: center;

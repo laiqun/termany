@@ -1041,15 +1041,23 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Changed files (plus branch list) for the repo containing the focused pane's
-  // cwd. With no `base` this is the working tree split into staged/unstaged/
-  // untracked; with one it is "what this branch changes vs that branch",
+  // Changed files (plus branch and worktree lists) for the repo containing the
+  // focused pane's cwd, or for `worktree` when the panel has been pointed at a
+  // sibling one. An absent `base` lets the server pick the compare; an empty
+  // one is the user asking for the working tree split into staged/unstaged/
+  // untracked; a named one is "what this branch changes vs that branch",
   // measured from their merge base. Returns { repo: false } rather than an
   // error when the directory isn't in a repo — an empty state, not a failure.
   if (req.method === "GET" && reqUrl.pathname === "/api/git/overview") {
     (async () => {
       const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
-      json(200, await gitOverview(cwd, reqUrl.searchParams.get("base") ?? undefined));
+      json(
+        200,
+        await gitOverview(cwd, {
+          base: reqUrl.searchParams.get("base") ?? undefined,
+          worktree: reqUrl.searchParams.get("worktree") ?? undefined,
+        }),
+      );
     })().catch(fail);
     return;
   }
@@ -1066,6 +1074,7 @@ const http = createServer((req, res) => {
           diffs: await gitDiffs({
             cwd,
             base: body?.base ? String(body.base) : undefined,
+            worktree: body?.worktree ? String(body.worktree) : undefined,
             files: files.map((f: any) => ({
               path: String(f?.path ?? ""),
               oldPath: f?.oldPath ? String(f.oldPath) : undefined,
