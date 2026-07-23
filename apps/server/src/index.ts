@@ -7,10 +7,11 @@ setGlobalDispatcher(new EnvHttpProxyAgent());
 import { spawn } from "node-pty";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AgentActivityTracker } from "./agentActivity.js";
 import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
@@ -384,6 +385,44 @@ const ptySessions = new Map<string, PtySession>();
 // always sends one) get no restore/reattach semantics: killed on disconnect,
 // same as every session used to behave before reattach existed.
 const ephemeralSessions = new Set<PtySession>();
+const activityStreams = new Set<ServerResponse>();
+const activityInstance = `${process.pid}-${Date.now().toString(36)}`;
+let activityRevision = 0;
+const activityTracker = new AgentActivityTracker({ onChange: activityChanged });
+
+function activityPayload() {
+  return {
+    instance: activityInstance,
+    revision: activityRevision,
+    activities: activityTracker.snapshot(),
+  };
+}
+
+function activityEvent(): string {
+  return `event: activity\ndata: ${JSON.stringify(activityPayload())}\n\n`;
+}
+
+function activityChanged(): void {
+  activityRevision++;
+  const event = activityEvent();
+  for (const stream of activityStreams) {
+    try {
+      stream.write(event);
+    } catch {
+      activityStreams.delete(stream);
+    }
+  }
+}
+
+setInterval(() => {
+  for (const stream of activityStreams) {
+    try {
+      stream.write(": keepalive\n\n");
+    } catch {
+      activityStreams.delete(stream);
+    }
+  }
+}, 20_000).unref();
 
 function isOpen(ws: WebSocket | null): ws is WebSocket {
   return !!ws && ws.readyState === ws.OPEN;
@@ -394,6 +433,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
   session.pty.onData((data) => {
     if (isOpen(session.ws)) session.ws.send(data);
     ringAppend(session.ring, data);
+    if (id) activityTracker.noteOutput(id, data);
     if (IS_WIN) trackOscCwd(session.pty.pid, data);
   });
   session.pty.onExit(({ exitCode, signal }) => {
@@ -413,6 +453,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
       session.ws.close();
     }
     if (id) {
+      activityTracker.noteExit(id, exitCode, signal);
       // Natural exit — flush final history so it still restores as plain
       // scrollback (cwd/history stay in the DB; only /api/forget wipes them).
       if (session.ring.dirty) {
@@ -431,6 +472,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
 
 /** Kill a session's live process (if any), preserving its restore history. */
 function killSession(id: string): void {
+  activityTracker.remove(id);
   const session = ptySessions.get(id);
   if (!session) return;
   if (session.ring.dirty) {
@@ -507,6 +549,108 @@ const http = createServer((req, res) => {
     json(500, { error: msg });
   };
   const reqUrl = new URL(req.url ?? "/", "http://localhost");
+
+  // Agent activity is server-owned so every app window reads the same state.
+  // SSE pushes complete snapshots, making reconnects self-healing instead of
+  // relying on a fragile sequence of individual transitions.
+  if (req.method === "GET" && reqUrl.pathname === "/api/activity") {
+    json(200, activityPayload());
+    return;
+  }
+  if (req.method === "GET" && reqUrl.pathname === "/api/activity/events") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    });
+    activityStreams.add(res);
+    res.write("retry: 1000\n");
+    res.write(activityEvent());
+    res.on("close", () => activityStreams.delete(res));
+    res.on("error", () => activityStreams.delete(res));
+    return;
+  }
+  if (req.method === "POST" && reqUrl.pathname === "/api/activity/register") {
+    readJson(req)
+      .then((body) => {
+        const id = typeof body?.id === "string" ? body.id.trim() : "";
+        if (!id || id.length > 256) {
+          json(400, { error: "session id is required" });
+          return;
+        }
+        // Completion is accepted only through the epoch-checked report route.
+        activityTracker.register(
+          id,
+          body?.agent ? String(body.agent) : undefined,
+          "working",
+        );
+        json(200, { ok: true, ...activityPayload() });
+      })
+      .catch(fail);
+    return;
+  }
+  if (req.method === "POST" && reqUrl.pathname === "/api/activity/ack") {
+    readJson(req)
+      .then((body) => {
+        const items = Array.isArray(body?.items)
+          ? body.items
+              .slice(0, 1_000)
+              .map((item: unknown) => {
+                if (!item || typeof item !== "object") return null;
+                const raw = item as Record<string, unknown>;
+                const id = typeof raw.id === "string" ? raw.id.trim() : "";
+                const taskEpoch = Number(raw.taskEpoch);
+                if (
+                  !id ||
+                  id.length > 256 ||
+                  !Number.isSafeInteger(taskEpoch) ||
+                  taskEpoch <= 0
+                ) {
+                  return null;
+                }
+                return { id, taskEpoch };
+              })
+              .filter(
+                (
+                  item,
+                ): item is { id: string; taskEpoch: number } => item !== null,
+              )
+          : [];
+        activityTracker.acknowledge(items);
+        json(200, { ok: true, ...activityPayload() });
+      })
+      .catch(fail);
+    return;
+  }
+  if (req.method === "POST" && reqUrl.pathname === "/api/activity/report") {
+    readJson(req)
+      .then((body) => {
+        const id = typeof body?.id === "string" ? body.id.trim() : "";
+        const taskEpoch = Number(body?.taskEpoch);
+        const status = body?.status === undefined ? "done" : body.status;
+        if (
+          !id ||
+          id.length > 256 ||
+          !Number.isSafeInteger(taskEpoch) ||
+          taskEpoch <= 0 ||
+          (status !== "done" && status !== "error") ||
+          typeof body?.agentActive !== "boolean"
+        ) {
+          json(400, {
+            error: "valid session id, task epoch, and agent state are required",
+          });
+          return;
+        }
+        if (status === "error") {
+          activityTracker.reportBlocked(id, taskEpoch);
+        } else {
+          activityTracker.reportIdle(id, taskEpoch, body.agentActive);
+        }
+        json(200, { ok: true, ...activityPayload() });
+      })
+      .catch(fail);
+    return;
+  }
 
   // Model-provider settings (keys stored server-side, masked on read).
   if (req.method === "GET" && req.url === "/api/models") {
@@ -1302,12 +1446,14 @@ wss.on("connection", async (ws: WebSocket, req) => {
   const url = new URL(req.url ?? "/", "ws://localhost");
   const sessionId = url.searchParams.get("session");
   const sshTarget = url.searchParams.get("ssh");
+  const agent = url.searchParams.get("agent") ?? undefined;
 
   // --- Reattach: the session's shell is still running (detached or stolen
   // from a stale connection) — resume it instead of spawning a fresh one.
   const existing = sessionId ? ptySessions.get(sessionId) : undefined;
   if (existing && existing.sshTarget === sshTarget) {
     console.log(`[termany] client #${cid} reattached to session ${sessionId} (pid ${existing.pty.pid})`);
+    activityTracker.bindAgent(sessionId!, agent);
     if (existing.ws && existing.ws !== ws) {
       try {
         existing.ws.close();
@@ -1325,7 +1471,10 @@ wss.on("connection", async (ws: WebSocket, req) => {
       } catch {
         return;
       }
-      if (msg.type === "input") existing.pty.write(msg.data);
+      if (msg.type === "input") {
+        activityTracker.noteInput(sessionId!, msg.data, agent);
+        existing.pty.write(msg.data);
+      }
       else if (msg.type === "resize") {
         try {
           existing.pty.resize(Math.max(1, msg.cols), Math.max(1, msg.rows));
@@ -1369,6 +1518,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
       return;
     }
     if (msg.type === "input") {
+      if (sessionId) activityTracker.noteInput(sessionId, msg.data, agent);
       session.pty.write(msg.data);
     } else if (msg.type === "resize") {
       try {
@@ -1463,6 +1613,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
   };
   if (sessionId) ptySessions.set(sessionId, session);
   else ephemeralSessions.add(session);
+  if (sessionId) activityTracker.bindAgent(sessionId, agent);
   wireSession(sessionId ?? undefined, session);
 
   pendingMessages.splice(0).forEach(applyClientMessage);

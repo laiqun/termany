@@ -4,15 +4,18 @@ import { useI18n } from "../i18n";
 import { withShortcut } from "../keybindings";
 import { activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
 import {
-  aggregateAgentActivity,
+  acknowledgeAgentActivities,
+  agentActivitySummary,
   agentActivitySnapshot,
   agentActivityTitle,
   subscribeAgentActivity,
+  type AgentActivityStatus,
 } from "../terminal/manager";
 import { ChevronIcon, CloseIcon, CollapseAllIcon, PageIcon, PlusIcon } from "./icons";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 const DRAG_MIME = "application/x-termany-node";
+const ACTIVITY_STATUSES = ["working", "done", "error"] as const;
 type TreeDropPos = "into" | "before" | "after";
 type NodeDragUi = { id: string; targetId: string | null; pos: TreeDropPos | null; overTree: boolean };
 
@@ -58,7 +61,11 @@ function TreeItem({
   const activeDropPos = pointerDropPos ?? dropPos;
 
   const hasChildren = node.children.length > 0;
-  const activity = aggregateAgentActivity(subtreeLeafIds(node));
+  const allLeafIds = subtreeLeafIds(node);
+  const viewedLeafIds = node.htabs
+    .filter((tab) => tab.id === node.activeHTab)
+    .flatMap((tab) => paneLeafIds(tab.layout));
+  const activity = agentActivitySummary(allLeafIds);
 
   return (
     <>
@@ -77,6 +84,7 @@ function TreeItem({
             return;
           }
           setActiveNode(node.id);
+          acknowledgeAgentActivities(viewedLeafIds);
         }}
         onPointerDown={(e) => {
           if (!editing) onNodePointerDown(node.id, e);
@@ -192,13 +200,25 @@ function TreeItem({
             {node.htabs.length}
           </span>
         )}
-        {activity && (
-          <span
-            className={`agent-dot ${activity.status}`}
-            title={agentActivityTitle(activity)}
-            aria-label={agentActivityTitle(activity)}
-          />
-        )}
+        {ACTIVITY_STATUSES.map((status: AgentActivityStatus) => {
+          const count = activity[status];
+          if (!count) return null;
+          const label = `${agentActivityTitle({
+            status,
+            updatedAt: 0,
+          })} (${count})`;
+          return (
+            <span
+              key={status}
+              className="tree-count activity-count"
+              title={label}
+              aria-label={label}
+            >
+              <span className={`agent-dot ${status}`} />
+              {count}
+            </span>
+          );
+        })}
       </div>
 
       {node.expanded &&

@@ -118,6 +118,11 @@ const dictionaries: Record<Language, Record<string, string>> = {
     "agents.runtimeModelsTermany": "Use Termany models (coming soon)",
     "agents.openTerminal": "Open in terminal",
 
+    "activity.genericAgent": "AI assistant",
+    "activity.error": "{agent} needs attention",
+    "activity.done": "{agent} finished",
+    "activity.working": "{agent} is working",
+
     "agentChat.title": "What can I do for you?",
     "agentChat.placeholder": "Assign a task or ask anything",
     "agentChat.noModel": "Add a model in Settings to start a conversation",
@@ -597,6 +602,11 @@ const dictionaries: Record<Language, Record<string, string>> = {
     "agents.runtimeModelsAgent": "由 Agent 管理",
     "agents.runtimeModelsTermany": "使用 Termany 模型（即将支持）",
     "agents.openTerminal": "在终端中打开",
+
+    "activity.genericAgent": "AI 助手",
+    "activity.error": "{agent} 需要你处理",
+    "activity.done": "{agent} 已经完成",
+    "activity.working": "{agent} 正在处理",
 
     "agentChat.title": "有什么可以帮你的？",
     "agentChat.placeholder": "交给我一个任务，或问我任何问题",
