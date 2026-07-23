@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
-import { ChevronIcon, GitBranchIcon, RefreshIcon } from "./icons";
+import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
 export type Section = "staged" | "unstaged" | "untracked" | "changed";
@@ -17,6 +17,14 @@ interface GitRow {
   isDir?: boolean;
 }
 
+interface GitWorktree {
+  path: string;
+  name: string;
+  branch: string;
+  main: boolean;
+  files: number;
+}
+
 type Overview =
   | { repo: false }
   | {
@@ -27,6 +35,7 @@ type Overview =
       refs: string[];
       rows: GitRow[];
       overflow?: boolean;
+      worktrees?: GitWorktree[];
     };
 
 interface DiffPayload {
@@ -37,6 +46,14 @@ interface DiffPayload {
 
 /** Sentinel for "no base ref" in the compare picker, which needs a string. */
 const WORKING_TREE = "";
+/**
+ * `null` for either selection means "server's choice": no worktree pins the
+ * panel to whichever one the terminal is in, and no base lets the server pick
+ * the fork a linked worktree should be measured from. Both become a real value
+ * the moment the user picks one, and the request then always carries it — an
+ * absent parameter and an empty one mean different things to the endpoint.
+ */
+type Auto = null;
 
 /**
  * How much diff to open on arrival. Budgeting by LINES rather than by file
@@ -106,7 +123,8 @@ export function parseDiff(diff: string): DiffLine[] {
 const rowKey = (r: GitRow) => `${r.section}:${r.path}`;
 
 interface CachedView {
-  base: string;
+  base: string | Auto;
+  worktree: string | Auto;
   collapsed: Record<string, boolean>;
   diffs: Record<string, DiffPayload>;
   overview: Overview | null | undefined;
@@ -131,7 +149,8 @@ function remember(viewId: string, patch: Partial<CachedView>) {
     viewCache.delete(viewCache.keys().next().value as string);
   }
   viewCache.set(viewId, {
-    base: WORKING_TREE,
+    base: null,
+    worktree: null,
     collapsed: {},
     diffs: {},
     overview: undefined,
@@ -236,7 +255,8 @@ export function GitDiffView({
   const { t } = useI18n();
   const cached = viewCache.get(viewId);
   const [overview, setOverview] = useState<Overview | null | undefined>(cached?.overview);
-  const [base, setBase] = useState(cached?.base ?? WORKING_TREE);
+  const [base, setBase] = useState<string | Auto>(cached?.base ?? null);
+  const [worktree, setWorktree] = useState<string | Auto>(cached?.worktree ?? null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(cached?.collapsed ?? {});
   const [diffs, setDiffs] = useState<Record<string, DiffPayload>>(cached?.diffs ?? {});
   const filesRef = useRef<HTMLDivElement>(null);
@@ -248,7 +268,8 @@ export function GitDiffView({
   const load = useCallback(async () => {
     try {
       const params = new URLSearchParams({ session });
-      if (base) params.set("base", base);
+      if (base !== null) params.set("base", base);
+      if (worktree !== null) params.set("worktree", worktree);
       const r = await fetch(apiPath(`/api/git/overview?${params}`));
       if (!r.ok) throw new Error(String(r.status));
       setOverview((await r.json()) as Overview);
@@ -256,7 +277,7 @@ export function GitDiffView({
     } catch {
       setOverview(null);
     }
-  }, [session, base]);
+  }, [session, base, worktree]);
 
   useEffect(() => {
     load();
@@ -270,8 +291,29 @@ export function GitDiffView({
   }, [load]);
 
   useEffect(() => {
-    remember(viewId, { overview, base, collapsed, diffs });
-  }, [viewId, overview, base, collapsed, diffs]);
+    remember(viewId, { overview, base, worktree, collapsed, diffs });
+  }, [viewId, overview, base, worktree, collapsed, diffs]);
+
+  /**
+   * The compare actually in force: the user's pick, else whatever the server
+   * chose for this worktree. Everything downstream — the picker's value, the
+   * diff request, the section label — reads this rather than `base`, so an
+   * auto-picked fork behaves exactly like one the user selected.
+   */
+  const shownBase = base ?? (overview?.repo ? overview.base ?? WORKING_TREE : WORKING_TREE);
+
+  /**
+   * Point the panel at another worktree. The compare goes back to automatic
+   * because a fork branch is per-worktree, and the diff bodies are dropped
+   * because they are keyed by section and path, which say nothing about which
+   * worktree they were read from.
+   */
+  const selectWorktree = useCallback((next: string) => {
+    setWorktree(next);
+    setBase(null);
+    setCollapsed({});
+    setDiffs({});
+  }, []);
 
   // Restore before paint so a remount (zen, drag to another tab) doesn't flash
   // at the top of the file before jumping back.
@@ -326,7 +368,8 @@ export function GitDiffView({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             session,
-            base: base || undefined,
+            base: shownBase || undefined,
+            worktree: overview?.repo ? overview.root : undefined,
             files: expandedRows.map((row) => ({
               path: row.path,
               oldPath: row.oldPath,
@@ -347,12 +390,12 @@ export function GitDiffView({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revision, expandedKeys, session, base]);
+  }, [revision, expandedKeys, session, shownBase]);
 
   const groups = useMemo(() => {
     const order: Section[] = ["changed", "staged", "unstaged", "untracked"];
     const labels: Record<Section, string> = {
-      changed: t("gitdiff.changedVs", { base }),
+      changed: t("gitdiff.changedVs", { base: shownBase }),
       staged: t("gitdiff.staged"),
       unstaged: t("gitdiff.unstaged"),
       untracked: t("gitdiff.untracked"),
@@ -360,7 +403,7 @@ export function GitDiffView({
     return order
       .map((section) => ({ section, label: labels[section], rows: rows.filter((r) => r.section === section) }))
       .filter((g) => g.rows.length > 0);
-  }, [rows, t, base]);
+  }, [rows, t, shownBase]);
 
   const totals = useMemo(
     () =>
@@ -375,8 +418,21 @@ export function GitDiffView({
     const refs = overview && overview.repo ? overview.refs : [];
     return [
       { value: WORKING_TREE, label: t("gitdiff.workingTree") },
-      ...refs.map((r) => ({ value: r, label: t("gitdiff.vsRef", { ref: r }) })),
+      ...refs.map((r) => ({ value: r, label: r })),
     ];
+  }, [overview, t]);
+
+  // The directory name is the identity here, not the branch: an agent's
+  // worktree is announced by its directory ("wobbly-shimmying-rose"), and the
+  // toolbar already names the selected one's branch. The count marks where an
+  // agent has actually been working.
+  const worktreeOptions = useMemo(() => {
+    const list = overview?.repo === true ? overview.worktrees ?? [] : [];
+    return list.map((w) => ({
+      value: w.path,
+      label:
+        (w.main ? t("gitdiff.mainWorktree") : w.name) + (w.files > 0 ? ` · ${w.files}` : ""),
+    }));
   }, [overview, t]);
 
   return (
@@ -388,7 +444,21 @@ export function GitDiffView({
         </span>
         {overview && overview.repo && (
           <>
-            <UsageSelect value={base} options={refOptions} onChange={setBase} width={200} />
+            {worktreeOptions.length > 1 && (
+              <UsageSelect
+                value={overview.root}
+                options={worktreeOptions}
+                onChange={selectWorktree}
+                width={170}
+              />
+            )}
+            {/* A fixed marker rather than a per-option "Compare with X" prefix:
+                the target's name is the only thing that varies, so it is the
+                only thing the control shows. */}
+            <span className="gd-vs" title={t("gitdiff.compareWith")}>
+              <GitCompareIcon />
+            </span>
+            <UsageSelect value={shownBase} options={refOptions} onChange={setBase} width={180} />
             {rows.length > 0 && (
               <span className="gd-summary">
                 {t("gitdiff.summary", { files: rows.length })}
@@ -407,7 +477,9 @@ export function GitDiffView({
       {overview === null && <div className="gd-empty">{t("gitdiff.error")}</div>}
       {overview?.repo === false && <div className="gd-empty">{t("gitdiff.noRepo")}</div>}
       {overview?.repo === true && rows.length === 0 && (
-        <div className="gd-empty">{base ? t("gitdiff.sameAs", { base }) : t("gitdiff.clean")}</div>
+        <div className="gd-empty">
+          {shownBase ? t("gitdiff.sameAs", { base: shownBase }) : t("gitdiff.clean")}
+        </div>
       )}
 
       {overview?.repo === true && rows.length > 0 && (

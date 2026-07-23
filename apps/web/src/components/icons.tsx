@@ -18,6 +18,7 @@ import {
   FolderOpen,
   FolderTree,
   GitBranch,
+  GitCompareArrows,
   Globe,
   History,
   ExternalLink,
@@ -209,6 +210,11 @@ export function SpinnerIcon() {
 /** Branch glyph — the git diff viewer. */
 export function GitBranchIcon() {
   return <GitBranch {...base} />;
+}
+
+/** Marks the git diff panel's compare-target picker. */
+export function GitCompareIcon() {
+  return <GitCompareArrows {...base} />;
 }
 
 /** Pulse line — the system CPU/memory monitor. */
