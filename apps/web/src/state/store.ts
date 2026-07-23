@@ -1353,12 +1353,7 @@ export const useStore = create<State>((set) => ({
                   ? { ...p, view: "files", filesRoot: root, filesSelected: selectedFile }
                   : p
                 : { ...p, children: p.children.map(open) };
-            return {
-              ...h,
-              layout: open(h.layout),
-              focused: leafId,
-              maximized: selectedFile ? leafId : undefined,
-            };
+            return { ...h, layout: open(h.layout), focused: leafId };
           }),
         })),
       })),
