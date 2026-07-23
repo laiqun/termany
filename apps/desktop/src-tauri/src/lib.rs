@@ -554,6 +554,136 @@ fn focus_main_window(app_handle: &tauri::AppHandle) {
     }
 }
 
+/// Quake-style summon: hide when the window has focus, otherwise bring it up.
+/// The focus check (not just visibility) matters — when the window is merely
+/// behind another app, the hotkey should raise it, not hide it.
+fn toggle_main_window(app_handle: &tauri::AppHandle) {
+    let Some(window) = app_handle.get_webview_window("main") else {
+        return;
+    };
+    let focused = window.is_focused().unwrap_or(false);
+    let visible = window.is_visible().unwrap_or(false);
+    let minimized = window.is_minimized().unwrap_or(false);
+    if visible && focused && !minimized {
+        // Hide the whole app on macOS, not just the window: focus then falls
+        // back to the previously active app, so the user can keep typing where
+        // they were — the iTerm2 hotkey-window behaviour.
+        #[cfg(target_os = "macos")]
+        let _ = app_handle.hide();
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.hide();
+    } else {
+        #[cfg(target_os = "macos")]
+        let _ = app_handle.show();
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The currently registered summon shortcut ("alt+Backquote"-style plugin
+/// syntax), if any. Kept in sync with the config file by the command below.
+#[cfg(desktop)]
+struct ToggleShortcutState(Mutex<Option<String>>);
+
+#[cfg(desktop)]
+fn toggle_shortcut_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("window-toggle-shortcut.json"))
+}
+
+#[cfg(desktop)]
+fn load_toggle_shortcut(app: &tauri::AppHandle) -> Option<String> {
+    let raw = std::fs::read_to_string(toggle_shortcut_file(app)?).ok()?;
+    serde_json::from_str::<Option<String>>(&raw).ok().flatten()
+}
+
+#[cfg(desktop)]
+fn save_toggle_shortcut(app: &tauri::AppHandle, shortcut: &Option<String>) {
+    let Some(path) = toggle_shortcut_file(app) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(json) = serde_json::to_string(shortcut) else {
+        return;
+    };
+    if let Err(error) = std::fs::write(&path, json) {
+        log::warn!("[termany] could not persist window toggle shortcut: {error}");
+    }
+}
+
+/// (Un)register the OS-wide summon hotkey; `None` disables it. Failures (bad
+/// syntax, or the chord is already claimed as another app's global hotkey)
+/// come back as a String so the settings UI can show them — an unregistrable
+/// shortcut must never fail silently.
+#[cfg(desktop)]
+fn apply_toggle_shortcut(app: &tauri::AppHandle, shortcut: Option<String>) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+    let state = app.state::<ToggleShortcutState>();
+    let previous = state
+        .0
+        .lock()
+        .map_err(|_| "shortcut state poisoned".to_string())?
+        .take();
+    if let Some(previous) = previous {
+        if let Ok(parsed) = previous.parse::<Shortcut>() {
+            let _ = app.global_shortcut().unregister(parsed);
+        }
+    }
+    let Some(next) = shortcut else {
+        return Ok(());
+    };
+    let parsed: Shortcut = next.parse().map_err(|e| format!("{next}: {e}"))?;
+    app.global_shortcut()
+        .on_shortcut(parsed, |app_handle, _shortcut, event| {
+            // The plugin reports press and release separately; only act on
+            // press, or every tap would toggle twice.
+            if event.state == ShortcutState::Pressed {
+                toggle_main_window(app_handle);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    *state
+        .0
+        .lock()
+        .map_err(|_| "shortcut state poisoned".to_string())? = Some(next);
+    Ok(())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn get_window_toggle_shortcut(state: tauri::State<'_, ToggleShortcutState>) -> Option<String> {
+    state.0.lock().ok().and_then(|guard| guard.clone())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+fn get_window_toggle_shortcut() -> Option<String> {
+    None
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn set_window_toggle_shortcut(
+    app: tauri::AppHandle,
+    shortcut: Option<String>,
+) -> Result<(), String> {
+    apply_toggle_shortcut(&app, shortcut.clone())?;
+    save_toggle_shortcut(&app, &shortcut);
+    Ok(())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+fn set_window_toggle_shortcut(_shortcut: Option<String>) -> Result<(), String> {
+    Err("window toggle shortcut is desktop-only".into())
+}
+
 #[cfg(target_os = "windows")]
 fn install_windows_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::MenuBuilder;
@@ -693,7 +823,9 @@ pub fn run() {
             stop_server,
             frontend_ready_for_open_paths,
             webview_history,
-            confirm_quit
+            confirm_quit,
+            get_window_toggle_shortcut,
+            set_window_toggle_shortcut
         ])
         // Intercept the main window's close request before the webview is
         // destroyed. Waiting until RunEvent::ExitRequested is too late on
@@ -718,7 +850,8 @@ pub fn run() {
     {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
-            .plugin(tauri_plugin_process::init());
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build());
     }
     builder
         .setup(|app| {
@@ -793,6 +926,21 @@ pub fn run() {
                         }
                     }
                 });
+            }
+
+            #[cfg(desktop)]
+            {
+                app.manage(ToggleShortcutState(Mutex::new(None)));
+                if let Some(saved) = load_toggle_shortcut(app.handle()) {
+                    // Failure here (e.g. another app grabbed the chord since
+                    // last run) must not block launch; the settings row lets
+                    // the user re-register and see the error.
+                    if let Err(error) = apply_toggle_shortcut(app.handle(), Some(saved.clone())) {
+                        log::warn!(
+                            "[termany] could not register window toggle shortcut {saved}: {error}"
+                        );
+                    }
+                }
             }
 
             if !cfg!(debug_assertions) {
@@ -873,6 +1021,27 @@ mod tests {
             parse_pid_lines(b"1234\r\n 5678 \r\nName\r\n\r\n"),
             vec!["1234", "5678"]
         );
+    }
+
+    /// The settings UI builds shortcut strings in windowToggle.ts
+    /// (chordToGlobalShortcut): lowercase modifier names joined with "+",
+    /// then a W3C KeyboardEvent.code. This pins the cross-language contract
+    /// with the global-shortcut plugin's parser.
+    #[cfg(desktop)]
+    #[test]
+    fn parses_the_frontend_shortcut_syntax() {
+        use tauri_plugin_global_shortcut::Shortcut;
+        for s in [
+            "alt+Backquote",                 // macOS suggestion
+            "super+Backquote",               // Windows suggestion
+            "control+alt+Backquote",         // Linux suggestion
+            "control+alt+shift+super+Space", // every modifier at once
+            "F5",                            // bare key, no modifier
+            "shift+Digit5",
+            "control+KeyT",
+        ] {
+            assert!(s.parse::<Shortcut>().is_ok(), "should parse: {s}");
+        }
     }
 
     #[test]
