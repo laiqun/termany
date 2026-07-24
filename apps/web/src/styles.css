@@ -1149,6 +1149,20 @@ html.tauri #root {
   margin-left: 2px;
   flex-shrink: 0;
 }
+.activity-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.htab .activity-count {
+  padding-inline: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-dot.working {
+    animation: none;
+  }
+}
 .tree-act {
   display: flex;
   align-items: center;

@@ -5,9 +5,14 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { loadAgentConfigs } from "../agents";
 import { apiUrl } from "../api";
 import { DemoBackend, demoInteracted, isDemo } from "../demo";
 import { ACTIONS, loadKeybindings, matchChord } from "../keybindings";
+import {
+  agentConfirmationPromptVisible,
+  agentInputPromptVisible,
+} from "./agentActivityPrompt";
 import { registerLocalPathLinks } from "./localLinks";
 import { registerWebLinks } from "./webLinks";
 
@@ -46,6 +51,8 @@ export interface Session {
   /** Start a replacement backend after an ended remote session is selected. */
   restart?: () => void;
   connectionState?: "connecting" | "connected" | "disconnected";
+  /** Increments for every PTY output chunk, including in-place TUI redraws. */
+  contentVersion: number;
 }
 
 /**
@@ -210,19 +217,33 @@ export type AgentActivityStatus = "working" | "done" | "error";
 
 export type AgentActivity = {
   status: AgentActivityStatus;
-  agent?: "claude" | "codex" | "fastclaw";
+  agent?: string;
   updatedAt: number;
+  taskEpoch: number;
 };
 
 const agentActivities = new Map<string, AgentActivity>();
 const agentActivityListeners = new Set<() => void>();
 const agentSessionKinds = new Map<string, AgentActivity["agent"]>();
+let agentActivitySource: EventSource | null = null;
+let agentActivityInstance = "";
+let agentActivityRevision = -1;
+const retiredAgentActivityInstances = new Set<string>();
+const agentIdleTimers = new Map<string, number>();
+const agentIdleReports = new Map<string, number>();
+const agentSawAlternateScreen = new Set<string>();
+const agentReportedInactiveEpochs = new Map<string, number>();
+const agentTaskStartScreens = new Map<
+  string,
+  { taskEpoch: number; screen: string; contentVersion: number }
+>();
+const terminalInputSendChains = new Map<string, Promise<void>>();
+const commandSendChains = new Map<string, Promise<void>>();
 
 const AGENT_RE = /\b(OpenAI Codex|Codex CLI|Claude Code|FastClaw)\b|Use \/skills|\/model to change|bypass permissions/i;
 const CODEX_RE = /\b(OpenAI Codex|Codex CLI)\b/i;
 const CLAUDE_RE = /\bClaude Code\b/i;
 const FASTCLAW_RE = /\bFastClaw\b/i;
-const AGENT_COMMAND_RE = /^\s*(claude|codex|fastclaw)(?:\s|$)/i;
 const ERROR_RE =
   /\b(error|failed|failure|exception|fatal|panic|permission denied|timed out|rate limit|quota|authentication|unauthorized|forbidden|command not found)\b/i;
 const BENIGN_ERROR_RE = /\b(no errors?|0 errors?|without errors?)\b/i;
@@ -232,64 +253,163 @@ const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|build
 const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
 const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
 const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
-// Matches ONE row that tuiInputPromptVisible() has already stripped of box
-// chrome. These markers are used by both known agents and otherwise unknown
-// chat-style TUIs, so image paste support does not depend on a vendor list.
-const TUI_INPUT_PROMPT_RE = /^[›>](?:\s|$)/;
-// Vertical box-drawing edges + padding around that row. Chat TUIs draw their
-// input inside a border, so the raw row reads "│ › fix a bug in @file      │".
-const BOX_CHROME_RE = /^[\s│┃┆┊╎╏|]+|[\s│┃┆┊╎╏|]+$/g;
-// How many non-empty rows up from the bottom to search for the input row. It is
-// rarely the last one — a bottom border and a hint line ("? for shortcuts")
-// usually sit below it.
-const TUI_PROMPT_SCAN_ROWS = 6;
-const DONE_ACTIVITY_TTL_MS = 30_000;
-const ERROR_ACTIVITY_TTL_MS = 5 * 60_000;
-const WORKING_ACTIVITY_STALE_MS = 2 * 60_000;
-let agentActivityPruneTimer: number | null = null;
+const AGENT_BUSY_SCREEN_RE =
+  /\b(?:esc|ctrl(?:\+|-)?c)\s+to\s+(?:interrupt|cancel|stop)\b|^[\s│┃┆┊╎╏|]*[•●◦✳✻⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:working|thinking|running|executing|editing|applying|building|testing|installing|searching|reading)\b/im;
+const AGENT_IDLE_CONFIRM_MS = 200;
+const AGENT_REGISTER_TIMEOUT_MS = 2_000;
 
 function notifyAgentActivity() {
   for (const listener of agentActivityListeners) listener();
 }
 
-function pruneExpiredAgentActivities() {
-  const now = Date.now();
-  let changed = false;
-  for (const [id, activity] of agentActivities) {
-    const ttl =
-      activity.status === "done"
-        ? DONE_ACTIVITY_TTL_MS
-        : activity.status === "error"
-          ? ERROR_ACTIVITY_TTL_MS
-          : WORKING_ACTIVITY_STALE_MS;
-    if (ttl && now - activity.updatedAt >= ttl) {
-      agentActivities.delete(id);
-      changed = true;
-    }
-  }
-  if (changed) notifyAgentActivity();
-  scheduleAgentActivityPrune();
+function clearAgentIdleTimer(id: string) {
+  const timer = agentIdleTimers.get(id);
+  if (timer !== undefined) window.clearTimeout(timer);
+  agentIdleTimers.delete(id);
 }
 
-function scheduleAgentActivityPrune() {
-  if (agentActivityPruneTimer !== null) {
-    window.clearTimeout(agentActivityPruneTimer);
-    agentActivityPruneTimer = null;
+function applyAgentActivityPayload(payload: any) {
+  if (!payload?.activities || typeof payload.activities !== "object") return;
+  if (
+    typeof payload.instance === "string" &&
+    Number.isFinite(Number(payload.revision))
+  ) {
+    const revision = Number(payload.revision);
+    if (
+      payload.instance === agentActivityInstance &&
+      revision < agentActivityRevision
+    ) {
+      return;
+    }
+    if (payload.instance !== agentActivityInstance) {
+      if (retiredAgentActivityInstances.has(payload.instance)) return;
+      if (agentActivityInstance) {
+        retiredAgentActivityInstances.add(agentActivityInstance);
+        if (retiredAgentActivityInstances.size > 8) {
+          retiredAgentActivityInstances.delete(
+            retiredAgentActivityInstances.values().next().value!,
+          );
+        }
+      }
+      agentActivityInstance = payload.instance;
+    }
+    agentActivityRevision = revision;
   }
-  let nextDelay = Infinity;
-  const now = Date.now();
-  for (const activity of agentActivities.values()) {
-    const ttl =
-      activity.status === "done"
-        ? DONE_ACTIVITY_TTL_MS
-        : activity.status === "error"
-          ? ERROR_ACTIVITY_TTL_MS
-          : WORKING_ACTIVITY_STALE_MS;
-    if (!ttl) continue;
-    nextDelay = Math.min(nextDelay, Math.max(0, ttl - (now - activity.updatedAt)));
+
+  const next = new Map<string, AgentActivity>();
+  for (const [id, value] of Object.entries(payload.activities)) {
+    if (!value || typeof value !== "object") continue;
+    const raw = value as Record<string, unknown>;
+    if (
+      raw.status !== "working" &&
+      raw.status !== "done" &&
+      raw.status !== "error"
+    ) {
+      continue;
+    }
+    const taskEpoch = Number(raw.taskEpoch);
+    if (!Number.isSafeInteger(taskEpoch) || taskEpoch <= 0) continue;
+    const agent =
+      typeof raw.agent === "string" && raw.agent.trim()
+        ? raw.agent.trim()
+        : undefined;
+    const updatedAt = Number(raw.updatedAt);
+    next.set(id, {
+      status: raw.status,
+      agent,
+      updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now(),
+      taskEpoch,
+    });
+    if (agent) agentSessionKinds.set(id, agent);
   }
-  if (Number.isFinite(nextDelay)) {
-    agentActivityPruneTimer = window.setTimeout(pruneExpiredAgentActivities, nextDelay + 25);
+
+  const before = [...agentActivities.entries()]
+    .map(
+      ([id, activity]) =>
+        `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`,
+    )
+    .join("|");
+  const after = [...next.entries()]
+    .map(
+      ([id, activity]) =>
+        `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`,
+    )
+    .join("|");
+  if (before === after) {
+    for (const [id, activity] of next) {
+      if (activity.status === "working" || activity.status === "done") {
+        completeAgentActivityIfIdle(id);
+      }
+    }
+    return;
+  }
+
+  for (const [id, previous] of agentActivities) {
+    const current = next.get(id);
+    if (
+      !current ||
+      current.status !== "working" ||
+      current.taskEpoch !== previous.taskEpoch
+    ) {
+      clearAgentIdleTimer(id);
+    }
+  }
+  agentActivities.clear();
+  for (const [id, activity] of next) agentActivities.set(id, activity);
+  notifyAgentActivity();
+  for (const [id, activity] of next) {
+    if (activity.status === "working" || activity.status === "done") {
+      completeAgentActivityIfIdle(id);
+    }
+  }
+}
+
+function ensureAgentActivitySync() {
+  if (isDemo || agentActivitySource) return;
+  void fetch(`${apiUrl()}/api/activity`)
+    .then(async (response) => {
+      if (response.ok) applyAgentActivityPayload(await readJsonResponse(response));
+    })
+    .catch(() => {});
+  if (typeof EventSource === "undefined") return;
+  const source = new EventSource(`${apiUrl()}/api/activity/events`);
+  source.addEventListener("activity", (event) => {
+    try {
+      applyAgentActivityPayload(
+        JSON.parse((event as MessageEvent<string>).data),
+      );
+    } catch {
+      /* the next event is another complete snapshot */
+    }
+  });
+  source.onerror = () => {};
+  agentActivitySource = source;
+}
+
+async function registerRemoteAgentActivity(
+  id: string,
+  agent: string,
+): Promise<boolean> {
+  if (isDemo) return true;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    AGENT_REGISTER_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch(`${apiUrl()}/api/activity/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, agent }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return false;
+    applyAgentActivityPayload(await readJsonResponse(response));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 
@@ -308,42 +428,205 @@ function detectAgent(text: string): AgentActivity["agent"] | undefined {
   return undefined;
 }
 
-function setAgentActivity(id: string, status: AgentActivityStatus, agent?: AgentActivity["agent"]) {
+function setAgentActivity(
+  id: string,
+  status: AgentActivityStatus,
+  agent?: AgentActivity["agent"],
+  taskEpoch?: number,
+) {
   const prev = agentActivities.get(id);
   if (agent) agentSessionKinds.set(id, agent);
   const next = {
     status,
     agent: agent ?? prev?.agent,
     updatedAt: Date.now(),
+    taskEpoch:
+      taskEpoch ??
+      (status === "working" && prev?.status !== "working"
+        ? (prev?.taskEpoch ?? 0) + 1
+        : prev?.taskEpoch ?? 1),
   };
-  if (prev && prev.status === next.status && prev.agent === next.agent && Date.now() - prev.updatedAt < 1000) {
+  if (
+    prev &&
+    prev.status === next.status &&
+    prev.agent === next.agent &&
+    prev.taskEpoch === next.taskEpoch &&
+    Date.now() - prev.updatedAt < 1000
+  ) {
     return;
   }
   agentActivities.set(id, next);
   notifyAgentActivity();
-  scheduleAgentActivityPrune();
 }
 
-function visibleScreenLooksIdle(id: string): boolean {
+function startLocalAgentActivity(
+  id: string,
+  agent?: AgentActivity["agent"],
+) {
+  const nextEpoch = (agentActivities.get(id)?.taskEpoch ?? 0) + 1;
+  const session = sessions.get(id);
+  clearAgentIdleTimer(id);
+  agentIdleReports.delete(id);
+  agentSawAlternateScreen.delete(id);
+  if (session?.term.buffer.active.type === "alternate") {
+    agentSawAlternateScreen.add(id);
+  }
+  agentReportedInactiveEpochs.delete(id);
+  agentTaskStartScreens.set(id, {
+    taskEpoch: nextEpoch,
+    screen: sessionVisibleText(id),
+    contentVersion: session?.contentVersion ?? 0,
+  });
+  setAgentActivity(id, "working", agent, nextEpoch);
+}
+
+type RenderedAgentTransition = {
+  status: Extract<AgentActivityStatus, "done" | "error">;
+  agentActive: boolean;
+};
+
+function visibleScreenActivityTransition(
+  id: string,
+): RenderedAgentTransition | null {
+  const session = sessions.get(id);
+  if (!session) return null;
   const text = sessionVisibleText(id);
-  if (!text.trim()) return false;
+  if (!text.trim()) return null;
+  if (session.term.buffer.active.type === "alternate") {
+    agentSawAlternateScreen.add(id);
+  }
+  if (agentConfirmationPromptVisible(text, sessionCursorLine(id))) {
+    return { status: "error", agentActive: true };
+  }
+  const busyTail = text
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim())
+    .slice(-12)
+    .join("\n");
+  if (AGENT_BUSY_SCREEN_RE.test(busyTail)) return null;
+  if (agentInputPromptVisible(text)) {
+    return { status: "done", agentActive: true };
+  }
   const tail = text
     .split("\n")
     .map((line) => line.trimEnd())
     .filter((line) => line.trim())
     .slice(-4)
     .join("\n");
-  return AGENT_IDLE_PROMPT_RE.test(tail) || SHELL_PROMPT_RE.test(tail);
+  if (
+    session.term.buffer.active.type === "normal" &&
+    agentSawAlternateScreen.has(id) &&
+    SHELL_PROMPT_RE.test(tail)
+  ) {
+    return { status: "done", agentActive: false };
+  }
+  return null;
 }
 
 function completeAgentActivityIfIdle(id: string) {
   const activity = agentActivities.get(id);
-  if (activity?.status === "working" && visibleScreenLooksIdle(id)) {
-    setAgentActivity(id, "done", activity.agent);
+  const session = sessions.get(id);
+  if (
+    !activity ||
+    !session ||
+    (activity.status !== "working" && activity.status !== "done")
+  ) {
+    clearAgentIdleTimer(id);
+    return;
   }
+  const transition = visibleScreenActivityTransition(id);
+  const start = agentTaskStartScreens.get(id);
+  if (
+    activity.status === "working" &&
+    start?.taskEpoch === activity.taskEpoch &&
+    start.screen === sessionVisibleText(id) &&
+    start.contentVersion === session.contentVersion
+  ) {
+    clearAgentIdleTimer(id);
+    return;
+  }
+  if (
+    activity.status === "done" &&
+    (transition?.status !== "done" ||
+      transition.agentActive ||
+      agentReportedInactiveEpochs.get(id) === activity.taskEpoch)
+  ) {
+    clearAgentIdleTimer(id);
+    return;
+  }
+  if (!transition) {
+    clearAgentIdleTimer(id);
+    return;
+  }
+  if (
+    agentIdleTimers.has(id) ||
+    agentIdleReports.get(id) === activity.taskEpoch
+  ) {
+    return;
+  }
+
+  const observedEpoch = activity.taskEpoch;
+  const observedStatus = transition.status;
+  agentIdleTimers.set(
+    id,
+    window.setTimeout(async () => {
+      agentIdleTimers.delete(id);
+      const latest = agentActivities.get(id);
+      const confirmed = visibleScreenActivityTransition(id);
+      if (
+        !latest ||
+        (latest.status !== "working" && latest.status !== "done") ||
+        latest.taskEpoch !== observedEpoch ||
+        !confirmed ||
+        confirmed.status !== observedStatus ||
+        (latest.status === "done" &&
+          (confirmed.status !== "done" || confirmed.agentActive))
+      ) {
+        return;
+      }
+      if (isDemo) {
+        if (latest.status === "working") {
+          setAgentActivity(
+            id,
+            confirmed.status,
+            latest.agent,
+            observedEpoch,
+          );
+        }
+        return;
+      }
+      agentIdleReports.set(id, observedEpoch);
+      try {
+        const response = await fetch(`${apiUrl()}/api/activity/report`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id,
+            taskEpoch: observedEpoch,
+            status: confirmed.status,
+            agentActive: confirmed.agentActive,
+          }),
+        });
+        if (response.ok) {
+          if (confirmed.status === "done" && !confirmed.agentActive) {
+            agentReportedInactiveEpochs.set(id, observedEpoch);
+          }
+          applyAgentActivityPayload(await readJsonResponse(response));
+        }
+      } catch {
+        // A later terminal write or SSE event will try the observation again.
+      } finally {
+        if (agentIdleReports.get(id) === observedEpoch) {
+          agentIdleReports.delete(id);
+        }
+      }
+    }, AGENT_IDLE_CONFIRM_MS),
+  );
 }
 
 function updateAgentActivityFromOutput(id: string, data: string) {
+  if (!isDemo) return;
   const text = stripTerminalControls(data);
   if (!text.trim()) return;
   const prev = agentActivities.get(id);
@@ -369,16 +652,76 @@ function updateAgentActivityFromOutput(id: string, data: string) {
 }
 
 function noteAgentInput(id: string, data: string) {
+  clearAgentIdleTimer(id);
+  agentIdleReports.delete(id);
+  if (!isDemo) return;
   if (!data.includes("\r")) return;
   const session = sessions.get(id);
   if (!session) return;
   if (agentActivities.has(id) || AGENT_RE.test(sessionVisibleText(id))) {
-    setAgentActivity(id, "working");
+    startLocalAgentActivity(id);
   }
+}
+
+function submittedAgentForTerminalInput(
+  id: string,
+  data: string,
+): string | undefined {
+  if (isDemo || !data.includes("\r")) return undefined;
+  const visible = sessionVisibleText(id);
+  if (
+    !agentInputPromptVisible(visible) &&
+    !agentConfirmationPromptVisible(visible, sessionCursorLine(id))
+  ) {
+    return undefined;
+  }
+  return (
+    agentActivities.get(id)?.agent ??
+    agentSessionKinds.get(id) ??
+    detectAgent(visible)
+  );
+}
+
+function writeTerminalInput(id: string, session: Session, data: string) {
+  const agent = submittedAgentForTerminalInput(id, data);
+  const previous = terminalInputSendChains.get(id);
+  if (!agent && !previous) {
+    session.backend.write(data);
+    return;
+  }
+
+  // Yellow appears immediately, while the server registration remains ordered
+  // before Enter so a fast completion cannot be overwritten by a late start.
+  if (agent) startLocalAgentActivity(id, agent);
+  const run = (previous ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      if (agent) {
+        await registerRemoteAgentActivity(id, agent);
+        const registered = agentActivities.get(id);
+        if (registered?.status === "working") {
+          clearAgentIdleTimer(id);
+          agentTaskStartScreens.set(id, {
+            taskEpoch: registered.taskEpoch,
+            screen: sessionVisibleText(id),
+            contentVersion: session.contentVersion,
+          });
+        }
+      }
+      if (sessions.get(id) === session) session.backend.write(data);
+    });
+  terminalInputSendChains.set(id, run);
+  const cleanup = () => {
+    if (terminalInputSendChains.get(id) === run) {
+      terminalInputSendChains.delete(id);
+    }
+  };
+  void run.then(cleanup, cleanup);
 }
 
 export function subscribeAgentActivity(listener: () => void): () => void {
   agentActivityListeners.add(listener);
+  ensureAgentActivitySync();
   return () => agentActivityListeners.delete(listener);
 }
 
@@ -386,7 +729,9 @@ export function agentActivitySnapshot(ids: string[]): string {
   return ids.map((id) => {
     id = activeSessionId(id);
     const activity = agentActivities.get(id);
-    return activity ? `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}` : `${id}:`;
+    return activity
+      ? `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`
+      : `${id}:`;
   }).join("|");
 }
 
@@ -407,18 +752,56 @@ export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
   return best;
 }
 
-export function agentActivityTitle(activity: AgentActivity): string {
-  const who =
-    activity.agent === "claude"
-      ? "Claude"
-      : activity.agent === "codex"
-        ? "Codex"
-        : activity.agent === "fastclaw"
-          ? "FastClaw"
-          : "Agent";
-  if (activity.status === "error") return `${who} reported an error`;
-  if (activity.status === "done") return `${who} completed`;
-  return `${who} is working`;
+export type AgentActivitySummary = Record<AgentActivityStatus, number>;
+
+export function agentActivitySummary(ids: string[]): AgentActivitySummary {
+  const summary: AgentActivitySummary = { working: 0, done: 0, error: 0 };
+  for (const id of new Set(ids)) {
+    const activity = agentActivities.get(activeSessionId(id));
+    if (activity) summary[activity.status]++;
+  }
+  return summary;
+}
+
+export function acknowledgeAgentActivities(ids: string[]) {
+  const items = [...new Set(ids.map(activeSessionId))].flatMap((id) => {
+    const activity = agentActivities.get(id);
+    return activity?.status === "done"
+      ? [{ id, taskEpoch: activity.taskEpoch }]
+      : [];
+  });
+  if (!items.length) return;
+  if (isDemo) {
+    for (const { id, taskEpoch } of items) {
+      if (agentActivities.get(id)?.taskEpoch === taskEpoch) {
+        agentActivities.delete(id);
+      }
+    }
+    notifyAgentActivity();
+    return;
+  }
+  fetch(`${apiUrl()}/api/activity/ack`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  })
+    .then(async (response) => {
+      if (response.ok) {
+        applyAgentActivityPayload(await readJsonResponse(response));
+      }
+    })
+    .catch(() => {});
+}
+
+export function agentActivityTitle(
+  activity: Pick<AgentActivity, "status" | "agent" | "updatedAt">,
+): string {
+  const language = getLanguage();
+  const agent = activity.agent
+    ? loadAgentConfigs().find((config) => config.id === activity.agent)?.name ??
+      activity.agent
+    : translate(language, "activity.genericAgent");
+  return translate(language, `activity.${activity.status}`, { agent });
 }
 
 /**
@@ -825,6 +1208,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     restartAttempts: 0,
     ended: false,
     connectionState: sshTarget ? "connecting" : undefined,
+    contentVersion: 0,
   };
   sessions.set(id, session);
   if (sshTarget) notifyConnectionStatus();
@@ -835,6 +1219,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
         session.connectionState = "connected";
         notifyConnectionStatus();
       }
+      session.contentVersion++;
       updateAgentActivityFromOutput(id, data);
       if (replaying) {
         pendingOutput.push(data);
@@ -900,7 +1285,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       return;
     }
     noteAgentInput(id, data);
-    session.backend.write(data);
+    writeTerminalInput(id, session, data);
   });
 
   // Select-to-copy only after an actual selection gesture. The old listener
@@ -1294,22 +1679,61 @@ export function onSearchResults(
   return () => sub.dispose();
 }
 
+function configuredAgentForCommand(command: string) {
+  const inputs = command
+    .split(/\s*(?:&&|;)\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return loadAgentConfigs()
+    .filter((agent) => agent.command.trim())
+    .sort((a, b) => b.command.trim().length - a.command.trim().length)
+    .find((agent) => {
+      const configured = agent.command.trim();
+      return inputs.some(
+        (input) =>
+          input === configured ||
+          (input.startsWith(configured) &&
+            /^\s/.test(input.slice(configured.length))),
+      );
+    });
+}
+
+async function performSendCommand(id: string, command: string): Promise<void> {
+  const session = sessions.get(id);
+  if (!session) return;
+  const agent = configuredAgentForCommand(command);
+  if (agent) {
+    agentSessionKinds.set(id, agent.id);
+    startLocalAgentActivity(id, agent.id);
+    // Register before the command can emit a completion transition.
+    await registerRemoteAgentActivity(id, agent.id);
+    if (sessions.get(id) !== session) return;
+  }
+  clearAgentIdleTimer(id);
+  session.backend.write(`${command}\r`);
+}
+
 /**
  * Type a command into the session's shell and press Enter, as if the user
- * had. Used to `cd` an existing terminal to wherever the file tree navigated
- * to when switching back from it — a no-op (and safe) if `id` has no live
- * session yet, same as clearSession above.
+ * had. Agent launch commands register yellow before they can produce output.
  */
-export function sendCommand(id: string, command: string) {
+export function sendCommand(id: string, command: string): Promise<void> {
   id = activeSessionId(id);
-  const agent = AGENT_COMMAND_RE.exec(command)?.[1]?.toLowerCase() as AgentActivity["agent"] | undefined;
-  if (agent) setAgentActivity(id, "working", agent);
-  sessions.get(id)?.backend.write(`${command}\r`);
+  const previous = commandSendChains.get(id) ?? Promise.resolve();
+  const run = previous
+    .catch(() => {})
+    .then(() => performSendCommand(id, command));
+  commandSendChains.set(id, run);
+  const cleanup = () => {
+    if (commandSendChains.get(id) === run) commandSendChains.delete(id);
+  };
+  void run.then(cleanup, cleanup);
+  return run;
 }
 
 export function queueCommand(id: string, command: string) {
   if (sessions.has(activeSessionId(id))) {
-    sendCommand(id, command);
+    void sendCommand(id, command);
     return;
   }
   pendingCommands.set(id, [...(pendingCommands.get(id) ?? []), command]);
@@ -1341,25 +1765,7 @@ export function sessionLooksLikeAgentInput(id: string): boolean {
   // Some chat TUIs (FastClaw included) deliberately stay in the normal
   // buffer. Recognize their visible input row directly instead of requiring
   // the command or product name to be registered with Termany.
-  return tuiInputPromptVisible(visible);
-}
-
-/**
- * Does the visible screen show a chat-style TUI input line?
- *
- * Scans the last few NON-EMPTY rows (the same shape as visibleScreenLooksIdle)
- * instead of anchoring to the end of the text. An agent CLI wraps its input in
- * a box and parks a bottom border plus a hint line under it, so the prompt is
- * almost never the final character of the screen — an end-anchored match found
- * it only in the degenerate case, which is why pasting an image at a Codex
- * prompt fell through to the "no TUI input prompt" branch.
- */
-function tuiInputPromptVisible(visible: string): boolean {
-  const rows = visible
-    .split("\n")
-    .map((line) => line.replace(BOX_CHROME_RE, ""))
-    .filter(Boolean);
-  return rows.slice(-TUI_PROMPT_SCAN_ROWS).some((row) => TUI_INPUT_PROMPT_RE.test(row));
+  return agentInputPromptVisible(visible);
 }
 
 function sessionVisibleText(id: string): string {
@@ -1375,15 +1781,35 @@ function sessionVisibleText(id: string): string {
   return lines.join("\n");
 }
 
+function sessionCursorLine(id: string): string {
+  const session = sessions.get(id);
+  if (!session) return "";
+  const buf = session.term.buffer.active;
+  return (
+    buf
+      .getLine(buf.baseY + buf.cursorY)
+      ?.translateToString(true)
+      .trimEnd() ?? ""
+  );
+}
+
 /** Permanently destroy a session — only when the user closes the pane/tab. */
 export function disposeSession(id: string) {
   const s = sessions.get(id);
-  if (!s) return;
-  s.backend.dispose();
-  s.term.dispose();
-  s.el.remove();
-  sessions.delete(id);
+  if (s) {
+    s.backend.dispose();
+    s.term.dispose();
+    s.el.remove();
+    sessions.delete(id);
+  }
   notifyConnectionStatus();
+  clearAgentIdleTimer(id);
+  agentIdleReports.delete(id);
+  agentSawAlternateScreen.delete(id);
+  agentReportedInactiveEpochs.delete(id);
+  agentTaskStartScreens.delete(id);
+  terminalInputSendChains.delete(id);
+  commandSendChains.delete(id);
   if (agentActivities.delete(id)) notifyAgentActivity();
   agentSessionKinds.delete(id);
   restoreSnapshots.delete(id);
@@ -1411,6 +1837,13 @@ export function disposePaneSessions(paneId: string) {
       sessions.delete(id);
     }
     restoreSnapshots.delete(id);
+    clearAgentIdleTimer(id);
+    agentIdleReports.delete(id);
+    agentSawAlternateScreen.delete(id);
+    agentReportedInactiveEpochs.delete(id);
+    agentTaskStartScreens.delete(id);
+    terminalInputSendChains.delete(id);
+    commandSendChains.delete(id);
     if (agentActivities.delete(id)) notifyAgentActivity();
     agentSessionKinds.delete(id);
   }
