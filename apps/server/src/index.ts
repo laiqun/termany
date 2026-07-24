@@ -1223,6 +1223,70 @@ async function cwdForPid(pid: number): Promise<string | undefined> {
   return oscCwdByPid.get(pid);
 }
 
+/**
+ * Foreground processes whose cwd should override the shell's when spawning a
+ * new pane. Deliberately a short allowlist: agent CLIs like `claude -w` chdir
+ * into a git worktree while the shell stays in the original checkout, and a
+ * split should land in the worktree. Arbitrary programs are excluded because
+ * some chdir to places the user wouldn't want a pane in (`make -C`, installers
+ * working out of a temp dir).
+ */
+const FG_CWD_PROCS = new Set(["claude"]);
+
+/**
+ * Pid of the pane's foreground process group, when it isn't the shell itself.
+ */
+async function foregroundPid(shellPid: number): Promise<number | undefined> {
+  try {
+    let tpgid: number | undefined;
+    if (os.platform() === "linux") {
+      const stat = await fs.promises.readFile(`/proc/${shellPid}/stat`, "utf8");
+      tpgid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[5]);
+    } else if (os.platform() === "darwin") {
+      const { stdout } = await execFileAsync("ps", ["-o", "tpgid=", "-p", String(shellPid)], {
+        timeout: 1000,
+        maxBuffer: 4096,
+      });
+      tpgid = Number(stdout.trim());
+    }
+    if (tpgid && Number.isFinite(tpgid) && tpgid > 0 && tpgid !== shellPid) return tpgid;
+  } catch {
+    /* no tty / process gone — treat as no foreground process */
+  }
+  return undefined;
+}
+
+async function commForPid(pid: number): Promise<string | undefined> {
+  try {
+    if (os.platform() === "linux") {
+      return (await fs.promises.readFile(`/proc/${pid}/comm`, "utf8")).trim();
+    }
+    if (os.platform() === "darwin") {
+      const { stdout } = await execFileAsync("ps", ["-o", "comm=", "-p", String(pid)], {
+        timeout: 1000,
+        maxBuffer: 4096,
+      });
+      return stdout.trim();
+    }
+  } catch {
+    /* process gone */
+  }
+  return undefined;
+}
+
+/** A pane's live cwd: an allowlisted foreground process's directory wins over the shell's. */
+async function paneCwd(shellPid: number): Promise<string | undefined> {
+  const fg = await foregroundPid(shellPid);
+  if (fg) {
+    const comm = await commForPid(fg);
+    if (comm && FG_CWD_PROCS.has(path.basename(comm))) {
+      const fgDir = await cwdForPid(fg);
+      if (fgDir) return fgDir;
+    }
+  }
+  return cwdForPid(shellPid);
+}
+
 /** Return `dir` if it's an existing directory, else undefined. */
 async function dirIfValid(dir: string | undefined): Promise<string | undefined> {
   if (!dir) return undefined;
@@ -1254,12 +1318,23 @@ async function sessionCwd(sessionId: string): Promise<string> {
  * PTY's cwd wins, then its swept directory; the chain exists because an
  * anchor may never have opened a shell of its own. Failing all of that, a
  * restored pane lands in its own last-known directory; failing that, home.
+ *
+ * `followForeground` lets a live candidate's allowlisted foreground process
+ * override its shell (splitting off a pane running `claude -w` lands in the
+ * worktree). Terminal panes opt in; ACP agents don't — a second agent must
+ * not move into a worktree owned by a claude session that will clean it up.
  */
-async function resolveSpawnCwd(cwdFrom: string | null, sessionId: string | null): Promise<string> {
+async function resolveSpawnCwd(
+  cwdFrom: string | null,
+  sessionId: string | null,
+  followForeground = false,
+): Promise<string> {
   const fallback = os.homedir() || process.env.USERPROFILE || process.env.HOME || process.cwd();
   for (const source of (cwdFrom ?? "").split(",").filter(Boolean).slice(0, 8)) {
     const pty = ptySessions.get(source)?.pty;
-    const live = await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined);
+    const live = await dirIfValid(
+      pty ? await (followForeground ? paneCwd(pty.pid) : cwdForPid(pty.pid)) : undefined,
+    );
     if (live) return live;
     const remembered = await dirIfValid(getSessionCwd(source) ?? undefined);
     if (remembered) return remembered;
@@ -1431,7 +1506,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
     return;
   }
 
-  const cwd = await resolveSpawnCwd(url.searchParams.get("cwdFrom"), sessionId);
+  const cwd = await resolveSpawnCwd(url.searchParams.get("cwdFrom"), sessionId, true);
   if (closed) return;
 
   let pty: ReturnType<typeof spawn>;
