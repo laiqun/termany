@@ -3436,21 +3436,6 @@ html.tauri #root {
   color: var(--fg);
   font-size: 13px;
 }
-.language-setting select {
-  min-width: 180px;
-  height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  outline: none;
-}
-.language-setting select:focus-visible {
-  border-color: var(--accent);
-}
 
 /* Agent settings */
 .agent-settings-head {
@@ -3628,9 +3613,6 @@ html.tauri #root {
   font: inherit;
   font-family: var(--mono);
   font-size: 13px;
-}
-.agent-field select {
-  appearance: auto;
 }
 .agent-field input:focus,
 .agent-field select:focus {
@@ -5275,6 +5257,20 @@ html.tauri #root {
 }
 .ms-field select:focus {
   border-color: var(--accent);
+}
+/* Native selects still used in Settings (default model, provider/agent forms):
+   drop the OS chrome so the closed control matches the theme on every
+   platform — macOS WebView otherwise draws its own widget, which clashes with
+   dark themes. The chevron is redrawn since appearance:none removes it. Keep
+   this after the rules above: their `background:` shorthand would reset it. */
+.ms-select,
+.ms-field select,
+.agent-field select {
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 .ms-form-note {
   margin-bottom: 6px;

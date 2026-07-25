@@ -27,23 +27,26 @@ export function UsageSelect({
     const onClick = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
+    // Capture on `window` so Escape closes just the menu, firing before any
+    // modal's own document-level Escape handler (e.g. Settings) can close the
+    // whole overlay.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
     window.addEventListener("click", onClick);
-    return () => window.removeEventListener("click", onClick);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("click", onClick);
+      window.removeEventListener("keydown", onKey, true);
+    };
   }, [open]);
 
   return (
-    <div
-      className="usage-select"
-      ref={ref}
-      style={{ width }}
-      onKeyDown={(e) => {
-        // Swallow Escape while open so it closes the menu, not the whole modal.
-        if (e.key === "Escape" && open) {
-          e.stopPropagation();
-          setOpen(false);
-        }
-      }}
-    >
+    <div className="usage-select" ref={ref} style={{ width }}>
       <button
         className={`usage-select-btn ${open ? "open" : ""}`}
         title={current?.label}

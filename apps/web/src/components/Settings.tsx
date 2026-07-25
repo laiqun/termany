@@ -17,6 +17,7 @@ import { AgentSettings } from "./AgentSettings";
 import { CloseIcon, ExternalOpenIcon, GearIcon, RevealFolderIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
+import { UsageSelect } from "./Select";
 
 /** Where users get more custom themes (the folder below is populated from it). */
 const THEMES_SITE = "https://codexthemes.ai/themes";
@@ -208,16 +209,20 @@ export function Settings({
           {section === "general" && (
             <>
               <div className="settings-section-title">{t("settings.language.title")}</div>
-              <label className="language-setting">
+              <div className="language-setting">
                 <span>{t("settings.language.label")}</span>
-                <select
+                {/* Custom select — the native popup can't be themed and looks
+                    out of place in the desktop (WKWebView) build. */}
+                <UsageSelect
                   value={language}
-                  onChange={(e) => setLanguage(e.target.value as Language)}
-                >
-                  <option value="en">{t("settings.language.en")}</option>
-                  <option value="zh-CN">{t("settings.language.zh")}</option>
-                </select>
-              </label>
+                  width={200}
+                  options={[
+                    { value: "en", label: t("settings.language.en") },
+                    { value: "zh-CN", label: t("settings.language.zh") },
+                  ]}
+                  onChange={(v) => setLanguage(v as Language)}
+                />
+              </div>
             </>
           )}
           {section === "appearance" && (
