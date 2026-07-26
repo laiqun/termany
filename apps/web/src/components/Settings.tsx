@@ -1,5 +1,5 @@
 import { Bot, Brain, Info, Keyboard, Palette } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { apiPath } from "../api";
 import { isTauri } from "../env";
 import { useI18n, type Language } from "../i18n";
@@ -17,6 +17,7 @@ import { AgentSettings } from "./AgentSettings";
 import { CloseIcon, ExternalOpenIcon, GearIcon, RevealFolderIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
+import { UsageSelect } from "./Select";
 
 /** Where users get more custom themes (the folder below is populated from it). */
 const THEMES_SITE = "https://codexthemes.ai/themes";
@@ -32,6 +33,16 @@ const ABOUT_LINKS = [
 ] as const;
 
 export type SettingsSection = "general" | "appearance" | "models" | "agents" | "keyboard" | "about";
+
+/** Left-nav entries, in display order. Labels come from i18n (settings.<id>). */
+const NAV_SECTIONS: { id: SettingsSection; icon: ReactNode }[] = [
+  { id: "general", icon: <GearIcon /> },
+  { id: "appearance", icon: <Palette size={16} /> },
+  { id: "models", icon: <Brain size={16} /> },
+  { id: "agents", icon: <Bot size={16} /> },
+  { id: "keyboard", icon: <Keyboard size={16} /> },
+  { id: "about", icon: <Info size={16} /> },
+];
 
 /**
  * App-wide settings, shown as an in-app overlay (works in both web and the
@@ -178,60 +189,17 @@ export function Settings({
         onClick={(e) => e.stopPropagation()}
       >
         <aside className="settings-nav">
-          <div
-            className={`settings-nav-item ${section === "general" ? "active" : ""}`}
-            onClick={() => goto("general")}
-          >
-            <span className="settings-nav-icon">
-              <GearIcon />
-            </span>{" "}
-            {t("settings.general")}
-          </div>
-          <div
-            className={`settings-nav-item ${section === "appearance" ? "active" : ""}`}
-            onClick={() => goto("appearance")}
-          >
-            <span className="settings-nav-icon">
-              <Palette size={18} />
-            </span>{" "}
-            {t("settings.appearance")}
-          </div>
-          <div
-            className={`settings-nav-item ${section === "models" ? "active" : ""}`}
-            onClick={() => goto("models")}
-          >
-            <span className="settings-nav-icon">
-              <Brain size={18} />
-            </span>{" "}
-            {t("settings.models")}
-          </div>
-          <div
-            className={`settings-nav-item ${section === "agents" ? "active" : ""}`}
-            onClick={() => goto("agents")}
-          >
-            <span className="settings-nav-icon">
-              <Bot size={18} />
-            </span>{" "}
-            {t("settings.agents")}
-          </div>
-          <div
-            className={`settings-nav-item ${section === "keyboard" ? "active" : ""}`}
-            onClick={() => goto("keyboard")}
-          >
-            <span className="settings-nav-icon">
-              <Keyboard size={18} />
-            </span>{" "}
-            {t("settings.keyboard")}
-          </div>
-          <div
-            className={`settings-nav-item ${section === "about" ? "active" : ""}`}
-            onClick={() => goto("about")}
-          >
-            <span className="settings-nav-icon">
-              <Info size={18} />
-            </span>{" "}
-            {t("settings.about")}
-          </div>
+          <div className="settings-nav-title">{t("settings.title")}</div>
+          {NAV_SECTIONS.map(({ id, icon }) => (
+            <div
+              key={id}
+              className={`settings-nav-item ${section === id ? "active" : ""}`}
+              onClick={() => goto(id)}
+            >
+              <span className="settings-nav-icon">{icon}</span>
+              {t(`settings.${id}`)}
+            </div>
+          ))}
         </aside>
 
         <div className="settings-body">
@@ -241,16 +209,20 @@ export function Settings({
           {section === "general" && (
             <>
               <div className="settings-section-title">{t("settings.language.title")}</div>
-              <label className="language-setting">
+              <div className="language-setting">
                 <span>{t("settings.language.label")}</span>
-                <select
+                {/* Custom select — the native popup can't be themed and looks
+                    out of place in the desktop (WKWebView) build. */}
+                <UsageSelect
                   value={language}
-                  onChange={(e) => setLanguage(e.target.value as Language)}
-                >
-                  <option value="en">{t("settings.language.en")}</option>
-                  <option value="zh-CN">{t("settings.language.zh")}</option>
-                </select>
-              </label>
+                  width={200}
+                  options={[
+                    { value: "en", label: t("settings.language.en") },
+                    { value: "zh-CN", label: t("settings.language.zh") },
+                  ]}
+                  onChange={(v) => setLanguage(v as Language)}
+                />
+              </div>
             </>
           )}
           {section === "appearance" && (
@@ -363,9 +335,14 @@ export function Settings({
             <>
               <div className="settings-section-title">{t("about.title")}</div>
               <div className="about">
-                <div className="about-name">Termany</div>
-                <div className="about-version">
-                  {t("about.version")} {version}
+                <div className="about-hero">
+                  <img className="about-logo" src="/favicon.png" alt="" />
+                  <div className="about-hero-meta">
+                    <div className="about-name">Termany</div>
+                    <div className="about-version">
+                      {t("about.version")} {version}
+                    </div>
+                  </div>
                 </div>
                 {isTauri && (
                   <div className="about-update">
@@ -407,19 +384,19 @@ export function Settings({
                   </div>
                 )}
                 <p className="about-desc">{t("about.desc")}</p>
-                {ABOUT_LINKS.map(({ key, url }) => (
-                  <div className="about-row" key={key}>
-                    <span>{t(`about.${key}`)}</span>
+                <div className="about-links">
+                  {ABOUT_LINKS.map(({ key, url }) => (
                     <button
-                      className="about-open-btn"
+                      className="about-link-row"
+                      key={key}
                       title={t("about.open")}
-                      aria-label={t("about.open")}
                       onClick={async () => setAboutError(await openExternal(url))}
                     >
+                      <span>{t(`about.${key}`)}</span>
                       <ExternalOpenIcon />
                     </button>
-                  </div>
-                ))}
+                  ))}
+                </div>
                 {aboutError && (
                   <div className="ai-theme-error">
                     {t("about.openerFailed")}: {aboutError}

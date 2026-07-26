@@ -7,6 +7,7 @@ export type Language = "en" | "zh-CN";
 
 const dictionaries: Record<Language, Record<string, string>> = {
   en: {
+    "settings.title": "Settings",
     "settings.general": "General",
     "settings.appearance": "Appearance",
     "settings.models": "Models",
@@ -492,6 +493,7 @@ const dictionaries: Record<Language, Record<string, string>> = {
     "usage.unknownProject": "(unknown)",
   },
   "zh-CN": {
+    "settings.title": "设置",
     "settings.general": "通用",
     "settings.appearance": "外观",
     "settings.models": "模型",
