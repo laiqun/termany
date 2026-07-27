@@ -4,15 +4,18 @@ import { useI18n } from "../i18n";
 import { withShortcut } from "../keybindings";
 import { activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
 import {
-  aggregateAgentActivity,
+  acknowledgeAgentActivities,
+  agentActivitySummary,
   agentActivitySnapshot,
   agentActivityTitle,
   subscribeAgentActivity,
+  type AgentActivityStatus,
 } from "../terminal/manager";
 import { ChevronIcon, CloseIcon, CollapseAllIcon, PageIcon, PlusIcon } from "./icons";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 const DRAG_MIME = "application/x-termany-node";
+const ACTIVITY_STATUSES = ["working", "done", "error"] as const;
 type TreeDropPos = "into" | "before" | "after";
 type NodeDragUi = { id: string; targetId: string | null; pos: TreeDropPos | null; overTree: boolean };
 
@@ -25,6 +28,94 @@ function subtreeLeafIds(node: TreeNode): string[] {
     ...node.htabs.flatMap((h) => paneLeafIds(h.layout)),
     ...node.children.flatMap(subtreeLeafIds),
   ];
+}
+
+/** Just this page's own panes — NOT its children's, unlike subtreeLeafIds. The
+ *  active list names the page an agent is actually running in, so a parent
+ *  mustn't be listed for work happening in a page nested under it. */
+function ownLeafIds(node: TreeNode): string[] {
+  return node.htabs.flatMap((h) => paneLeafIds(h.layout));
+}
+
+interface ActiveEntry {
+  node: TreeNode;
+  /** Titles of the ancestors above it, outermost first — shown dimmed beside
+   *  the page name, since the flat list loses the tree's own disambiguation. */
+  trail: string[];
+  activity: ReturnType<typeof agentActivitySummary>;
+}
+
+/** Highest-priority status first, tree order within a status — so a page that
+ *  needs looking at (error, then still-running) sits at the top, and the list
+ *  doesn't reshuffle for pages whose status didn't change. */
+const ACTIVITY_RANK: Record<AgentActivityStatus, number> = { error: 3, working: 2, done: 1 };
+
+function collectActiveEntries(nodes: TreeNode[], trail: string[] = [], out: ActiveEntry[] = []) {
+  for (const node of nodes) {
+    const activity = agentActivitySummary(ownLeafIds(node));
+    if (activity.working || activity.done || activity.error) out.push({ node, trail, activity });
+    collectActiveEntries(node.children, [...trail, node.title], out);
+  }
+  return out;
+}
+
+function entryRank(entry: ActiveEntry): number {
+  return ACTIVITY_STATUSES.reduce(
+    (best, status) => (entry.activity[status] ? Math.max(best, ACTIVITY_RANK[status]) : best),
+    0,
+  );
+}
+
+/** The activity dots + counts shared by a tree row and an active-list row. */
+function ActivityCounts({ activity }: { activity: ReturnType<typeof agentActivitySummary> }) {
+  return (
+    <>
+      {ACTIVITY_STATUSES.map((status: AgentActivityStatus) => {
+        const count = activity[status];
+        if (!count) return null;
+        const label = `${agentActivityTitle({ status, updatedAt: 0 })} (${count})`;
+        return (
+          <span key={status} className="tree-count activity-count" title={label} aria-label={label}>
+            <span className={`agent-dot ${status}`} />
+            {count}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/**
+ * One row of the ACTIVE section: a page with agent work in its own panes,
+ * lifted out of the tree so it's reachable without scrolling a long sidebar.
+ * Deliberately not draggable and without the add/delete actions — it's a
+ * shortcut to the page, not a second place to reorganize the tree.
+ */
+function ActiveItem({ entry }: { entry: ActiveEntry }) {
+  const { node, trail, activity } = entry;
+  const activeId = useStore((s) => activeWorkspace(s).activeNode);
+  const setActiveNode = useStore((s) => s.setActiveNode);
+  const viewedLeafIds = node.htabs
+    .filter((tab) => tab.id === node.activeHTab)
+    .flatMap((tab) => paneLeafIds(tab.layout));
+
+  return (
+    <div
+      className={`tree-row active-item ${node.id === activeId ? "active" : ""}`}
+      title={[...trail, node.title].join(" / ")}
+      onClick={() => {
+        setActiveNode(node.id);
+        acknowledgeAgentActivities(viewedLeafIds);
+      }}
+    >
+      <span className="tree-twisty leaf">
+        <PageIcon />
+      </span>
+      <span className="tree-title">{node.title}</span>
+      {trail.length > 0 && <span className="tree-crumb">{trail[trail.length - 1]}</span>}
+      <ActivityCounts activity={activity} />
+    </div>
+  );
 }
 
 /** One row of the tree + its children, rendered recursively to any depth. */
@@ -58,7 +149,11 @@ function TreeItem({
   const activeDropPos = pointerDropPos ?? dropPos;
 
   const hasChildren = node.children.length > 0;
-  const activity = aggregateAgentActivity(subtreeLeafIds(node));
+  const allLeafIds = subtreeLeafIds(node);
+  const viewedLeafIds = node.htabs
+    .filter((tab) => tab.id === node.activeHTab)
+    .flatMap((tab) => paneLeafIds(tab.layout));
+  const activity = agentActivitySummary(allLeafIds);
 
   return (
     <>
@@ -77,6 +172,7 @@ function TreeItem({
             return;
           }
           setActiveNode(node.id);
+          acknowledgeAgentActivities(viewedLeafIds);
         }}
         onPointerDown={(e) => {
           if (!editing) onNodePointerDown(node.id, e);
@@ -192,13 +288,7 @@ function TreeItem({
             {node.htabs.length}
           </span>
         )}
-        {activity && (
-          <span
-            className={`agent-dot ${activity.status}`}
-            title={agentActivityTitle(activity)}
-            aria-label={agentActivityTitle(activity)}
-          />
-        )}
+        <ActivityCounts activity={activity} />
       </div>
 
       {node.expanded &&
@@ -225,6 +315,7 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
   const moveNode = useStore((s) => s.moveNode);
   const [rootDrop, setRootDrop] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [activeCollapsed, setActiveCollapsed] = useState(false);
   const [nodeDrag, setNodeDrag] = useState<NodeDragUi | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
 
@@ -256,6 +347,9 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
     () => agentActivitySnapshot(wsLeafIds),
     () => ""
   );
+  // Built after the subscription above, so it re-collects on every activity
+  // change (the store is external to React — nothing else would re-render).
+  const activeEntries = collectActiveEntries(ws.roots).sort((a, b) => entryRank(b) - entryRank(a));
 
   // Keyboard navigation can move beyond the scroll viewport. Keep the active
   // row visible without stealing DOM focus from the terminal.
@@ -363,6 +457,29 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
   return (
     <div className="sidebar">
       <WorkspaceSwitcher onOpenSettings={onOpenSettings} />
+      {/* Pages with agent work of their own, hoisted above the tree — in a long
+          sidebar the busy page is often scrolled out of sight. Only rendered
+          when something is actually running, so it costs nothing when idle. */}
+      {activeEntries.length > 0 && (
+        <div className="active-section">
+          <div className="section-head">
+            <button className="section-toggle" onClick={() => setActiveCollapsed((c) => !c)}>
+              <span className="section-chevron">
+                <ChevronIcon dir={activeCollapsed ? "right" : "down"} />
+              </span>
+              <span className="section-title">{t("sidebar.activePages")}</span>
+              <span className="section-badge">{activeEntries.length}</span>
+            </button>
+          </div>
+          {!activeCollapsed && (
+            <div className="active-list">
+              {activeEntries.map((entry) => (
+                <ActiveItem key={entry.node.id} entry={entry} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {/* VS Code-style section header: collapse toggle + title + actions. */}
       <div className="section-head">
         <button className="section-toggle" onClick={() => setCollapsed((c) => !c)}>

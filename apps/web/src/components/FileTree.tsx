@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
@@ -7,6 +7,7 @@ import { activeHtab, findLeaf, useStore } from "../state/store";
 import { sendCommand } from "../terminal/manager";
 import {
   ChevronIcon,
+  CloseIcon,
   CollapseAllIcon,
   FileEntryIcon,
   FolderIcon,
@@ -420,21 +421,23 @@ interface Selected {
 
 /**
  * The right-hand preview/editor panel — only ever mounted while a file is
- * selected (which is also when the pane is maximized), so there's no
- * "nothing selected" state to render here. Keyed on `selected.path` by the
- * caller, so switching files always gets a fresh instance (and with it, a
- * fresh CodeEditor + reset save/dirty state) rather than reusing stale state.
+ * selected, so there's no "nothing selected" state to render here. Keyed on
+ * `selected.path` by the caller, so switching files always gets a fresh
+ * instance (and with it, a fresh CodeEditor + reset save/dirty state) rather
+ * than reusing stale state.
  */
 function FilePreview({
   selected,
   dark,
   treeCollapsed,
   onToggleTree,
+  onClose,
 }: {
   selected: Selected;
   dark: boolean;
   treeCollapsed: boolean;
   onToggleTree: () => void;
+  onClose: () => void;
 }) {
   const [dirty, setDirty] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -485,6 +488,9 @@ function FilePreview({
       )}
       <button className="pane-btn" title="Reveal in Finder" onClick={() => revealInFinder(selected.path)}>
         <RevealFolderIcon />
+      </button>
+      <button className="pane-btn" title="Close preview" onClick={onClose}>
+        <CloseIcon />
       </button>
     </div>
   );
@@ -602,33 +608,40 @@ interface FileTreeState {
   expanded: Set<string>;
   collapsedFrom: Set<string> | null;
   selected: Selected | null;
+  /** Last cwd resolved from the session — see `lastKnownCwd` below. */
+  lastCwd: string | null;
 }
 
 function emptyFileTreeState(): FileTreeState {
-  return { root: null, rootError: null, dirs: {}, expanded: new Set(), collapsedFrom: null, selected: null };
+  return { root: null, rootError: null, dirs: {}, expanded: new Set(), collapsedFrom: null, selected: null, lastCwd: null };
 }
 
 /**
- * Selecting a file maximizes the pane (see FileTree below), and maximizing a
- * not-yet-split pane makes SplitView swap which component sits at that tree
- * slot (a bare `<PaneSlot solo>` instead of `<SplitTree>`'s), which forces
- * React to unmount and remount everything under it — including this
- * component. Ordinary useState would lose the tree/preview right when they'd
- * just been set. Stash it here instead, keyed by session id (the same trick
- * the terminal session registry uses for the same reason), so a remount just
+ * Maximizing a not-yet-split pane (Wave-style magnify, from the pane header)
+ * makes SplitView swap which component sits at that tree slot (a bare
+ * `<PaneSlot solo>` instead of `<SplitTree>`'s), which forces React to
+ * unmount and remount everything under it — including this component.
+ * Ordinary useState would lose the tree/preview right when they'd just been
+ * set. Stash it here instead, keyed by session id (the same trick the
+ * terminal session registry uses for the same reason), so a remount just
  * re-hydrates instead of starting over.
+ *
+ * An entry existing is also how a remount is told apart from a fresh entry
+ * into files view: the pane drops its own entry on the way out to the
+ * terminal (see the unmount effect), so a cached root means "carry on where
+ * we left off" and no entry means "resolve the root from the live cwd".
  */
 const stateCache = new Map<string, FileTreeState>();
 
 /**
  * A pane's alternative body: browse the filesystem rooted at `sessionId`'s
  * live shell cwd (resolved server-side — see /api/fs/list). By default it's
- * just the tree, full width. Clicking a file maximizes the pane and opens a
- * read-only preview alongside the tree (two columns); restoring the pane
- * closes the preview again — the split view only exists while "full-screen
- * editing" a file. Toggled from the pane header, alongside the terminal it's
- * attached to (not a global overlay), so each pane can independently show its
- * own terminal or its own file tree.
+ * just the tree, full width. Clicking a file opens a preview alongside the
+ * tree (two columns) right here in the pane — it does NOT take over the tab,
+ * so the terminals around it stay usable; the preview's close button returns
+ * to the full-width tree. Toggled from the pane header, alongside the
+ * terminal it's attached to (not a global overlay), so each pane can
+ * independently show its own terminal or its own file tree.
  */
 export function FileTree({
   sessionId,
@@ -647,8 +660,6 @@ export function FileTree({
   explicitRoot?: string;
   explicitSelected?: string;
 }) {
-  const isMaximized = useStore((s) => activeHtab(s)?.maximized === sessionId);
-  const toggleMaximize = useStore((s) => s.toggleMaximize);
   const clearPathInPane = useStore((s) => s.clearPathInPane);
   // Read once per render — cheap, and the editor only needs it at creation
   // anyway (see CodeEditor's own comment on why it doesn't react to changes).
@@ -662,13 +673,25 @@ export function FileTree({
   // Snapshot of what was open right before the last "collapse all" — lets
   // the same button restore it, instead of collapsing being a one-way trip.
   const [collapsedFrom, setCollapsedFrom] = useState(initial.collapsedFrom);
-  // Only trust a cached selection if we're ALSO currently maximized: a mount
-  // while not maximized means this is the remount from Restore (exiting
-  // fullscreen) or a fresh pane, either way the preview shouldn't reappear.
-  const [selected, setSelected] = useState(isMaximized ? initial.selected : null);
-  const [treeWidth, setTreeWidth] = useState(360);
+  const [selected, setSelected] = useState(initial.selected);
+  // Default to the narrowest the resizer allows (its drag clamp, below) —
+  // the preview is the point of the split; the tree only needs to stay
+  // usable, and can always be dragged wider.
+  const [treeWidth, setTreeWidth] = useState(180);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
   const splitRef = useRef<HTMLDivElement>(null);
+
+  // Too narrow for two useful columns -> drop to one: the preview alone,
+  // with its tree-toggle button doubling as "back to the tree". Measured
+  // (not a container query) because the button's behavior switches too.
+  const [narrow, setNarrow] = useState(false);
+  useLayoutEffect(() => {
+    const el = splitRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setNarrow(el.clientWidth < 600));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [selected !== null]);
 
   // The address bar's own draft text — separate from `root` so typing
   // doesn't take effect until Enter, and doesn't get clobbered by a
@@ -688,8 +711,9 @@ export function FileTree({
   // NOT necessarily the same as `root`, which a manual address-bar
   // navigation can point elsewhere. Compared against `root` when leaving
   // files view (see the sync-back-to-terminal effect below) to decide
-  // whether the terminal actually needs a `cd`.
-  const lastKnownCwd = useRef<string | null>(null);
+  // whether the terminal actually needs a `cd`. Cached alongside the rest of
+  // the state so a remount doesn't come back thinking it never resolved one.
+  const lastKnownCwd = useRef<string | null>(initial.lastCwd);
 
   const loadDir = useCallback((path: string) => {
     setDirs((d) => ({ ...d, [path]: { status: "loading" } }));
@@ -741,21 +765,17 @@ export function FileTree({
           expanded: new Set(),
           collapsedFrom: null,
           selected: nextSelected,
+          lastCwd: lastKnownCwd.current,
         });
       })
       .catch((e) => setRootError(e instanceof Error ? e.message : String(e)));
   }, [sessionId]);
 
-  // Resolve root from the pane's LIVE session cwd. Called every time this
-  // component (re)mounts — including the maximize-triggered remount AND a
-  // terminal<->files view switch, which look identical from in here (both
-  // are just "FileTree mounted again"). The two cases need OPPOSITE
-  // behavior: a maximize remount should preserve everything (the cwd hasn't
-  // had time to change), while a view-switch remount should drop a stale
-  // manual navigation and reflect wherever the terminal cd'ed to meanwhile.
-  // Comparing the freshly resolved path to whatever root we already have
-  // gives us both for free: same path -> just refresh its listing in place;
-  // different path -> this is effectively a fresh entry, reset the tree.
+  // Resolve root from the pane's LIVE session cwd — how a FRESH entry into
+  // files view picks where to start (a remount re-opens its cached root
+  // instead; see the mount effect). Same path as the tree already shows ->
+  // just refresh its listing in place; anywhere else -> start the tree over
+  // there.
   const resolveRootFromSession = useCallback(() => {
     setRootError(null);
     fetch(`${apiUrl()}/api/fs/list?${new URLSearchParams({ session: initialCwdFrom ?? sessionId })}`)
@@ -777,18 +797,17 @@ export function FileTree({
   }, [sessionId, initialCwdFrom]);
 
   // Mirror every render's state into the cache, keyed by this pane's session —
-  // NOT scoped to a dependency list, since ANY of the six pieces changing
-  // should update it (cheap: a Map.set of a plain object).
+  // NOT scoped to a dependency list, since ANY of the pieces changing should
+  // update it (cheap: a Map.set of a plain object).
   useEffect(() => {
-    stateCache.set(sessionId, { root, rootError, dirs, expanded, collapsedFrom, selected });
+    stateCache.set(sessionId, { root, rootError, dirs, expanded, collapsedFrom, selected, lastCwd: lastKnownCwd.current });
   });
 
   // Only hydrate from a DIFFERENT session's cache when `sessionId` actually
   // changes after mount — the lazy useState above already seeded the right
   // values for the initial mount (including a remount that preserved the
   // same session id), so re-doing it here would just discard what was just
-  // restored. resolveRootFromSession() runs on EVERY mount regardless (see
-  // its own doc comment for why that's the right call for both remount cases).
+  // restored.
   const lastSessionId = useRef<string>();
   const lastExplicitRoot = useRef<string>();
   useEffect(() => {
@@ -799,7 +818,8 @@ export function FileTree({
       setDirs(cached.dirs);
       setExpanded(cached.expanded);
       setCollapsedFrom(cached.collapsedFrom);
-      setSelected(isMaximized ? cached.selected : null);
+      setSelected(cached.selected);
+      lastKnownCwd.current = cached.lastCwd;
     }
     lastSessionId.current = sessionId;
     if (explicitRoot && explicitRoot !== lastExplicitRoot.current) {
@@ -811,47 +831,55 @@ export function FileTree({
         lastExplicitRoot.current = undefined;
         return;
       }
-      resolveRootFromSession();
+      // A cached root means this mount is a remount (maximize, split, tab
+      // switch) of a tree that's already somewhere — stay there, open file
+      // and all, and just re-list what's on screen in case it changed.
+      // No cached root means a fresh entry into files view: start from the
+      // session's live cwd.
+      const cached = stateCache.get(sessionId);
+      if (cached?.root) {
+        loadDir(cached.root);
+        cached.expanded.forEach(loadDir);
+      } else {
+        resolveRootFromSession();
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
-    // NOT keyed on isMaximized: that would re-run this on every maximize
-    // toggle, re-resolving (and possibly resetting) state we want to leave
-    // alone outside of an actual remount.
-  }, [sessionId, explicitRoot, explicitSelected, resolveRootFromSession, openExplicitRoot, clearPathInPane]);
+  }, [sessionId, explicitRoot, explicitSelected, resolveRootFromSession, openExplicitRoot, clearPathInPane, loadDir]);
 
   // The other half of keeping the tree and the terminal in sync: leaving
   // files view for terminal should `cd` the shell to wherever the tree
   // ended up (typically from a manual address-bar navigation — the terminal
-  // has no way to know about that on its own). Only a genuine view switch —
-  // not the maximize-triggered remount, which never touches `leaf.view` —
-  // reaches this with a leaf whose view is no longer "files". Reads
-  // everything through refs so the closure captured at mount time doesn't
-  // matter; this only runs once, in the cleanup, right as the component
-  // actually goes away.
+  // has no way to know about that on its own), and forget the cached tree so
+  // coming back later starts from the shell's cwd rather than reopening a
+  // stale root. Only a genuine view switch — not a remount, which never
+  // touches `leaf.view` — reaches this with a leaf whose view is no longer
+  // "files". Reads everything through refs so the closure captured at mount
+  // time doesn't matter; this only runs once, in the cleanup, right as the
+  // component actually goes away.
   useEffect(() => {
     return () => {
       const htab = activeHtab(useStore.getState());
       const leaf = htab && findLeaf(htab.layout, sessionId);
       if (!leaf || leaf.view === "files") return;
+      stateCache.delete(sessionId);
       const path = rootRef.current;
       if (path && path !== lastKnownCwd.current) sendCommand(sessionId, `cd ${quoteForShell(path)}`);
     };
   }, [sessionId]);
 
-  // Click a file: maximize the pane (if it isn't already) — this is ONLY safe
-  // to pair with a local setSelected because the cache write below happens
-  // SYNCHRONOUSLY, as a plain object mutation. toggleMaximize causes the same
-  // remount described in the module doc comment, and when that remount is
-  // triggered in the SAME event handler as a React state update, React can
-  // discard the old fiber (and that state update with it) before it ever
-  // commits — so a `setSelected` here alone could vanish along with the
-  // instance that called it. The direct cache write has no such lifecycle;
-  // it's there unconditionally for whichever instance (old or new) reads it.
+  // Click a file: open the preview beside the tree, in this pane. The cache
+  // write is synchronous so a remount from any concurrent layout change (a
+  // maximize toggle, a split) re-hydrates with the selection already made.
   const selectFile = (path: string) => {
     const next: Selected = { path, status: "loading" };
     stateCache.set(sessionId, { ...(stateCache.get(sessionId) ?? emptyFileTreeState()), selected: next });
     setSelected(next);
-    if (!isMaximized) toggleMaximize(sessionId);
+  };
+
+  const closePreview = () => {
+    stateCache.set(sessionId, { ...(stateCache.get(sessionId) ?? emptyFileTreeState()), selected: null });
+    setSelected(null);
+    setTreeCollapsed(false);
   };
 
   // Actually fetch the selected file's content. Runs in whichever FileTree
@@ -992,10 +1020,8 @@ export function FileTree({
     </>
   );
 
-  // Default: just the tree, full width. Keep `selected` cached so restoring
-  // maximize can reopen the preview, but only mount the preview panel while
-  // this pane is actually maximized.
-  if (!selected || !isMaximized) return <div className="file-tree">{treeUi}</div>;
+  // Nothing selected: just the tree, full width.
+  if (!selected) return <div className="file-tree">{treeUi}</div>;
 
   const startTreeResize = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -1021,9 +1047,10 @@ export function FileTree({
     window.addEventListener("pointercancel", onUp);
   };
 
+  const collapsed = treeCollapsed || narrow;
   return (
-    <div className={`file-tree-split ${treeCollapsed ? "tree-collapsed" : ""}`} ref={splitRef}>
-      {!treeCollapsed && (
+    <div className={`file-tree-split ${collapsed ? "tree-collapsed" : ""}`} ref={splitRef}>
+      {!collapsed && (
         <>
           <div className="file-tree" style={{ flexBasis: treeWidth }}>{treeUi}</div>
           <div className="file-tree-resizer" onPointerDown={startTreeResize} />
@@ -1033,8 +1060,9 @@ export function FileTree({
         key={selected.path}
         selected={selected}
         dark={dark}
-        treeCollapsed={treeCollapsed}
-        onToggleTree={() => setTreeCollapsed((v) => !v)}
+        treeCollapsed={collapsed}
+        onToggleTree={() => (narrow ? closePreview() : setTreeCollapsed((v) => !v))}
+        onClose={closePreview}
       />
     </div>
   );

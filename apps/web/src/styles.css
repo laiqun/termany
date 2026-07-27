@@ -987,6 +987,55 @@ html.tauri #root {
 .section-head:hover .section-actions {
   opacity: 1;
 }
+/* Count of listed pages, beside the ACTIVE title — always visible (unlike the
+   hover-only section actions), since it's the point of the section. */
+.section-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  background: var(--bg-3);
+  border-radius: var(--radius-md);
+  padding: 0 5px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+/* Pages with running agents, above the tree. Sized to its content but capped,
+   so a burst of activity can't push the page tree off screen; it scrolls
+   itself past that point. */
+.active-section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 34vh;
+}
+.active-list {
+  overflow-y: auto;
+  padding: 0 8px;
+}
+/* A shortcut row, not a tree row: no twisty affordance and no drag. Without
+   the hover actions (.tree-act, 24px) that set a page row's height, it would
+   sit shorter than the rows below it — so match that height explicitly. */
+.tree-row.active-item {
+  cursor: pointer;
+  min-height: 30px;
+}
+.active-item .tree-twisty {
+  cursor: default;
+}
+/* Parent page name — the flat list drops the nesting that told two
+   same-named pages apart, so put the immediate parent back, dimmed. Capped
+   at a third of the row so it can never crowd out the page's own name. */
+.tree-crumb {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 33%;
+  font-size: 10px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* Recursive node tree */
 .tree {
   flex: 1;
@@ -1148,6 +1197,20 @@ html.tauri #root {
   padding: 1px 6px;
   margin-left: 2px;
   flex-shrink: 0;
+}
+.activity-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.htab .activity-count {
+  padding-inline: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-dot.working {
+    animation: none;
+  }
 }
 .tree-act {
   display: flex;
@@ -2851,9 +2914,8 @@ html.tauri #root {
 }
 
 /* Per-pane file tree — the pane's alternative body, toggled from its header.
-   Default: just the tree, filling the pane. Only while a file is open (which
-   also maximizes the pane) does a second, narrower column appear alongside a
-   fixed-width tree — see the two rules below. */
+   Default: just the tree, filling the pane. While a file is open, a preview
+   column appears alongside a resizable tree — see the two rules below. */
 .file-tree {
   position: absolute;
   inset: 0;
@@ -2868,8 +2930,11 @@ html.tauri #root {
 }
 .file-tree-split .file-tree {
   position: static;
-  flex: 0 0 360px;
-  min-width: 200px;
+  flex: 0 0 180px;
+  /* The preview lives inside the pane now, which can be a fraction of the
+     screen wide — never let the tree eat so much of it that there's nothing
+     left to read. */
+  max-width: 45%;
   overflow: hidden;
 }
 .file-tree-split.tree-collapsed .file-preview-panel {
@@ -3321,10 +3386,17 @@ html.tauri #root {
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
+  animation: settings-fade-in 0.14s ease-out;
+}
+@keyframes settings-fade-in {
+  from {
+    opacity: 0;
+  }
 }
 .settings-window {
   position: relative;
@@ -3335,29 +3407,52 @@ html.tauri #root {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.35),
+    0 4px 16px rgba(0, 0, 0, 0.18);
+  animation: settings-pop-in 0.16s ease-out;
+}
+@keyframes settings-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985) translateY(6px);
+  }
 }
 .settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   width: 200px;
   flex-shrink: 0;
   background: var(--bg-2);
   border-right: 1px solid var(--border);
-  padding: 16px 10px;
+  padding: 18px 12px;
+}
+.settings-nav-title {
+  padding: 0 10px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
 }
 .settings-nav-item {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: var(--radius-md);
   color: var(--fg-dim);
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
-}
-.settings-nav-item {
-  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .settings-nav-item:hover {
+  background: color-mix(in srgb, var(--bg-3) 55%, transparent);
   color: var(--fg);
 }
 .settings-nav-item.active {
@@ -3368,21 +3463,25 @@ html.tauri #root {
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  color: var(--fg-dim);
+  color: inherit;
 }
-.settings-nav-item.active .settings-nav-icon,
-.settings-nav-item:hover .settings-nav-icon {
-  color: var(--fg);
+.settings-nav-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.settings-nav-item.active .settings-nav-icon {
+  color: var(--accent);
 }
 .settings-body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: 28px 32px;
+  padding: 26px 32px 34px;
 }
 .settings-section-title {
-  font-size: 12px;
-  letter-spacing: 0.08em;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg-dim);
   margin-bottom: 18px;
@@ -3393,23 +3492,13 @@ html.tauri #root {
   justify-content: space-between;
   gap: 16px;
   margin: 0 0 28px;
-  padding: 12px 14px;
+  padding: 13px 16px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--bg-2);
 }
 .language-setting span {
   color: var(--fg);
-  font-size: 13px;
-}
-.language-setting select {
-  min-width: 180px;
-  height: 30px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--fg);
-  font: inherit;
   font-size: 13px;
 }
 
@@ -3420,6 +3509,8 @@ html.tauri #root {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 18px;
+  /* Keep header actions clear of the window's floating close button. */
+  padding-right: 24px;
 }
 .agent-settings-head .settings-section-title {
   margin-bottom: 0;
@@ -3533,10 +3624,19 @@ html.tauri #root {
   height: 24px;
   padding: 0 12px;
   border-radius: var(--radius-sm);
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .agent-enable-toggle button.active {
   background: var(--bg-3);
   color: var(--fg);
+}
+/* "Enabled" is always the first pill — give the on-state an accent tint so a
+   glance down the list shows which agents are live. */
+.agent-enable-toggle button.active:first-child {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
 }
 .agent-expand-btn {
   display: inline-flex;
@@ -3578,9 +3678,6 @@ html.tauri #root {
   font: inherit;
   font-family: var(--mono);
   font-size: 13px;
-}
-.agent-field select {
-  appearance: auto;
 }
 .agent-field input:focus,
 .agent-field select:focus {
@@ -3628,6 +3725,20 @@ html.tauri #root {
 }
 
 /* About */
+.about {
+  max-width: 460px;
+}
+.about-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.about-logo {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  flex-shrink: 0;
+}
 .about-name {
   font-size: 18px;
   font-weight: 700;
@@ -3639,31 +3750,47 @@ html.tauri #root {
   color: var(--fg-dim);
 }
 .about-desc {
-  margin: 14px 0;
+  margin: 14px 0 18px;
   font-size: 13px;
   line-height: 1.5;
   color: var(--fg-dim);
 }
-.about-row {
+.about-links {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+}
+.about-link-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 5px 0;
+  width: 100%;
+  padding: 11px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
   font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.about-link-row:last-child {
+  border-bottom: none;
+}
+.about-link-row:hover {
+  background: var(--bg-3);
+}
+.about-link-row svg {
+  width: 14px;
+  height: 14px;
   color: var(--fg-dim);
 }
-.about-open-btn {
-  display: inline-flex;
-  align-items: center;
-  padding: 0;
-  border: none;
-  background: transparent;
+.about-link-row:hover svg {
   color: var(--accent);
-  cursor: pointer;
-  opacity: 0.8;
-}
-.about-open-btn:hover {
-  opacity: 1;
 }
 
 /* Self-update (About section + badges) */
@@ -3788,7 +3915,8 @@ html.tauri #root {
 }
 .kb-group-title {
   font-size: 11px;
-  letter-spacing: 0.06em;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg-dim);
   margin: 0 0 8px;
@@ -3827,16 +3955,20 @@ html.tauri #root {
 }
 .kb-chord {
   min-width: 64px;
-  height: 30px;
-  padding: 0 12px;
+  height: 28px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-2);
   color: var(--fg);
   font: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
 }
 .kb-chord:hover {
   background: var(--bg-3);
@@ -3850,6 +3982,25 @@ html.tauri #root {
   border-color: #e5736f;
   color: #e5736f;
 }
+/* A chord that is only a pending choice — picked, but not registered yet. */
+.kb-chord.idle {
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+.kb-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin: 6px 0 0;
+}
+.kb-note-warn {
+  color: #d9a441;
+}
+.kb-note-error {
+  color: #e5736f;
+}
 
 /* Model settings */
 .ms-head {
@@ -3857,6 +4008,8 @@ html.tauri #root {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 18px;
+  /* Keep header actions clear of the window's floating close button. */
+  padding-right: 24px;
 }
 .ms-head-actions {
   display: flex;
@@ -3897,6 +4050,7 @@ html.tauri #root {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  background: var(--bg-2);
   margin-bottom: 22px;
 }
 .ms-card-title {
@@ -3907,14 +4061,18 @@ html.tauri #root {
 .ms-select {
   width: 100%;
   max-width: 420px;
-  height: 36px;
+  height: 34px;
   padding: 0 10px;
-  background: var(--bg-2);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
+  outline: none;
+}
+.ms-select:focus-visible {
+  border-color: var(--accent);
 }
 .ms-hint {
   margin-top: 8px;
@@ -4105,9 +4263,34 @@ html.tauri #root {
   overflow: hidden;
   cursor: pointer;
   font: inherit;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.theme-card:hover .theme-preview {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
 }
 .theme-card.selected .theme-preview {
+  border-color: transparent;
   box-shadow: 0 0 0 2px var(--accent);
+}
+/* Check badge on the active theme's preview corner. */
+.theme-card.selected .theme-preview-wrap::after {
+  content: "✓";
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
 }
 .theme-preview-side {
   position: absolute;
@@ -4181,9 +4364,15 @@ html.tauri #root {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
 }
 .codex-theme-card:hover {
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
 }
 .codex-theme-card:disabled {
   cursor: default;
@@ -4257,10 +4446,13 @@ html.tauri #root {
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--fg-dim);
   cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
 .settings-close:hover {
   background: var(--bg-3);
@@ -5150,6 +5342,20 @@ html.tauri #root {
 .ms-field select:focus {
   border-color: var(--accent);
 }
+/* Native selects still used in Settings (default model, provider/agent forms):
+   drop the OS chrome so the closed control matches the theme on every
+   platform — macOS WebView otherwise draws its own widget, which clashes with
+   dark themes. The chevron is redrawn since appearance:none removes it. Keep
+   this after the rules above: their `background:` shorthand would reset it. */
+.ms-select,
+.ms-field select,
+.agent-field select {
+  appearance: none;
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
 .ms-form-note {
   margin-bottom: 6px;
   font-size: 11.5px;
@@ -5230,6 +5436,15 @@ html.tauri #root {
 }
 .gd-branch svg {
   flex-shrink: 0;
+  color: var(--fg-dim);
+}
+/* Ties the compare picker to its meaning; pulled toward the select so the
+   pair reads as one control despite the toolbar's gap. */
+.gd-vs {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: -4px;
   color: var(--fg-dim);
 }
 .gd-summary {

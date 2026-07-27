@@ -6,10 +6,12 @@ import { useI18n } from "../i18n";
 import { withShortcut } from "../keybindings";
 import { useStore, activeNode, type Pane } from "../state/store";
 import {
-  aggregateAgentActivity,
+  acknowledgeAgentActivities,
+  agentActivitySummary,
   agentActivitySnapshot,
   agentActivityTitle,
   subscribeAgentActivity,
+  type AgentActivityStatus,
 } from "../terminal/manager";
 import { ChevronIcon, CloseIcon, PanelIcon, PanelRightIcon, PlusIcon } from "./icons";
 
@@ -21,6 +23,8 @@ import { ChevronIcon, CloseIcon, PanelIcon, PanelRightIcon, PlusIcon } from "./i
 function leafIds(pane: Pane): string[] {
   return pane.kind === "leaf" ? [pane.id] : pane.children.flatMap(leafIds);
 }
+
+const ACTIVITY_STATUSES = ["working", "done", "error"] as const;
 
 export function HTabBar() {
   const { t } = useI18n();
@@ -172,7 +176,8 @@ export function HTabBar() {
       <div className="htab-strip" ref={stripRef} data-tauri-drag-region>
       {node?.htabs.map((h) => (
         (() => {
-          const activity = aggregateAgentActivity(leafIds(h.layout));
+          const ids = leafIds(h.layout);
+          const activity = agentActivitySummary(ids);
           return (
             <div
               key={h.id}
@@ -185,17 +190,30 @@ export function HTabBar() {
                   return;
                 }
                 setActiveHTab(h.id);
+                acknowledgeAgentActivities(ids);
               }}
               onDoubleClick={() => setEditing(h.id)}
               onPointerDown={(e) => startTabDrag(h.id, e)}
             >
-              {activity && (
-                <span
-                  className={`agent-dot ${activity.status}`}
-                  title={agentActivityTitle(activity)}
-                  aria-label={agentActivityTitle(activity)}
-                />
-              )}
+              {ACTIVITY_STATUSES.map((status: AgentActivityStatus) => {
+                const count = activity[status];
+                if (!count) return null;
+                const label = `${agentActivityTitle({
+                  status,
+                  updatedAt: 0,
+                })} (${count})`;
+                return (
+                  <span
+                    key={status}
+                    className="tree-count activity-count"
+                    title={label}
+                    aria-label={label}
+                  >
+                    <span className={`agent-dot ${status}`} />
+                    {count}
+                  </span>
+                );
+              })}
               {editing === h.id ? (
                 <input
                   className="htab-rename"

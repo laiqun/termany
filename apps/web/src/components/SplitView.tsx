@@ -1,11 +1,18 @@
-import { Fragment, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
 import { useI18n } from "../i18n";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { withShortcut } from "../keybindings";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
-import { focusSession } from "../terminal/manager";
+import {
+  acknowledgeAgentActivities,
+  aggregateAgentActivity,
+  agentActivitySnapshot,
+  agentActivityTitle,
+  focusSession,
+  subscribeAgentActivity,
+} from "../terminal/manager";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
@@ -149,6 +156,12 @@ function PaneHeader({
   const toggleMaximize = useStore((s) => s.toggleMaximize);
   const [editing, setEditing] = useState(false);
   const renameWidth = `${Math.max(8, leaf.title.length + 1)}ch`;
+  useSyncExternalStore(
+    subscribeAgentActivity,
+    () => agentActivitySnapshot([leaf.id]),
+    () => "",
+  );
+  const activity = aggregateAgentActivity([leaf.id]);
 
   // Double-clicking the header zooms the pane, same as the maximize button —
   // but not while renaming, and not when the dblclick lands on the title
@@ -165,6 +178,13 @@ function PaneHeader({
       onPointerDown={editing ? undefined : onPointerDown}
       onDoubleClick={onHeaderDoubleClick}
     >
+      {activity && (
+        <span
+          className={`agent-dot ${activity.status}`}
+          title={agentActivityTitle(activity)}
+          aria-label={agentActivityTitle(activity)}
+        />
+      )}
       <span className="pane-head-name">
         {(leaf.view ?? "terminal") === "terminal" ? (
           <SshConnections
@@ -245,14 +265,20 @@ function PaneSlot({
   const dropEdge = dropTarget?.id === leaf.id ? dropTarget.edge : null;
 
   useEffect(() => {
-    if (focused) focusSession(leaf.id);
+    if (focused) {
+      focusSession(leaf.id);
+      acknowledgeAgentActivities([leaf.id]);
+    }
   }, [focused, leaf.id]);
 
   return (
     <div
       data-pane-id={leaf.id}
       className={`pane-slot ${showFocus && focused ? "focused" : ""}`}
-      onMouseDown={() => setFocusedPane(leaf.id)}
+      onMouseDown={() => {
+        setFocusedPane(leaf.id);
+        acknowledgeAgentActivities([leaf.id]);
+      }}
     >
       <PaneHeader
         leaf={leaf}
