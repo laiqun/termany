@@ -1387,6 +1387,22 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
 }
 
 /**
+ * True only inside macOS WKWebView/Safari. The IME workarounds below are
+ * corrections for *that* engine's event ordering, and both are actively
+ * harmful elsewhere. Linux Tauri renders through WebKitGTK, whose UA is also
+ * "AppleWebKit … Safari" with no Chrome token — matching on the UA alone made
+ * both fixes run there, where ibus/fcitx emit ordinary composition events and
+ * xterm already handles the commit. The extra copy from the beforeinput hook
+ * below is what users saw as every committed word arriving twice ("你好今天今天").
+ */
+function isMacWebKit() {
+  const ua = navigator.userAgent;
+  const isPureWebKit = ua.includes("AppleWebKit") && !/Chrome|Chromium|Edg\//.test(ua);
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform) || ua.includes("Macintosh");
+  return isPureWebKit && isMac;
+}
+
+/**
  * WKWebView/Safari IME fix: SHIFTED full-width punctuation from a CJK IME
  * (？ ： etc.) arrives as keydown keyCode 229 + an `insertText` input event,
  * with NO composition events. xterm's 229 fallback snapshots the textarea on
@@ -1398,9 +1414,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
  * are skipped here and keep working through xterm's own paths.
  */
 function fixWebkitImeDirectInsert(term: Terminal) {
-  const ua = navigator.userAgent;
-  const isPureWebKit = ua.includes("AppleWebKit") && !/Chrome|Chromium|Edg\//.test(ua);
-  if (!isPureWebKit || !term.textarea) return;
+  if (!isMacWebKit() || !term.textarea) return;
   const ta = term.textarea;
   const MODIFIERS = new Set([16, 17, 18, 91, 93]); // shift ctrl alt meta(L/R)
   let composing = false;
@@ -1475,9 +1489,7 @@ function fixWebkitImeDirectInsert(term: Terminal) {
  * of attach order.
  */
 function fixAbandonedImeFinalize(term: Terminal) {
-  const ua = navigator.userAgent;
-  const isPureWebKit = ua.includes("AppleWebKit") && !/Chrome|Chromium|Edg\//.test(ua);
-  if (!isPureWebKit || !term.textarea) return;
+  if (!isMacWebKit() || !term.textarea) return;
   const ta = term.textarea;
   const MODIFIERS = new Set([16, 17, 18, 91, 93]); // shift ctrl alt meta(L/R)
   let composing = false;
