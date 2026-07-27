@@ -281,6 +281,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     "theme.applying": "Applying…",
     "theme.active": "Active",
 
+    "font.title": "FONT",
+    "font.family": "Font family",
+    "font.custom": "Custom font CSS",
+    "font.size": "Font size",
+    "font.reset": "Reset",
+
     "server.stale": "The background service is from an older version. Quit Termany and reopen it to finish the upgrade.",
 
     "models.title": "MODEL SETTINGS",
@@ -766,6 +772,12 @@ const dictionaries: Record<Language, Record<string, string>> = {
     "theme.apply": "应用",
     "theme.applying": "应用中…",
     "theme.active": "使用中",
+
+    "font.title": "字体",
+    "font.family": "字体",
+    "font.custom": "自定义 CSS 字体",
+    "font.size": "字号",
+    "font.reset": "重置",
 
     "server.stale": "后台服务仍是旧版本。请退出 Termany 后重新打开，以完成升级。",
 
