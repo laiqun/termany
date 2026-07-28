@@ -1,5 +1,6 @@
 import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
 import { getLanguage, translate } from "../i18n";
+import { loadFontConfig } from "../font-config";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -917,7 +918,12 @@ let currentTermTheme: ITheme = {
   selectionBackground: "#2a3441",
 };
 
-const DEFAULT_FONT_SIZE = 13;
+/** User-configured font, loaded once at startup and updated from Settings.
+ *  Every new session starts with these; applyFontFamily / applyFontSize
+ *  push changes to all live sessions immediately. */
+let currentFontFamily: string = loadFontConfig().family;
+let currentFontSize: number = loadFontConfig().size;
+
 const MIN_FONT_SIZE = 9;
 const MAX_FONT_SIZE = 32;
 
@@ -933,12 +939,12 @@ function applyTerminalFontSize(id: string, next: number) {
 
 export function adjustTerminalFontSize(id: string, delta: number) {
   id = activeSessionId(id);
-  const current = sessions.get(id)?.term.options.fontSize ?? DEFAULT_FONT_SIZE;
+  const current = sessions.get(id)?.term.options.fontSize ?? currentFontSize;
   applyTerminalFontSize(id, current + delta);
 }
 
 export function resetTerminalFontSize(id: string) {
-  applyTerminalFontSize(id, DEFAULT_FONT_SIZE);
+  applyTerminalFontSize(id, currentFontSize);
 }
 
 const IMAGE_MIMES = new Set(["image/gif", "image/jpeg", "image/png", "image/tiff", "image/webp"]);
@@ -1075,6 +1081,18 @@ export function applyTermTheme(theme: ITheme) {
   for (const s of sessions.values()) s.term.options.theme = theme;
 }
 
+/** Push a font family change to every live terminal + future sessions. */
+export function applyFontFamily(family: string) {
+  currentFontFamily = family;
+  for (const s of sessions.values()) s.term.options.fontFamily = family;
+}
+
+/** Push a font size change to every live terminal + future sessions. */
+export function applyFontSize(size: number) {
+  currentFontSize = size;
+  for (const s of sessions.values()) s.term.options.fontSize = size;
+}
+
 function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
@@ -1083,8 +1101,8 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   el.className = "term-host";
 
   const term = new Terminal({
-    fontFamily: 'Menlo, "SF Mono", Monaco, monospace',
-    fontSize: DEFAULT_FONT_SIZE,
+    fontFamily: currentFontFamily,
+    fontSize: currentFontSize,
     scrollback: SCROLLBACK_LINES,
     cursorBlink: true,
     allowProposedApi: true,
