@@ -694,9 +694,18 @@ function subtreeLeafIds(node: TreeNode): string[] {
 
 const first = initialWorkspace("ws 1");
 
+/** Map one workspace by id; pass others through untouched. */
+function inWs(
+  workspaces: Workspace[],
+  workspaceId: string,
+  fn: (ws: Workspace) => Workspace
+): Workspace[] {
+  return workspaces.map((ws) => (ws.id === workspaceId ? fn(ws) : ws));
+}
+
 /** Map only the active workspace; pass others through untouched. */
 function inActiveWs(s: State, fn: (ws: Workspace) => Workspace): Workspace[] {
-  return s.workspaces.map((ws) => (ws.id === s.activeWorkspace ? fn(ws) : ws));
+  return inWs(s.workspaces, s.activeWorkspace, fn);
 }
 
 /** Update a leaf by globally unique id even if its tab was backgrounded while
@@ -721,17 +730,53 @@ function updateLeafEverywhere(
   return workspaces.map((workspace) => ({ ...workspace, roots: updateNodes(workspace.roots) }));
 }
 
-/** Close one leaf in the active tab; drops the whole tab if it was the last pane. */
+/**
+ * Locate the workspace / page / tab a leaf lives in. Leaf ids are globally
+ * unique (same assumption updateLeafEverywhere leans on), so the first hit is
+ * the only hit.
+ */
+function findLeafHome(
+  workspaces: Workspace[],
+  leafId: string
+): { workspaceId: string; nodeId: string; htab: HTab } | undefined {
+  const search = (
+    nodes: TreeNode[],
+    workspaceId: string
+  ): { workspaceId: string; nodeId: string; htab: HTab } | undefined => {
+    for (const node of nodes) {
+      const htab = node.htabs.find((h) => leafIds(h.layout).includes(leafId));
+      if (htab) return { workspaceId, nodeId: node.id, htab };
+      const hit = search(node.children, workspaceId);
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+  for (const ws of workspaces) {
+    const hit = search(ws.roots, ws.id);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/**
+ * Close one leaf; drops the whole tab if it was the last pane.
+ *
+ * Resolves the leaf's own tab rather than assuming the active one — a pane can
+ * now close itself when its shell exits (see terminal/shellExit.ts), and that
+ * can land on a backgrounded tab or a workspace the user has since switched
+ * away from. Passing a leaf from the active tab, as every UI path does, behaves
+ * exactly as before.
+ */
 function closeLeaf(s: State, leafId: string): Partial<State> {
-  const node = activeNode(s);
-  const htab = node?.htabs.find((h) => h.id === node.activeHTab);
-  if (!node || !htab) return {};
+  const home = findLeafHome(s.workspaces, leafId);
+  if (!home) return {};
+  const { workspaceId, nodeId, htab } = home;
   disposePaneSessions(leafId);
   const layout = removeLeaf(htab.layout, leafId);
   return {
-    workspaces: inActiveWs(s, (ws) => ({
+    workspaces: inWs(s.workspaces, workspaceId, (ws) => ({
       ...ws,
-      roots: updateNode(ws.roots, ws.activeNode, (n) => {
+      roots: updateNode(ws.roots, nodeId, (n) => {
         if (layout === null) {
           const htabs = n.htabs.filter((h) => h.id !== htab.id);
           if (htabs.length === 0) {

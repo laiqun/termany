@@ -15,6 +15,11 @@ import {
   agentInputPromptVisible,
 } from "./agentActivityPrompt";
 import { registerLocalPathLinks } from "./localLinks";
+import {
+  MAX_AUTO_RESTARTS,
+  RESTART_HEALTHY_MS,
+  shellExitDisposition,
+} from "./shellExit";
 import { registerWebLinks } from "./webLinks";
 
 /**
@@ -55,19 +60,6 @@ export interface Session {
   /** Increments for every PTY output chunk, including in-place TUI redraws. */
   contentVersion: number;
 }
-
-/**
- * The shell exiting on its own (typed `exit`, crashed) used to just leave the
- * pane dead with a "[session ended]" message — the user had to close the tab
- * and reopen a new one to keep working. Auto-respawning a fresh shell in the
- * same pane instead makes that recoverable by default. Capped so a shell
- * that dies instantly on every launch (bad rc file, missing binary) doesn't
- * spin forever — the counter resets once a shell survives a little while, so
- * this only kicks in for a tight crash loop, not e.g. someone repeatedly
- * typing `exit`.
- */
-const MAX_AUTO_RESTARTS = 5;
-const RESTART_HEALTHY_MS = 3000;
 
 /**
  * A mouse-wheel scroll only moves xterm's DOM scroll container immediately;
@@ -180,6 +172,7 @@ const pendingCommands = new Map<string, string[]>();
 const scrollListeners = new Map<string, Set<(state: TerminalScrollState) => void>>();
 const connectionStatusListeners = new Set<() => void>();
 const SSH_EXIT_EVENT = "termany:ssh-session-exited";
+const SHELL_EXIT_EVENT = "termany:shell-session-exited";
 
 function notifyConnectionStatus() {
   for (const listener of connectionStatusListeners) listener();
@@ -203,6 +196,23 @@ export function subscribeSshNaturalExit(paneId: string, listener: () => void): (
   };
   window.addEventListener(SSH_EXIT_EVENT, onExit);
   return () => window.removeEventListener(SSH_EXIT_EVENT, onExit);
+}
+
+/**
+ * A local shell ended deliberately and its pane should go away with it.
+ *
+ * Global rather than per-pane (unlike the SSH hook above): the pane whose shell
+ * exited may be sitting in a backgrounded tab with no mounted component to hear
+ * about it, and it still needs to close. The store can't be imported here — it
+ * already imports this module — so App owns the listener.
+ */
+export function subscribeShellNaturalExit(listener: (paneId: string) => void): () => void {
+  const onExit = (event: Event) => {
+    const paneId = (event as CustomEvent<{ paneId: string }>).detail?.paneId;
+    if (paneId) listener(paneId);
+  };
+  window.addEventListener(SHELL_EXIT_EVENT, onExit);
+  return () => window.removeEventListener(SHELL_EXIT_EVENT, onExit);
 }
 
 export function terminalSessionId(paneId: string, sshTarget?: string): string {
@@ -1245,7 +1255,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       }
       writeSessionData(id, data);
     });
-    b.onExit((reason) => {
+    b.onExit((reason, exit) => {
       if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
       if (sshTarget) {
         session.ended = true;
@@ -1261,13 +1271,25 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       }
       // A truthy reason means the WebSocket itself couldn't connect, which
       // already exhausted its own retry budget (see WebSocketBackend) before
-      // giving up — not worth immediately repeating that losing battle. Only
-      // a natural shell exit (no reason) is auto-respawned.
+      // giving up — not worth immediately repeating that losing battle, and
+      // the shell never ran, so there is nothing to conclude about intent.
       if (reason) {
         term.write(`\r\n\x1b[2m[session ended: ${reason}]\x1b[0m\r\n`);
         return;
       }
-      if (Date.now() - session.spawnedAt > RESTART_HEALTHY_MS) session.restartAttempts = 0;
+      const aliveMs = Date.now() - session.spawnedAt;
+      if (aliveMs > RESTART_HEALTHY_MS) session.restartAttempts = 0;
+      // The user ended this shell on purpose (`exit`, Ctrl+D), so take the pane
+      // with it the way every other terminal does. Only the pane's FOREGROUND
+      // session gets that treatment: a local shell idling behind a visible SSH
+      // session must stay alive, or switching back would land on a dead pane.
+      if (
+        shellExitDisposition(exit, aliveMs) === "close-pane" &&
+        activeSessionByPane.get(paneId) === id
+      ) {
+        window.dispatchEvent(new CustomEvent(SHELL_EXIT_EVENT, { detail: { paneId } }));
+        return;
+      }
       if (session.restartAttempts >= MAX_AUTO_RESTARTS) {
         term.write(`\r\n\x1b[2m[session ended]\x1b[0m\r\n`);
         return;
