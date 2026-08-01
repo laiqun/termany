@@ -243,6 +243,18 @@ type ClientMessage =
   | { type: "input"; data: string }
   | { type: "resize"; cols: number; rows: number };
 
+// Mirrors packages/core's ShellExit wire format — kept in sync by hand because
+// this server bundles standalone (see scripts/bundle-server.mjs) and does not
+// depend on the workspace package. The frontend needs to tell "the user typed
+// `exit`" apart from "the shell crashed" to decide whether to close the pane,
+// and the CLOSE frame is the only channel that can't be confused with terminal
+// output. 4000-4999 is WebSocket's private-use close-code range.
+const SHELL_EXIT_CLOSE_CODE = 4000;
+
+function encodeShellExit(exitCode: number, signal: number | undefined): string {
+  return JSON.stringify({ exitCode, signal: signal ?? 0 });
+}
+
 // --- scroll history ---------------------------------------------------------
 // Every live session tails its raw PTY output into a per-session ring
 // (Wave-style: history survives restarts without the frontend serializing
@@ -450,7 +462,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
           `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
         );
       }
-      session.ws.close();
+      session.ws.close(SHELL_EXIT_CLOSE_CODE, encodeShellExit(exitCode, signal));
     }
     if (id) {
       activityTracker.noteExit(id, exitCode, signal);
