@@ -16,6 +16,7 @@ import {
 } from "./agentActivityPrompt";
 import { registerLocalPathLinks } from "./localLinks";
 import { registerWebLinks } from "./webLinks";
+import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
 
 /**
  * The terminal session registry.
@@ -1560,6 +1561,7 @@ export function attachSession(
     }
     fixWebkitImeDirectInsert(s.term);
     fixAbandonedImeFinalize(s.term);
+    fixWebkitGtkImeComposition(s.term, imeLog);
     traceImeEvents(s.term);
     s.term.onScroll(() => {
       const scrollState = readScrollState(s.term);
