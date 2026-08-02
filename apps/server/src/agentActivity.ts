@@ -112,8 +112,10 @@ function detectedInteractiveAgent(text: string): string | undefined {
   ) {
     return "codex";
   }
+  // No trailing \b after the name: stripping the escapes that positioned a box
+  // border can glue the version straight onto it ("Claude Codev2.1.220").
   if (
-    /\bClaude\s+Code(?:\s+v[^\s]+)?\b[\s\S]{0,1500}(?:bypass\s+permissions|shift\+tab\s+to\s+cycle)/i.test(
+    /\bClaude\s+Code(?:\s*v[\d.]+)?[\s\S]{0,1500}(?:bypass\s+permissions|shift\+tab\s+to\s+cycle)/i.test(
       text,
     )
   ) {
@@ -256,7 +258,14 @@ export class AgentActivityTracker {
     return true;
   }
 
-  /** Mark an exact in-flight task as blocked on a user decision or input. */
+  /**
+   * Mark an exact in-flight task as blocked on a user decision or input.
+   *
+   * A question reaches this from "done" as well as from "working": agents idle
+   * at their composer between steps, so a task can already read as finished by
+   * the time it stops to ask something. Waiting on a person is never the same
+   * as being finished, and only the matching epoch may repaint it.
+   */
   reportBlocked(id: string, taskEpoch: number): boolean {
     const current = this.activities.get(id);
     if (!current || current.taskEpoch !== taskEpoch) return false;
@@ -264,7 +273,7 @@ export class AgentActivityTracker {
     if (stream.taskEpoch !== taskEpoch) return false;
     stream.agentActive = true;
     stream.awaitingRegisteredInput = false;
-    if (current.status !== "working") return current.status === "error";
+    if (current.status === "error") return true;
     this.setCurrent(id, "error", taskEpoch, current.agent ?? stream.agent);
     return true;
   }
