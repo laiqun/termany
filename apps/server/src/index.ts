@@ -13,7 +13,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { AgentActivityTracker } from "./agentActivity.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
-import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
+import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import {
@@ -1213,7 +1213,7 @@ const http = createServer((req, res) => {
   // Locally installed CodexThemes packages (~/.codexthemes/themes): list each
   // package's manifest plus artwork/preview file paths, so Appearance can show
   // a one-click gallery. Images are served through the existing /api/fs/media.
-  if (req.method === "GET" && req.url === "/api/codex-themes") {
+  if (req.method === "GET" && reqUrl.pathname === "/api/codex-themes") {
     (async () => {
       const root = path.join(os.homedir(), ".codexthemes", "themes");
       let dirs: fs.Dirent[] = [];
@@ -1258,17 +1258,19 @@ const http = createServer((req, res) => {
   // Readers live in agentSessions.ts (claude, codex); unknown agents return
   // sessions: null so the frontend can show "not supported" instead of empty.
   // Repeated `root` params scope the list to sessions under those directories
-  // (the browser passes the current repo's worktree roots).
+  // (the browser passes the current repo's worktree roots); `cursor` + `limit`
+  // page through newest-first transcript headers without full-file token scans.
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-sessions") {
     (async () => {
       const agent = reqUrl.searchParams.get("agent") ?? "claude";
       const roots = reqUrl.searchParams.getAll("root").filter(Boolean);
-      json(200, { sessions: await listAgentSessions(agent, roots) });
+      const cursor = Number(reqUrl.searchParams.get("cursor") ?? 0);
+      const limit = Number(reqUrl.searchParams.get("limit") ?? DEFAULT_SESSION_PAGE_SIZE);
+      json(200, await listAgentSessions(agent, roots, cursor, limit));
     })().catch(fail);
     return;
   }
 
-  // Daily per-agent/per-model token usage for the SideRail usage dashboard.
   // Which build this server came from. The desktop app probes this on launch to
   // decide whether an already-listening server is safe to reuse; keep it cheap
   // and dependency-free so it answers even if everything else is broken.
@@ -1277,9 +1279,11 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Daily per-agent/per-model token usage for the SideRail usage dashboard.
+  // `since` defaults to today and is clamped server-side to at most 31 days.
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-usage") {
     (async () => {
-      json(200, { rows: await listAgentUsage() });
+      json(200, { rows: await listAgentUsage(reqUrl.searchParams.get("since")) });
     })().catch(fail);
     return;
   }
@@ -1296,6 +1300,10 @@ const http = createServer((req, res) => {
   // can offer "open in browser" for a dev server that is actually up — and
   // stop offering it the moment that server dies.
   if (req.method === "GET" && reqUrl.pathname === "/api/session-ports") {
+    // This is live process state. In particular, the first request often sees
+    // no ports while a dev server is still booting; a WebView must never cache
+    // that empty response and hide the header button indefinitely.
+    res.setHeader("Cache-Control", "no-store");
     (async () => {
       const rootPids: Record<string, number> = {};
       for (const [id, session] of ptySessions) rootPids[id] = session.pty.pid;
@@ -1427,7 +1435,6 @@ function tryListen(): void {
   listenAttempts++;
   http.listen(PORT, () => {
     console.log(`[termany] PTY server listening on ws://localhost:${PORT}  (shell: ${SHELL})`);
-    warmAgentSessionCache();
   });
 }
 

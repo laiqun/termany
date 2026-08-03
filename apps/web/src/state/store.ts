@@ -7,8 +7,15 @@ import {
 } from "../keybindings";
 import { disposePaneSessions } from "../terminal/manager";
 import { applyTheme, loadThemeId, THEMES } from "../themes";
+import {
+  loadRailVisibility,
+  saveRailVisibility,
+  type RailItemId,
+  type RailVisibility,
+} from "../rail-config";
 import { claimPage, readWindowPref, writeWindowPref } from "./windows";
 import { stepWorkspace } from "./layoutMerge";
+import { nextCyclablePaneView } from "./paneViewCycle";
 
 /**
  * Notion-style model:
@@ -30,7 +37,15 @@ import { stepWorkspace } from "./layoutMerge";
  *
  * A leaf's `id` is the terminal session id in the registry.
  */
-export type PaneView = "terminal" | "files" | "git" | "agent" | "web" | "monitor";
+export type PaneView =
+  | "terminal"
+  | "files"
+  | "git"
+  | "agent"
+  | "web"
+  | "monitor"
+  | "history"
+  | "usage";
 
 /** One slice of a reply, in arrival order: prose or a tool invocation.
  *  `status` is the ACP tool-call status: pending | in_progress | completed | failed.
@@ -194,6 +209,10 @@ interface State {
   /** Whether the right quick-action rail is hidden. */
   railCollapsed: boolean;
   toggleRail: () => void;
+
+  /** Which quick actions appear in the right rail. Persisted locally. */
+  railVisibility: RailVisibility;
+  setRailItemVisible: (id: RailItemId, visible: boolean) => void;
 
   /** Version of an available desktop update (badges + About), or null. */
   updateVersion: string | null;
@@ -576,7 +595,7 @@ function makeNode(title: string, cwdFrom?: string): TreeNode {
 
 /**
  * Which pane's directory a tab "is in" — the focused leaf's own shell, or,
- * for a shell-less view (files/git/agent), the pane that leaf anchors to.
+ * for any shell-less view, the pane that leaf anchors to.
  * A tab has no cwd of its own; only its leaves' shells do.
  */
 function tabCwdSource(h: HTab): string {
@@ -925,6 +944,14 @@ export const useStore = create<State>((set, get) => ({
 
   railCollapsed: false,
   toggleRail: () => set((s) => ({ railCollapsed: !s.railCollapsed })),
+
+  railVisibility: loadRailVisibility(),
+  setRailItemVisible: (id, visible) =>
+    set((s) => {
+      const railVisibility = { ...s.railVisibility, [id]: visible };
+      saveRailVisibility(railVisibility);
+      return { railVisibility };
+    }),
 
   updateVersion: null,
   setUpdateVersion: (v) => set({ updateVersion: v }),
@@ -1499,27 +1526,15 @@ export const useStore = create<State>((set, get) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
-            // ⌘E cycles through the same order shown in the pane menu and rail.
-            const flip = (p: Pane): Pane =>
-              p.kind === "leaf"
-                ? p.id === leafId
-                  ? p.sshTarget
-                    ? { ...p, view: "terminal" }
-                    : {
-                        ...p,
-                        view:
-                          p.view === "files"
-                            ? "git"
-                            : p.view === "git"
-                              ? "agent"
-                              : p.view === "agent"
-                                ? "web"
-                                : p.view === "web"
-                                  ? "terminal"
-                                  : "files",
-                      }
-                  : p
-                : { ...p, children: p.children.map(flip) };
+            // Cmd/Ctrl+E follows the same enabled views and order as the pane
+            // menu and right rail.
+            const flip = (p: Pane): Pane => {
+              if (p.kind === "split") return { ...p, children: p.children.map(flip) };
+              if (p.id !== leafId) return p;
+              if (p.sshTarget) return { ...p, view: "terminal" };
+              const next = nextCyclablePaneView(p.view, s.railVisibility);
+              return next ? { ...p, view: next } : p;
+            };
             return { ...h, layout: flip(h.layout) };
           }),
         })),

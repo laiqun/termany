@@ -151,6 +151,10 @@ export function noteSessionOutput(sessionId: string, data: string): void {
   if (!seen) seenUrls.set(sessionId, (seen = new Map()));
   for (const entry of found) seen.set(entry.port, { url: entry.url, seq: ++seq });
   refresh(sessionId);
+  // The first periodic poll normally ran when the shell was still idle. Once a
+  // tool prints its URL it is almost certainly listening already, so verify it
+  // now instead of leaving an empty header in place for up to POLL_MS.
+  if (pollTimer !== null) void pollPorts();
 }
 
 /** Drop everything remembered for a pane that has been closed for good. */
@@ -167,7 +171,10 @@ async function pollPorts(): Promise<void> {
   if (typeof document !== "undefined" && document.hidden) return;
   let payload: { ports?: Record<string, number[]> };
   try {
-    const response = await fetch(`${apiUrl()}/api/session-ports`);
+    // WKWebView can cache the first (usually empty) GET from before a dev server
+    // starts. `no-store` is required here because this endpoint is live kernel
+    // state, not an API response that may be reused between polling ticks.
+    const response = await fetch(`${apiUrl()}/api/session-ports`, { cache: "no-store" });
     if (!response.ok) return;
     payload = await response.json();
   } catch {

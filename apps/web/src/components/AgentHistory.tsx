@@ -45,6 +45,14 @@ interface Group {
   sessions: AgentSession[];
 }
 
+interface SessionPageState {
+  sessions: AgentSession[] | null | undefined;
+  nextCursor: string | null;
+  loadingMore: boolean;
+}
+
+const SESSION_PAGE_SIZE = 30;
+
 /**
  * How each supported agent resumes a session id from inside its project dir.
  * Built from the user's configured binary and launch args (Settings → Agents),
@@ -110,10 +118,9 @@ function formatTokens(n: number): string {
  * a repo, the pane's directory. Tab flips between that scope and everything.
  * Selecting a session opens a fresh terminal pane, cd's to the session's own
  * project directory (resume only works from there — a deleted worktree falls
- * back to the repo root), and runs the agent's resume command. Same modal
- * skeleton and styles as SearchPalette.
+ * back to the repo root), and runs the agent's resume command.
  */
-export function AgentHistory({ onClose }: { onClose: () => void }) {
+export function AgentHistory({ autoFocus = false }: { autoFocus?: boolean }) {
   const { t } = useI18n();
   const ime = useImeGuard();
   const addPane = useStore((s) => s.addPane);
@@ -122,8 +129,8 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
   const workspaces = useStore((s) => s.workspaces);
   const agents = useAgentConfigs().filter((a) => a.enabled);
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "claude");
-  // list key ("agent" or "agent|scoped") → sessions; null = unsupported.
-  const [byKey, setByKey] = useState<Record<string, AgentSession[] | null>>({});
+  // list key ("agent" or "agent|scoped") → paged sessions; null = unsupported.
+  const [byKey, setByKey] = useState<Record<string, SessionPageState>>({});
   const [error, setError] = useState(false);
   const [stale, setStale] = useState(false);
   const [query, setQuery] = useState("");
@@ -132,8 +139,8 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
   // worth scoping to) — the toggle hides and the list shows everything.
   const [scopeInfo, setScopeInfo] = useState<ScopeInfo | null | undefined>(undefined);
   const [scope, setScope] = useState<"scoped" | "all">("scoped");
-  // The focused pane's session at the moment the modal opened, frozen so a
-  // focus change underneath doesn't reshuffle the list mid-use.
+  // The pane this history view was created from, frozen so later focus changes
+  // do not reshuffle the list mid-use.
   const [gitSession] = useState(() => focusedCwdSession(useStore.getState()));
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -178,7 +185,8 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
   }, [gitSession]);
 
   const listKey = scope === "scoped" && scopeInfo ? `${agentId}|scoped` : agentId;
-  const sessions = byKey[listKey];
+  const page = byKey[listKey];
+  const sessions = page?.sessions;
 
   useEffect(() => {
     // The scoped fetch needs the roots; wait for scope resolution first.
@@ -186,12 +194,21 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
     if (listKey in byKey) return;
     let cancelled = false;
     setError(false);
-    const params = new URLSearchParams({ agent: agentId });
+    const params = new URLSearchParams({ agent: agentId, limit: String(SESSION_PAGE_SIZE) });
     if (scope === "scoped" && scopeInfo) for (const r of scopeInfo.roots) params.append("root", r);
     fetch(apiPath(`/api/agent-sessions?${params}`))
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((data) => {
-        if (!cancelled) setByKey((m) => ({ ...m, [listKey]: data.sessions ?? null }));
+        if (!cancelled) {
+          setByKey((m) => ({
+            ...m,
+            [listKey]: {
+              sessions: Array.isArray(data.sessions) ? data.sessions : null,
+              nextCursor: typeof data.nextCursor === "string" ? data.nextCursor : null,
+              loadingMore: false,
+            },
+          }));
+        }
       })
       .catch((e: Error) => {
         if (cancelled) return;
@@ -203,6 +220,47 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
       cancelled = true;
     };
   }, [agentId, listKey, byKey, scope, scopeInfo]);
+
+  const loadMore = () => {
+    const current = byKey[listKey];
+    if (!current?.nextCursor || current.loadingMore || !Array.isArray(current.sessions)) return;
+    const cursor = current.nextCursor;
+    setByKey((m) => ({ ...m, [listKey]: { ...current, loadingMore: true } }));
+    const params = new URLSearchParams({
+      agent: agentId,
+      limit: String(SESSION_PAGE_SIZE),
+      cursor,
+    });
+    if (scope === "scoped" && scopeInfo) for (const root of scopeInfo.roots) params.append("root", root);
+    fetch(apiPath(`/api/agent-sessions?${params}`))
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data) => {
+        setByKey((m) => {
+          const latest = m[listKey];
+          if (!latest || !Array.isArray(latest.sessions)) return m;
+          const seen = new Set(latest.sessions.map((session) => session.sessionId));
+          const additions = Array.isArray(data.sessions)
+            ? data.sessions.filter((session: AgentSession) => !seen.has(session.sessionId))
+            : [];
+          return {
+            ...m,
+            [listKey]: {
+              sessions: [...latest.sessions, ...additions],
+              nextCursor: typeof data.nextCursor === "string" ? data.nextCursor : null,
+              loadingMore: false,
+            },
+          };
+        });
+      })
+      .catch((e: Error) => {
+        setStale(e.message === "404");
+        setError(true);
+        setByKey((m) => {
+          const latest = m[listKey];
+          return latest ? { ...m, [listKey]: { ...latest, loadingMore: false } } : m;
+        });
+      });
+  };
 
   // Server order is already newest-first; filtering preserves it. In repo
   // scope the flat order regroups by worktree — current one first, the rest
@@ -258,7 +316,6 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
     const loc = openPanes.get(`${agentId}|${s.sessionId}`);
     if (loc) {
       jumpToResult(loc);
-      onClose();
       return;
     }
     const resumeCommand = RESUME_COMMANDS[agentId];
@@ -279,7 +336,6 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
       queueCommand(paneId, cwd ? `cd ${shellQuote(cwd)} && ${run}` : run);
       setPaneAgentSession(paneId, { agent: agentId, sessionId: s.sessionId });
     }
-    onClose();
   };
 
   const switchAgent = (id: string) => {
@@ -341,8 +397,7 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
   const emptyScoped = scope === "scoped" && scopeInfo;
 
   return (
-    <div className="search-backdrop" onClick={onClose}>
-      <div className="search-palette search-palette-lg" onClick={(e) => e.stopPropagation()}>
+    <div className="agent-history-pane">
         <div className="search-input-row">
           <span className="search-input-ico">
             <HistoryIcon />
@@ -350,7 +405,7 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
           <input
             ref={inputRef}
             className="search-input"
-            autoFocus
+            autoFocus={autoFocus}
             autoCorrect="off"
             autoComplete="off"
             autoCapitalize="off"
@@ -361,9 +416,7 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (ime.handled(e)) return;
-              if (e.key === "Escape") {
-                onClose();
-              } else if (e.key === "Tab" && scopeInfo !== null) {
+              if (e.key === "Tab" && scopeInfo !== null) {
                 e.preventDefault();
                 setScope((v) => (v === "all" ? "scoped" : "all"));
               } else if (e.key === "ArrowDown") {
@@ -448,8 +501,12 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
                 ));
               })()
             : rows.map((s, idx) => renderRow(s, idx, false))}
+          {!error && Array.isArray(sessions) && page?.nextCursor && (
+            <button className="history-load-more" disabled={page.loadingMore} onClick={loadMore}>
+              {t(page.loadingMore ? "history.loadingMore" : "history.loadMore")}
+            </button>
+          )}
         </div>
-      </div>
     </div>
   );
 }
