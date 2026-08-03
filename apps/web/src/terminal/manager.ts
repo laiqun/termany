@@ -13,7 +13,13 @@ import { ACTIONS, loadKeybindings, matchChord } from "../keybindings";
 import {
   agentConfirmationPromptVisible,
   agentInputPromptVisible,
+  screenSignature,
+  shellPromptVisible,
 } from "./agentActivityPrompt";
+import {
+  AgentIdleWatcher,
+  type AgentScreenTransition,
+} from "./agentIdleWatcher";
 import { SYMBOLS_FONT_FAMILY, withSymbolsFallback } from "./fonts";
 import { registerLocalPathLinks } from "./localLinks";
 import {
@@ -243,13 +249,13 @@ let agentActivitySource: EventSource | null = null;
 let agentActivityInstance = "";
 let agentActivityRevision = -1;
 const retiredAgentActivityInstances = new Set<string>();
-const agentIdleTimers = new Map<string, number>();
+const agentIdleTimers = new Map<string, { timer: number; deadline: number }>();
 const agentIdleReports = new Map<string, number>();
-const agentSawAlternateScreen = new Set<string>();
+const agentIdleWatchers = new Map<string, AgentIdleWatcher>();
 const agentReportedInactiveEpochs = new Map<string, number>();
 const agentTaskStartScreens = new Map<
   string,
-  { taskEpoch: number; screen: string; contentVersion: number }
+  { taskEpoch: number; signature: string }
 >();
 const terminalInputSendChains = new Map<string, Promise<void>>();
 const commandSendChains = new Map<string, Promise<void>>();
@@ -265,11 +271,7 @@ const DONE_RE =
   /(?:^|\b)(done|completed|complete|finished|success|succeeded)(?:\b|$)|all checks passed|task complete|changes? applied|implementation complete/i;
 const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|building|testing|installing|searching|reading)\b/i;
 const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
-const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
-const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
-const AGENT_BUSY_SCREEN_RE =
-  /\b(?:esc|ctrl(?:\+|-)?c)\s+to\s+(?:interrupt|cancel|stop)\b|^[\s│┃┆┊╎╏|]*[•●◦✳✻⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:working|thinking|running|executing|editing|applying|building|testing|installing|searching|reading)\b/im;
-const AGENT_IDLE_CONFIRM_MS = 200;
+const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›❯>]\s*$/;
 const AGENT_REGISTER_TIMEOUT_MS = 2_000;
 
 function notifyAgentActivity() {
@@ -277,8 +279,8 @@ function notifyAgentActivity() {
 }
 
 function clearAgentIdleTimer(id: string) {
-  const timer = agentIdleTimers.get(id);
-  if (timer !== undefined) window.clearTimeout(timer);
+  const armed = agentIdleTimers.get(id);
+  if (armed) window.clearTimeout(armed.timer);
   agentIdleTimers.delete(id);
 }
 
@@ -481,61 +483,46 @@ function startLocalAgentActivity(
   const session = sessions.get(id);
   clearAgentIdleTimer(id);
   agentIdleReports.delete(id);
-  agentSawAlternateScreen.delete(id);
-  if (session?.term.buffer.active.type === "alternate") {
-    agentSawAlternateScreen.add(id);
-  }
+  agentIdleWatcher(id).reset(
+    session?.term.buffer.active.type === "alternate",
+  );
   agentReportedInactiveEpochs.delete(id);
   agentTaskStartScreens.set(id, {
     taskEpoch: nextEpoch,
-    screen: sessionVisibleText(id),
-    contentVersion: session?.contentVersion ?? 0,
+    signature: sessionScreenSignature(id),
   });
   setAgentActivity(id, "working", agent, nextEpoch);
 }
 
-type RenderedAgentTransition = {
-  status: Extract<AgentActivityStatus, "done" | "error">;
-  agentActive: boolean;
-};
+type RenderedAgentTransition = AgentScreenTransition;
 
-function visibleScreenActivityTransition(
-  id: string,
-): RenderedAgentTransition | null {
+function agentIdleWatcher(id: string): AgentIdleWatcher {
+  let watcher = agentIdleWatchers.get(id);
+  if (!watcher) {
+    watcher = new AgentIdleWatcher();
+    agentIdleWatchers.set(id, watcher);
+  }
+  return watcher;
+}
+
+/**
+ * Feed the freshly rendered screen to this session's watcher. Judging live is
+ * what lets a repaint restart the quiet window instead of banking silence the
+ * agent never actually took.
+ */
+function observeScreenForActivity(id: string): RenderedAgentTransition | null {
   const session = sessions.get(id);
   if (!session) return null;
-  const text = sessionVisibleText(id);
-  if (!text.trim()) return null;
-  if (session.term.buffer.active.type === "alternate") {
-    agentSawAlternateScreen.add(id);
-  }
-  if (agentConfirmationPromptVisible(text, sessionCursorLine(id))) {
-    return { status: "error", agentActive: true };
-  }
-  const busyTail = text
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim())
-    .slice(-12)
-    .join("\n");
-  if (AGENT_BUSY_SCREEN_RE.test(busyTail)) return null;
-  if (agentInputPromptVisible(text)) {
-    return { status: "done", agentActive: true };
-  }
-  const tail = text
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim())
-    .slice(-4)
-    .join("\n");
-  if (
-    session.term.buffer.active.type === "normal" &&
-    agentSawAlternateScreen.has(id) &&
-    SHELL_PROMPT_RE.test(tail)
-  ) {
-    return { status: "done", agentActive: false };
-  }
-  return null;
+  const watcher = agentIdleWatcher(id);
+  watcher.update(
+    {
+      visible: sessionVisibleText(id),
+      cursorLine: sessionCursorLine(id),
+      isAlternate: session.term.buffer.active.type === "alternate",
+    },
+    Date.now(),
+  );
+  return watcher.pending;
 }
 
 function completeAgentActivityIfIdle(id: string) {
@@ -549,19 +536,25 @@ function completeAgentActivityIfIdle(id: string) {
     clearAgentIdleTimer(id);
     return;
   }
-  const transition = visibleScreenActivityTransition(id);
+  const transition = observeScreenForActivity(id);
   const start = agentTaskStartScreens.get(id);
+  // A task the agent has not answered on screen yet concludes nothing: the
+  // composer it was submitted from still looks exactly like an idle one.
   if (
     activity.status === "working" &&
     start?.taskEpoch === activity.taskEpoch &&
-    start.screen === sessionVisibleText(id) &&
-    start.contentVersion === session.contentVersion
+    start.signature === sessionScreenSignature(id)
   ) {
     clearAgentIdleTimer(id);
     return;
   }
+  // A task that already reads as finished may still stop to ask something —
+  // agents idle at their composer between steps, so the question lands after
+  // the green. Waiting on a person is not the same as being done, so a
+  // confirmation is allowed to repaint a finished task; nothing else is.
   if (
     activity.status === "done" &&
+    transition?.status !== "error" &&
     (transition?.status !== "done" ||
       transition.agentActive ||
       agentReportedInactiveEpochs.get(id) === activity.taskEpoch)
@@ -573,34 +566,42 @@ function completeAgentActivityIfIdle(id: string) {
     clearAgentIdleTimer(id);
     return;
   }
-  if (
-    agentIdleTimers.has(id) ||
-    agentIdleReports.get(id) === activity.taskEpoch
-  ) {
+  if (agentIdleReports.get(id) === activity.taskEpoch) return;
+  // The watcher pushes its deadline out on every repaint, so re-arming only
+  // when the deadline actually moves keeps one timeout per quiet window.
+  const deadline = agentIdleWatcher(id).deadline;
+  if (deadline === null) {
+    clearAgentIdleTimer(id);
     return;
   }
+  const armed = agentIdleTimers.get(id);
+  if (armed?.deadline === deadline) return;
+  clearAgentIdleTimer(id);
 
   const observedEpoch = activity.taskEpoch;
   const observedStatus = transition.status;
-  agentIdleTimers.set(
-    id,
-    window.setTimeout(async () => {
+  agentIdleTimers.set(id, {
+    deadline,
+    timer: window.setTimeout(async () => {
       agentIdleTimers.delete(id);
       const latest = agentActivities.get(id);
-      const confirmed = visibleScreenActivityTransition(id);
+      const watcher = agentIdleWatcher(id);
+      const confirmed = watcher.pending;
       if (
         !latest ||
         (latest.status !== "working" && latest.status !== "done") ||
         latest.taskEpoch !== observedEpoch ||
         !confirmed ||
         confirmed.status !== observedStatus ||
+        watcher.deadline !== deadline ||
         (latest.status === "done" &&
+          confirmed.status !== "error" &&
           (confirmed.status !== "done" || confirmed.agentActive))
       ) {
         return;
       }
       if (isDemo) {
-        if (latest.status === "working") {
+        if (latest.status === "working" || confirmed.status === "error") {
           setAgentActivity(
             id,
             confirmed.status,
@@ -635,8 +636,8 @@ function completeAgentActivityIfIdle(id: string) {
           agentIdleReports.delete(id);
         }
       }
-    }, AGENT_IDLE_CONFIRM_MS),
-  );
+    }, Math.max(0, deadline - Date.now())),
+  });
 }
 
 function updateAgentActivityFromOutput(id: string, data: string) {
@@ -656,7 +657,7 @@ function updateAgentActivityFromOutput(id: string, data: string) {
     setAgentActivity(id, "done", agent);
     return;
   }
-  if (prev?.status === "working" && (ALT_SCREEN_EXIT_RE.test(data) || SHELL_PROMPT_RE.test(text) || AGENT_IDLE_PROMPT_RE.test(text))) {
+  if (prev?.status === "working" && (ALT_SCREEN_EXIT_RE.test(data) || shellPromptVisible(text) || AGENT_IDLE_PROMPT_RE.test(text))) {
     setAgentActivity(id, "done", agent);
     return;
   }
@@ -717,8 +718,7 @@ function writeTerminalInput(id: string, session: Session, data: string) {
           clearAgentIdleTimer(id);
           agentTaskStartScreens.set(id, {
             taskEpoch: registered.taskEpoch,
-            screen: sessionVisibleText(id),
-            contentVersion: session.contentVersion,
+            signature: sessionScreenSignature(id),
           });
         }
       }
@@ -1864,6 +1864,11 @@ function sessionVisibleText(id: string): string {
   return lines.join("\n");
 }
 
+/** The visible screen reduced to what only real work could have changed. */
+function sessionScreenSignature(id: string): string {
+  return screenSignature(sessionVisibleText(id), sessionCursorLine(id));
+}
+
 function sessionCursorLine(id: string): string {
   const session = sessions.get(id);
   if (!session) return "";
@@ -1888,7 +1893,7 @@ export function disposeSession(id: string) {
   notifyConnectionStatus();
   clearAgentIdleTimer(id);
   agentIdleReports.delete(id);
-  agentSawAlternateScreen.delete(id);
+  agentIdleWatchers.delete(id);
   agentReportedInactiveEpochs.delete(id);
   agentTaskStartScreens.delete(id);
   terminalInputSendChains.delete(id);
@@ -1923,7 +1928,7 @@ export function disposePaneSessions(paneId: string) {
     restoreSnapshots.delete(id);
     clearAgentIdleTimer(id);
     agentIdleReports.delete(id);
-    agentSawAlternateScreen.delete(id);
+    agentIdleWatchers.delete(id);
     agentReportedInactiveEpochs.delete(id);
     agentTaskStartScreens.delete(id);
     terminalInputSendChains.delete(id);

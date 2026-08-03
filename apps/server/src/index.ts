@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { AgentActivityTracker } from "./agentActivity.js";
+import { sampleOnceOutputSettles } from "./foregroundJob.js";
 import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
@@ -464,13 +465,28 @@ function isOpen(ws: WebSocket | null): ws is WebSocket {
 
 /** Wire a freshly spawned pty's output into its ring + whatever ws is attached. */
 function wireSession(id: string | undefined, session: PtySession): void {
+  // The PTY's foreground process group: proof of when a command — an agent
+  // included — hands the terminal back, where the rendered screen can only
+  // recognize a prompt by how it looks. See foregroundJob.ts for why this
+  // reads the name the shell answers to rather than the command it was
+  // spawned from, and why an unmoving job has to conclude nothing.
+  let shellJob = "";
+  const jobSampler = sampleOnceOutputSettles(() => {
+    const job = session.pty.process || "";
+    if (!shellJob) shellJob = job || (session.sshTarget ? "ssh" : SHELL);
+    if (id) activityTracker.noteForegroundJob(id, job, shellJob);
+  });
   session.pty.onData((data) => {
     if (isOpen(session.ws)) session.ws.send(data);
     ringAppend(session.ring, data);
-    if (id) activityTracker.noteOutput(id, data);
+    if (id) {
+      activityTracker.noteOutput(id, data);
+      jobSampler.noteOutput();
+    }
     if (IS_WIN) trackOscCwd(session.pty.pid, data);
   });
   session.pty.onExit(({ exitCode, signal }) => {
+    jobSampler.dispose();
     oscCwdByPid.delete(session.pty.pid);
     console.error(
       `[termany] shell exited (pid: ${session.pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
