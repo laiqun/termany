@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentConfigs } from "../agents";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
+import { useImeGuard } from "../imeGuard";
 import { agentSessionPanes, useStore } from "../state/store";
 import { queueCommand } from "../terminal/manager";
 import { AgentIcon, HistoryIcon } from "./icons";
@@ -70,6 +71,7 @@ function formatTokens(n: number): string {
  */
 export function AgentHistory({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
+  const ime = useImeGuard();
   const addPane = useStore((s) => s.addPane);
   const jumpToResult = useStore((s) => s.jumpToResult);
   const setPaneAgentSession = useStore((s) => s.setPaneAgentSession);
@@ -172,11 +174,12 @@ export function AgentHistory({ onClose }: { onClose: () => void }) {
             autoComplete="off"
             autoCapitalize="off"
             spellCheck={false}
+            {...ime.props}
             value={query}
             placeholder={t("history.placeholder", { agent: agentName })}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing) return;
+              if (ime.handled(e)) return;
               if (e.key === "Escape") {
                 onClose();
               } else if (e.key === "ArrowDown") {

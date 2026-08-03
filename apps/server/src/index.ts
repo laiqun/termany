@@ -419,12 +419,41 @@ function activityChanged(): void {
   }
 }
 
-setInterval(() => {
-  for (const stream of activityStreams) {
+/**
+ * Clients watching the workspace layout. Every app window renders the same
+ * shared record, so a change made in one has to reach the others — without this
+ * a second window would keep PUTting the copy it hydrated with at startup and
+ * quietly undo the first window's edits (saveState is a whole-table rewrite).
+ *
+ * Like the activity stream above, events carry a complete snapshot, so a
+ * reconnect is self-healing. Each is tagged with the writer's client id, which
+ * that client uses to ignore the echo of its own save.
+ */
+const stateStreams = new Set<ServerResponse>();
+
+function stateEvent(clientId: string): string {
+  return `event: state\ndata: ${JSON.stringify({ clientId, ...loadState() })}\n\n`;
+}
+
+function stateChanged(clientId: string): void {
+  const event = stateEvent(clientId);
+  for (const stream of stateStreams) {
     try {
-      stream.write(": keepalive\n\n");
+      stream.write(event);
     } catch {
-      activityStreams.delete(stream);
+      stateStreams.delete(stream);
+    }
+  }
+}
+
+setInterval(() => {
+  for (const streams of [activityStreams, stateStreams]) {
+    for (const stream of streams) {
+      try {
+        stream.write(": keepalive\n\n");
+      } catch {
+        streams.delete(stream);
+      }
     }
   }
 }, 20_000).unref();
@@ -885,10 +914,29 @@ const http = createServer((req, res) => {
     json(200, loadState());
     return;
   }
+  if (req.method === "GET" && reqUrl.pathname === "/api/state/events") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    });
+    stateStreams.add(res);
+    res.write("retry: 1000\n");
+    // Open with a snapshot so a client that reconnects after a dropped stream
+    // catches up on whatever it missed instead of drifting until its next save.
+    // The empty client id belongs to no one, so nobody treats it as an echo.
+    res.write(stateEvent(""));
+    res.on("close", () => stateStreams.delete(res));
+    res.on("error", () => stateStreams.delete(res));
+    return;
+  }
   if (req.method === "PUT" && req.url === "/api/state") {
     readJson(req)
       .then((body) => {
         saveState(body);
+        // `clientId` is the writer's own tag, not part of the layout — it comes
+        // straight back out on the stream so the sender can skip its own echo.
+        stateChanged(typeof body?.clientId === "string" ? body.clientId : "");
         json(200, { ok: true });
       })
       .catch(fail);

@@ -1253,6 +1253,20 @@ html.tauri #root {
   margin-left: 2px;
   flex-shrink: 0;
 }
+/* Open in another window: still clickable — selecting it raises that window —
+   just clearly not somewhere this one is going. The dot marks the row. */
+.tree-row.elsewhere .tree-title {
+  opacity: 0.55;
+}
+.tree-elsewhere {
+  width: 5px;
+  height: 5px;
+  margin-left: 4px;
+  margin-right: 3px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  flex-shrink: 0;
+}
 .activity-count {
   display: inline-flex;
   align-items: center;

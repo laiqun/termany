@@ -7,6 +7,8 @@ import {
 } from "../keybindings";
 import { disposePaneSessions } from "../terminal/manager";
 import { applyTheme, loadThemeId, THEMES } from "../themes";
+import { claimPage, readWindowPref, writeWindowPref } from "./windows";
+import { stepWorkspace } from "./layoutMerge";
 
 /**
  * Notion-style model:
@@ -153,12 +155,31 @@ export interface Workspace {
   /** Emoji icon; when unset the UI falls back to the title's first letter. */
   icon?: string;
   roots: TreeNode[];
-  activeNode: string;
 }
 
 interface State {
   workspaces: Workspace[];
+  /**
+   * The workspace THIS window is showing. Unlike everything under it, this is
+   * per-window rather than shared — see state/windows.ts. Change it through
+   * `setActiveWorkspace`, never with a bare `set`, so ownership stays honest.
+   */
   activeWorkspace: string;
+  /**
+   * Which page each workspace is showing IN THIS WINDOW (`workspace id` →
+   * `page id`). Every window renders the same workspaces, tabs and panes; where
+   * each one is looking is its own business, which is what lets a second
+   * monitor hold a different page of the same project. Persisted per window,
+   * not to the server — see state/windows.ts.
+   */
+  activeNodes: Record<string, string>;
+  /**
+   * Pages another window currently has open. Selecting one raises that window
+   * instead of opening it here: a page owns live terminals, and the PTY server
+   * keeps a single socket per pane. Always empty in a browser.
+   */
+  takenPages: Set<string>;
+  setTakenPages: (taken: Set<string>) => void;
 
   /** Active theme id (see themes.ts). Persisted to localStorage. */
   theme: string;
@@ -571,8 +592,7 @@ function nodeCwdSource(n: TreeNode): string | undefined {
 }
 
 function initialWorkspace(title: string): Workspace {
-  const root = makeNode("page 1");
-  return { id: id(), title, roots: [root], activeNode: root.id };
+  return { id: id(), title, roots: [makeNode("page 1")] };
 }
 
 // --- immutable tree helpers ------------------------------------------------
@@ -643,6 +663,15 @@ function visibleTreeNodes(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
   return out;
 }
 
+/** Every page in a tree, collapsed or not — for "is any page still free?". */
+function flattenNodes(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
+  for (const node of nodes) {
+    out.push(node);
+    flattenNodes(node.children, out);
+  }
+  return out;
+}
+
 /** Root-to-node path, used for parent navigation and hidden-selection recovery. */
 function findNodePath(
   nodes: TreeNode[],
@@ -658,25 +687,27 @@ function findNodePath(
   return undefined;
 }
 
-function selectAdjacentVisibleNode(ws: Workspace, offset: -1 | 1): Workspace {
+/** The page `offset` steps away in the visible tree, or undefined at the end. */
+function adjacentVisibleNodeId(
+  ws: Workspace,
+  currentId: string,
+  offset: -1 | 1
+): string | undefined {
   const visible = visibleTreeNodes(ws.roots);
-  const index = visible.findIndex((node) => node.id === ws.activeNode);
+  const index = visible.findIndex((node) => node.id === currentId);
 
   // Collapse-all or a mouse collapse can leave the active page hidden. Bring
   // selection back to its nearest visible ancestor before moving any farther.
   if (index < 0) {
-    const path = findNodePath(ws.roots, ws.activeNode);
-    if (!path) return ws;
+    const path = findNodePath(ws.roots, currentId);
+    if (!path) return undefined;
     for (let i = path.length - 1; i >= 0; i--) {
-      if (visible.some((node) => node.id === path[i].id)) {
-        return { ...ws, activeNode: path[i].id };
-      }
+      if (visible.some((node) => node.id === path[i].id)) return path[i].id;
     }
-    return ws;
+    return undefined;
   }
 
-  const target = visible[index + offset];
-  return target ? { ...ws, activeNode: target.id } : ws;
+  return visible[index + offset]?.id;
 }
 
 /** Expand every ancestor of `nodeId` (not the node itself) so it's visible in the tree. */
@@ -712,6 +743,54 @@ function inWs(
 /** Map only the active workspace; pass others through untouched. */
 function inActiveWs(s: State, fn: (ws: Workspace) => Workspace): Workspace[] {
   return inWs(s.workspaces, s.activeWorkspace, fn);
+}
+
+/**
+ * The page THIS window is on. Everything that acts on "the current page" reads
+ * it from here rather than from the workspace record, which is shared with the
+ * other windows — that's what lets two monitors sit on different pages of one
+ * project. Falls back to the first page for a workspace this window has not
+ * opened before.
+ */
+function activeNodeId(s: State): string {
+  const stored = s.activeNodes[s.activeWorkspace];
+  if (stored) return stored;
+  const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+  return ws?.roots[0]?.id ?? "";
+}
+
+/** Keyboard tree navigation: one visible page up or down, ownership respected. */
+function stepToVisibleNode(s: State, offset: -1 | 1): Pick<State, "activeNodes"> | null {
+  const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+  if (!ws) return null;
+  const next = adjacentVisibleNodeId(ws, activeNodeId(s), offset);
+  return next ? goToPage(s, next) : null;
+}
+
+/** State patch for "this window now shows `nodeId`". */
+function showPage(s: State, nodeId: string): Pick<State, "activeNodes"> {
+  return { activeNodes: { ...s.activeNodes, [s.activeWorkspace]: nodeId } };
+}
+
+/**
+ * Move this window to `nodeId` unless another window is already showing it —
+ * then raise that window and stay put. Pages are exclusive because they own
+ * live terminals: the PTY server keeps one socket per pane and closes the
+ * previous on reattach, so two windows on one page would fight over every
+ * shell in it. Newly created pages skip the check — nobody else can have them.
+ */
+function goToPage(
+  s: State,
+  nodeId: string,
+  opts?: { fresh?: true }
+): Pick<State, "activeNodes"> | null {
+  if (!nodeId || nodeId === activeNodeId(s)) return null;
+  if (!opts?.fresh && s.takenPages.has(nodeId)) {
+    void claimPage(nodeId); // raises the window that holds it
+    return null;
+  }
+  void claimPage(nodeId);
+  return showPage(s, nodeId);
 }
 
 /** Update a leaf by globally unique id even if its tab was backgrounded while
@@ -809,7 +888,7 @@ function closeLeaf(s: State, leafId: string): Partial<State> {
   };
 }
 
-export const useStore = create<State>((set) => ({
+export const useStore = create<State>((set, get) => ({
   workspaces: [first],
   activeWorkspace: first.id,
 
@@ -833,8 +912,16 @@ export const useStore = create<State>((set) => ({
       return { theme: prev.id };
     }),
 
-  sidebarCollapsed: false,
-  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  // Chrome, not data: each window keeps its own sidebar open or shut, so
+  // hiding it in one doesn't reach across and hide it in the others. sync.ts
+  // seeds it from the old shared value the first time a window runs.
+  sidebarCollapsed: readWindowPref("sidebarCollapsed") === "1",
+  toggleSidebar: () =>
+    set((s) => {
+      const sidebarCollapsed = !s.sidebarCollapsed;
+      writeWindowPref("sidebarCollapsed", sidebarCollapsed ? "1" : "0");
+      return { sidebarCollapsed };
+    }),
 
   railCollapsed: false,
   toggleRail: () => set((s) => ({ railCollapsed: !s.railCollapsed })),
@@ -856,27 +943,62 @@ export const useStore = create<State>((set) => ({
       return { keybindings: next };
     }),
 
-  addWorkspace: (init) =>
+  activeNodes: {},
+  takenPages: new Set<string>(),
+  setTakenPages: (taken) => set({ takenPages: taken }),
+
+  addWorkspace: (init) => {
+    const ws = initialWorkspace(init?.title?.trim() || `ws ${get().workspaces.length + 1}`);
+    if (init?.icon) ws.icon = init.icon;
+    set((s) => ({
+      workspaces: [...s.workspaces, ws],
+      activeWorkspace: ws.id,
+      // Brand new, so nobody else can be on its page — claim it outright.
+      activeNodes: { ...s.activeNodes, [ws.id]: ws.roots[0].id },
+    }));
+    void claimPage(ws.roots[0].id);
+  },
+
+  /**
+   * Workspaces are shared, not owned: any number of windows can sit in the same
+   * one, which is the whole point of spreading a project across monitors. What
+   * can't overlap is the PAGE each window shows — so this also settles which
+   * page of `wsId` this window lands on. Safe to call for the workspace already
+   * active; that's how a window claims its first page at startup.
+   */
+  setActiveWorkspace: (wsId) =>
     set((s) => {
-      const ws = initialWorkspace(init?.title?.trim() || `ws ${s.workspaces.length + 1}`);
-      if (init?.icon) ws.icon = init.icon;
-      return { workspaces: [...s.workspaces, ws], activeWorkspace: ws.id };
+      const ws = s.workspaces.find((w) => w.id === wsId);
+      if (!ws) return s;
+      const pages = flattenNodes(ws.roots);
+      const settled = s.activeNodes[wsId];
+      const keep =
+        settled && pages.some((n) => n.id === settled) && !s.takenPages.has(settled)
+          ? settled
+          : undefined;
+      const landing = keep ?? pages.find((n) => !s.takenPages.has(n.id))?.id;
+
+      if (landing) {
+        if (wsId === s.activeWorkspace && landing === settled) return s;
+        void claimPage(landing);
+        return { activeWorkspace: wsId, activeNodes: { ...s.activeNodes, [wsId]: landing } };
+      }
+
+      // Every page is already on screen in another window. Open a fresh one
+      // rather than doubling up on shells somebody else is working in.
+      const page = makeNode(`page ${pages.length + 1}`);
+      void claimPage(page.id);
+      return {
+        activeWorkspace: wsId,
+        workspaces: s.workspaces.map((w) =>
+          w.id === wsId ? { ...w, roots: [...w.roots, page] } : w
+        ),
+        activeNodes: { ...s.activeNodes, [wsId]: page.id },
+      };
     }),
 
-  setActiveWorkspace: (wsId) => set({ activeWorkspace: wsId }),
-
-  nextWorkspace: () =>
-    set((s) => {
-      const i = s.workspaces.findIndex((w) => w.id === s.activeWorkspace);
-      return { activeWorkspace: s.workspaces[(i + 1) % s.workspaces.length].id };
-    }),
-
-  prevWorkspace: () =>
-    set((s) => {
-      const len = s.workspaces.length;
-      const i = s.workspaces.findIndex((w) => w.id === s.activeWorkspace);
-      return { activeWorkspace: s.workspaces[(i - 1 + len) % len].id };
-    }),
+  nextWorkspace: () => get().setActiveWorkspace(stepWorkspace(get(), 1)),
+  prevWorkspace: () => get().setActiveWorkspace(stepWorkspace(get(), -1)),
 
   renameWorkspace: (wsId, title) =>
     set((s) => ({
@@ -888,37 +1010,51 @@ export const useStore = create<State>((set) => ({
       workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, icon: icon ?? undefined } : w)),
     })),
 
-  deleteWorkspace: (wsId) =>
-    set((s) => {
-      if (s.workspaces.length <= 1) return s;
-      const target = s.workspaces.find((w) => w.id === wsId);
-      if (!target) return s;
-      target.roots.flatMap(subtreeLeafIds).forEach(disposePaneSessions);
-      const workspaces = s.workspaces.filter((w) => w.id !== wsId);
-      const activeWorkspace =
-        s.activeWorkspace === wsId ? workspaces[0].id : s.activeWorkspace;
-      return { workspaces, activeWorkspace };
-    }),
+  deleteWorkspace: (wsId) => {
+    const s = get();
+    if (s.workspaces.length <= 1) return;
+    const target = s.workspaces.find((w) => w.id === wsId);
+    if (!target) return;
+    // Deleting disposes every shell in the workspace, and another window may be
+    // working in one of its pages. That's not ours to close — the UI hides the
+    // button while any page of it is on screen elsewhere.
+    if (flattenNodes(target.roots).some((n) => s.takenPages.has(n.id))) return;
+    target.roots.flatMap(subtreeLeafIds).forEach(disposePaneSessions);
+    const workspaces = s.workspaces.filter((w) => w.id !== wsId);
+    set({ workspaces });
+    // setActiveWorkspace settles which page of the survivor this window lands
+    // on, skipping whatever the other windows hold.
+    if (s.activeWorkspace === wsId) get().setActiveWorkspace(workspaces[0].id);
+  },
 
   addRootNode: () =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => {
-        // Lands after the last root, so that's the page it opens next to.
-        const source = ws.roots.length ? nodeCwdSource(ws.roots[ws.roots.length - 1]) : undefined;
-        const node = makeNode(`page ${ws.roots.length + 1}`, source);
-        return { ...ws, roots: [...ws.roots, node], activeNode: node.id };
-      }),
-    })),
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+      if (!ws) return s;
+      // Lands after the last root, so that's the page it opens next to.
+      const source = ws.roots.length ? nodeCwdSource(ws.roots[ws.roots.length - 1]) : undefined;
+      const node = makeNode(`page ${ws.roots.length + 1}`, source);
+      return {
+        workspaces: inActiveWs(s, (w) => ({ ...w, roots: [...w.roots, node] })),
+        ...goToPage(s, node.id, { fresh: true }),
+      };
+    }),
 
   addChildNode: (parentId) =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => {
-        // A child page opens where its parent page is.
-        const parent = findNode(ws.roots, parentId);
-        const child = makeNode("untitled", parent && nodeCwdSource(parent));
-        return { ...ws, roots: insertChild(ws.roots, parentId, child), activeNode: child.id };
-      }),
-    })),
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+      if (!ws) return s;
+      // A child page opens where its parent page is.
+      const parent = findNode(ws.roots, parentId);
+      const child = makeNode("untitled", parent && nodeCwdSource(parent));
+      return {
+        workspaces: inActiveWs(s, (w) => ({
+          ...w,
+          roots: insertChild(w.roots, parentId, child),
+        })),
+        ...goToPage(s, child.id, { fresh: true }),
+      };
+    }),
 
   toggleExpand: (nodeId) =>
     set((s) => ({
@@ -935,54 +1071,54 @@ export const useStore = create<State>((set) => ({
       return { workspaces: inActiveWs(s, (ws) => ({ ...ws, roots: collapse(ws.roots) })) };
     }),
 
-  setActiveNode: (nodeId) =>
-    set((s) => ({ workspaces: inActiveWs(s, (ws) => ({ ...ws, activeNode: nodeId })) })),
+  setActiveNode: (nodeId) => set((s) => goToPage(s, nodeId) ?? s),
 
-  selectPreviousTreeNode: () =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => selectAdjacentVisibleNode(ws, -1)),
-    })),
-
-  selectNextTreeNode: () =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => selectAdjacentVisibleNode(ws, 1)),
-    })),
+  selectPreviousTreeNode: () => set((s) => stepToVisibleNode(s, -1) ?? s),
+  selectNextTreeNode: () => set((s) => stepToVisibleNode(s, 1) ?? s),
 
   expandOrEnterTreeNode: () =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => {
-        const node = findNode(ws.roots, ws.activeNode);
-        if (!node?.children.length) return ws;
-        if (!node.expanded) {
-          return {
-            ...ws,
-            roots: updateNode(ws.roots, node.id, (n) => ({ ...n, expanded: true })),
-          };
-        }
-        return { ...ws, activeNode: node.children[0].id };
-      }),
-    })),
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+      const node = ws && findNode(ws.roots, activeNodeId(s));
+      if (!ws || !node?.children.length) return s;
+      if (!node.expanded) {
+        return {
+          workspaces: inActiveWs(s, (w) => ({
+            ...w,
+            roots: updateNode(w.roots, node.id, (n) => ({ ...n, expanded: true })),
+          })),
+        };
+      }
+      return goToPage(s, node.children[0].id) ?? s;
+    }),
 
   collapseOrExitTreeNode: () =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => {
-        const path = findNodePath(ws.roots, ws.activeNode);
-        const node = path?.[path.length - 1];
-        if (!node) return ws;
-        if (node.children.length && node.expanded) {
-          return {
-            ...ws,
-            roots: updateNode(ws.roots, node.id, (n) => ({ ...n, expanded: false })),
-          };
-        }
-        const parent = path?.[path.length - 2];
-        return parent ? { ...ws, activeNode: parent.id } : ws;
-      }),
-    })),
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+      const path = ws && findNodePath(ws.roots, activeNodeId(s));
+      const node = path?.[path.length - 1];
+      if (!ws || !node) return s;
+      if (node.children.length && node.expanded) {
+        return {
+          workspaces: inActiveWs(s, (w) => ({
+            ...w,
+            roots: updateNode(w.roots, node.id, (n) => ({ ...n, expanded: false })),
+          })),
+        };
+      }
+      const parent = path?.[path.length - 2];
+      return (parent && goToPage(s, parent.id)) ?? s;
+    }),
 
-  jumpToResult: ({ workspaceId, nodeId, tabId, paneId }) =>
+  jumpToResult: ({ workspaceId, nodeId, tabId, paneId }) => {
+    // The palette searches every page, including ones another window is
+    // showing. Those are that window's to display, so hand the jump over by
+    // raising it rather than pulling the page across.
+    if (get().takenPages.has(nodeId)) {
+      void claimPage(nodeId);
+      return;
+    }
     set((s) => ({
-      activeWorkspace: workspaceId,
       workspaces: s.workspaces.map((ws) => {
         if (ws.id !== workspaceId) return ws;
         let roots = expandAncestorsOf(ws.roots, nodeId);
@@ -1000,9 +1136,14 @@ export const useStore = create<State>((set) => ({
             };
           });
         }
-        return { ...ws, roots, activeNode: nodeId };
+        return { ...ws, roots };
       }),
-    })),
+    }));
+    // Workspace first: the page is recorded against whichever workspace is
+    // active, so switching afterwards would file it under the old one.
+    get().setActiveWorkspace(workspaceId);
+    set((s) => goToPage(s, nodeId) ?? s);
+  },
 
   renameNode: (nodeId, title) =>
     set((s) => ({
@@ -1013,17 +1154,23 @@ export const useStore = create<State>((set) => ({
     })),
 
   deleteNode: (nodeId) =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => {
-        const target = findNode(ws.roots, nodeId);
-        if (!target) return ws;
-        subtreeLeafIds(target).forEach(disposePaneSessions);
-        let roots = removeNode(ws.roots, nodeId);
-        if (roots.length === 0) roots = [makeNode("page 1")];
-        const activeNode = findNode(roots, ws.activeNode) ? ws.activeNode : roots[0].id;
-        return { ...ws, roots, activeNode };
-      }),
-    })),
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+      const target = ws && findNode(ws.roots, nodeId);
+      if (!ws || !target) return s;
+      // Deleting disposes the page's shells, which another window would be
+      // looking at. The sidebar hides the option there too.
+      if (s.takenPages.has(nodeId)) return s;
+      subtreeLeafIds(target).forEach(disposePaneSessions);
+      let roots = removeNode(ws.roots, nodeId);
+      if (roots.length === 0) roots = [makeNode("page 1")];
+      const current = activeNodeId(s);
+      const landing = findNode(roots, current) ? current : roots[0].id;
+      return {
+        workspaces: inActiveWs(s, (w) => ({ ...w, roots })),
+        ...showPage(s, landing),
+      };
+    }),
 
   moveNode: (dragId, targetId, pos = "into") =>
     set((s) => ({
@@ -1047,7 +1194,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => {
           // Follow the tab the user is coming from — which is also what the
           // page's directory means, so the no-tabs case needs no separate path.
           const h = makeHTab(n.htabs.length + 1, nodeCwdSource(n));
@@ -1060,7 +1207,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({ ...n, activeHTab: hId })),
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({ ...n, activeHTab: hId })),
       })),
     })),
 
@@ -1068,7 +1215,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => (h.id === hId ? { ...h, title } : h)),
         })),
@@ -1079,7 +1226,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => {
           const target = n.htabs.find((h) => h.id === hId);
           if (target) leafIds(target.layout).forEach(disposePaneSessions);
           const htabs = n.htabs.filter((h) => h.id !== hId);
@@ -1120,46 +1267,52 @@ export const useStore = create<State>((set) => ({
             htabs: [...n.htabs, moving],
             activeHTab: moving.id,
           }));
-          return { ...ws, roots, activeNode: toNodeId };
+          return { ...ws, roots };
         }),
+        // ...unless another window is showing the target page — the tab (and
+        // its shells) go there, which is the point of the drag, but following
+        // it would put two windows on one page.
+        ...(goToPage(s, toNodeId) ?? {}),
       };
     }),
 
   moveHTabToNewNode: (tabId, fromNodeId) =>
-    set((s) => ({
-      workspaces: inActiveWs(s, (ws) => {
-        const from = findNode(ws.roots, fromNodeId);
-        const moving = from?.htabs.find((h) => h.id === tabId);
-        if (!moving) return ws;
-        const roots = updateNode(ws.roots, fromNodeId, (n) => {
-          const htabs = n.htabs.filter((h) => h.id !== tabId);
-          if (htabs.length === 0) {
-            const h = makeHTab(1);
-            return { ...n, htabs: [h], activeHTab: h.id };
-          }
-          return {
-            ...n,
-            htabs,
-            activeHTab: n.activeHTab === tabId ? htabs[htabs.length - 1].id : n.activeHTab,
-          };
-        });
-        const created: TreeNode = {
-          id: id(),
-          title: moving.title,
-          expanded: true,
-          children: [],
-          htabs: [moving],
-          activeHTab: moving.id,
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+      const from = ws && findNode(ws.roots, fromNodeId);
+      const moving = from?.htabs.find((h) => h.id === tabId);
+      if (!ws || !moving) return s;
+      const roots = updateNode(ws.roots, fromNodeId, (n) => {
+        const htabs = n.htabs.filter((h) => h.id !== tabId);
+        if (htabs.length === 0) {
+          const h = makeHTab(1);
+          return { ...n, htabs: [h], activeHTab: h.id };
+        }
+        return {
+          ...n,
+          htabs,
+          activeHTab: n.activeHTab === tabId ? htabs[htabs.length - 1].id : n.activeHTab,
         };
-        return { ...ws, roots: [...roots, created], activeNode: created.id };
-      }),
-    })),
+      });
+      const created: TreeNode = {
+        id: id(),
+        title: moving.title,
+        expanded: true,
+        children: [],
+        htabs: [moving],
+        activeHTab: moving.id,
+      };
+      return {
+        workspaces: inActiveWs(s, (w) => ({ ...w, roots: [...roots, created] })),
+        ...goToPage(s, created.id, { fresh: true }),
+      };
+    }),
 
   splitFocused: (dir) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
@@ -1187,7 +1340,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => (h.id === n.activeHTab ? { ...h, focused: leafId } : h)),
         })),
@@ -1198,7 +1351,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => {
           if (n.htabs.length < 2) return n;
           const i = n.htabs.findIndex((h) => h.id === n.activeHTab);
           return { ...n, activeHTab: n.htabs[(i + 1) % n.htabs.length].id };
@@ -1210,7 +1363,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => {
           if (n.htabs.length < 2) return n;
           const i = n.htabs.findIndex((h) => h.id === n.activeHTab);
           return { ...n, activeHTab: n.htabs[(i - 1 + n.htabs.length) % n.htabs.length].id };
@@ -1222,7 +1375,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1239,7 +1392,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1256,7 +1409,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1276,7 +1429,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1342,7 +1495,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1377,7 +1530,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1405,7 +1558,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1425,7 +1578,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1446,7 +1599,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
@@ -1487,7 +1640,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) =>
             h.id === n.activeHTab
@@ -1502,7 +1655,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || dragId === targetId) return h;
@@ -1525,7 +1678,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => {
           if (n.activeHTab === targetHTabId) return n;
           const source = n.htabs.find((h) => h.id === n.activeHTab);
           const target = n.htabs.find((h) => h.id === targetHTabId);
@@ -1567,7 +1720,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => {
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => {
           const source = n.htabs.find((h) => h.id === n.activeHTab);
           const dragged = source ? findLeaf(source.layout, dragId) : undefined;
           if (!source || !dragged) return n;
@@ -1602,8 +1755,11 @@ export const useStore = create<State>((set) => ({
 
   movePaneToNode: (dragId, toNodeId) =>
     set((s) => ({
+      // Same as moveHTab: the pane travels, but this window only follows it if
+      // no other window is showing the destination page.
+      ...(goToPage(s, toNodeId) ?? {}),
       workspaces: inActiveWs(s, (ws) => {
-        const from = findNode(ws.roots, ws.activeNode);
+        const from = findNode(ws.roots, activeNodeId(s));
         const source = from?.htabs.find((h) => h.id === from.activeHTab);
         const dragged = source ? findLeaf(source.layout, dragId) : undefined;
         if (!from || !source || !dragged || !findNode(ws.roots, toNodeId)) return ws;
@@ -1615,7 +1771,7 @@ export const useStore = create<State>((set) => ({
           layout: dragged,
           focused: dragged.id,
         };
-        let roots = updateNode(ws.roots, ws.activeNode, (n) => ({
+        let roots = updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) =>
             h.id === source.id
@@ -1634,7 +1790,7 @@ export const useStore = create<State>((set) => ({
           htabs: [...n.htabs, created],
           activeHTab: created.id,
         }));
-        return { ...ws, roots, activeNode: toNodeId };
+        return { ...ws, roots };
       }),
     })),
 
@@ -1642,7 +1798,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) =>
             h.id === n.activeHTab ? { ...h, layout: setSizesAt(h.layout, path, sizes) } : h
@@ -1655,7 +1811,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1682,7 +1838,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
-        roots: updateNode(ws.roots, ws.activeNode, (n) => ({
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab) return h;
@@ -1742,9 +1898,21 @@ export function activeWorkspace(s: State): Workspace {
   return s.workspaces.find((w) => w.id === s.activeWorkspace) ?? s.workspaces[0];
 }
 
+/**
+ * The id of the page this window is showing — its claim on the shared layout.
+ * Falls back to the first page when the stored one has been deleted by another
+ * window, so a stale claim can never leave the window rendering nothing.
+ */
+export function activePageId(s: State): string {
+  const ws = activeWorkspace(s);
+  if (!ws) return "";
+  const stored = s.activeNodes[ws.id];
+  return stored && findNode(ws.roots, stored) ? stored : (ws.roots[0]?.id ?? "");
+}
+
 export function activeNode(s: State): TreeNode | undefined {
   const ws = activeWorkspace(s);
-  return findNode(ws.roots, ws.activeNode);
+  return ws && findNode(ws.roots, activePageId(s));
 }
 
 /**

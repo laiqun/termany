@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
 import { isTauri } from "../env";
 import { useI18n } from "../i18n";
+import { useImeGuard } from "../imeGuard";
 import { withShortcut } from "../keybindings";
 import { useStore, activeNode, type Pane } from "../state/store";
 import {
@@ -28,6 +29,7 @@ const ACTIVITY_STATUSES = ["working", "done", "error"] as const;
 
 export function HTabBar() {
   const { t } = useI18n();
+  const ime = useImeGuard();
   const node = useStore(activeNode);
   const setActiveHTab = useStore((s) => s.setActiveHTab);
   const addHTab = useStore((s) => s.addHTab);
@@ -219,13 +221,14 @@ export function HTabBar() {
                   className="htab-rename"
                   autoFocus
                   defaultValue={h.title}
+                  {...ime.props}
                   onClick={(e) => e.stopPropagation()}
                   onBlur={(e) => {
                     renameHTab(h.id, e.target.value.trim() || h.title);
                     setEditing(null);
                   }}
                   onKeyDown={(e) => {
-                    if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
+                    if (ime.handled(e)) return; // the IME is still using this key
                     if (e.key === "Enter") (e.target as HTMLInputElement).blur();
                     else if (e.key === "Escape") setEditing(null);
                   }}

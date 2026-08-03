@@ -418,7 +418,11 @@ function node(title: string, htabs: HTab[], children: TreeNode[] = []): TreeNode
  * (termany ▸ web ▸ api/landing), with the active page's tab already split
  * into two panes (one agent each).
  */
-export function demoState(): { workspaces: Workspace[]; activeWorkspace: string } {
+export function demoState(): {
+  workspaces: Workspace[];
+  activeWorkspace: string;
+  activeNodes: Record<string, string>;
+} {
   const api = node("api", [htabSplit("agents", "claude", "codex"), htab("server")]);
   const landing = node("landing", [htab("dev")]);
   const web = node("web", [htab("shell")], [api, landing]);
@@ -447,7 +451,6 @@ export function demoState(): { workspaces: Workspace[]; activeWorkspace: string 
     title: "code",
     icon: "📦",
     roots: [termany, shipany, cconline],
-    activeNode: api.id,
   };
 
   const scratch = node("scratch", [htab("shell")]);
@@ -456,8 +459,11 @@ export function demoState(): { workspaces: Workspace[]; activeWorkspace: string 
     title: "play",
     icon: "🧪",
     roots: [scratch],
-    activeNode: scratch.id,
   };
 
-  return { workspaces: [app, play], activeWorkspace: app.id };
+  return {
+    workspaces: [app, play],
+    activeWorkspace: app.id,
+    activeNodes: { [app.id]: api.id, [play.id]: scratch.id },
+  };
 }

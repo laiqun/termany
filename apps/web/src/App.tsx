@@ -15,6 +15,7 @@ import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, focusedCwdSession, leafIds, useStore } from "./state/store";
+import { openNewWindow } from "./state/windows";
 import {
   adjustTerminalFontSize,
   clearSession,
@@ -194,6 +195,7 @@ export function App() {
         if (current) s.addChildNode(current.id);
       },
       newWorkspace: (s) => s.addWorkspace(),
+      newWindow: () => void openNewWindow(),
       previousTheme: (s) => s.prevTheme(),
       nextTheme: (s) => s.nextTheme(),
       toggleSidebar: (s) => s.toggleSidebar(),
