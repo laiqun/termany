@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useI18n } from "../i18n";
 import { useStore } from "../state/store";
+import { titleBarBackground, useTitleBarGesture } from "../titleBar";
 import { EmojiPicker } from "./EmojiPicker";
 import { ChevronIcon, EditIcon, GearIcon, PlusIcon, TrashIcon } from "./icons";
 import { WorkspaceDialog } from "./WorkspaceDialog";
@@ -32,6 +33,10 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
 
   const active = workspaces.find((w) => w.id === activeId) ?? workspaces[0];
+  // Doubles as the window's title bar on desktop, same as the tab strip: the
+  // header's own background — the room reserved for the traffic lights, the
+  // gap, the right padding — drags the window and zooms it on a double-click.
+  const titleBar = useTitleBarGesture();
 
   const avatar = (w: { icon?: string; title: string }, sm = false) =>
     w.icon ? (
@@ -42,7 +47,7 @@ export function WorkspaceSwitcher({ onOpenSettings }: { onOpenSettings: () => vo
 
   return (
     <div className="ws-switcher">
-      <div className="ws-head" data-tauri-drag-region>
+      <div className="ws-head" {...titleBar} {...titleBarBackground}>
         <button className="ws-icon-btn" title={t("workspace.changeIcon")} onClick={() => setEmojiOpen((o) => !o)}>
           {avatar(active)}
         </button>
