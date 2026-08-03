@@ -15,6 +15,7 @@ import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, focusedCwdSession, leafIds, useStore } from "./state/store";
+import { openNewWindow } from "./state/windows";
 import {
   adjustTerminalFontSize,
   clearSession,
@@ -22,6 +23,7 @@ import {
   resetTerminalFontSize,
   scrollSessionToBottom,
   scrollSessionToTop,
+  subscribeShellNaturalExit,
 } from "./terminal/manager";
 import { openLocalPathsInFocusedSession } from "./terminal/openLocalPath";
 import { checkForUpdate } from "./updater";
@@ -193,6 +195,7 @@ export function App() {
         if (current) s.addChildNode(current.id);
       },
       newWorkspace: (s) => s.addWorkspace(),
+      newWindow: () => void openNewWindow(),
       previousTheme: (s) => s.prevTheme(),
       nextTheme: (s) => s.nextTheme(),
       toggleSidebar: (s) => s.toggleSidebar(),
@@ -301,6 +304,15 @@ export function App() {
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
   }, []);
+
+  // A shell the user ended on purpose takes its pane with it, exactly as if
+  // they had pressed the close-pane shortcut. Listening here rather than in
+  // TerminalPane so a pane sitting in a backgrounded tab — which has no mounted
+  // component — still closes.
+  useEffect(
+    () => subscribeShellNaturalExit((paneId) => useStore.getState().closePane(paneId)),
+    []
+  );
 
   // Desktop: check for a new release once, shortly after startup (stays quiet —
   // just lights up the update badges; the install lives in Settings → About).

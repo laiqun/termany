@@ -16,7 +16,8 @@
 // machine, where the bundled runtime must match the app, not the builder.
 
 import { execSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,7 +68,14 @@ run(
 // 2. Ship node-pty next to the bundle. Keep only the host's prebuild (other
 //    arches' native files just add bloat and, on macOS, break codesign), and
 //    drop the .pdb debug symbols the Windows prebuilds carry (~40MB).
-const ptySrc = path.join(root, "node_modules/node-pty");
+//    Resolve node-pty from apps/server (the package that depends on it): with
+//    pnpm's isolated node_modules it is not hoisted to the repo root, and the
+//    realpath escapes pnpm's symlink so cpSync copies real files.
+const ptySrc = realpathSync(
+  path.dirname(
+    createRequire(path.join(root, "apps/server/package.json")).resolve("node-pty/package.json")
+  )
+);
 const ptyDst = path.join(out, "node_modules/node-pty");
 cpSync(ptySrc, ptyDst, { recursive: true });
 const prebuilds = path.join(ptyDst, "prebuilds");

@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { AgentActivityTracker } from "./agentActivity.js";
+import { sampleOnceOutputSettles } from "./foregroundJob.js";
 import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
@@ -43,7 +44,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { gitDiffs, gitOverview } from "./git.js";
+import { gitDiffs, gitOverview, worktreeOverview } from "./git.js";
 import { pickFolder } from "./folderPicker.js";
 import { testProvider } from "./providerTest.js";
 import { ptyEnvironment } from "./ptyEnvironment.js";
@@ -236,6 +237,18 @@ type ClientMessage =
   | { type: "input"; data: string }
   | { type: "resize"; cols: number; rows: number };
 
+// Mirrors packages/core's ShellExit wire format — kept in sync by hand because
+// this server bundles standalone (see scripts/bundle-server.mjs) and does not
+// depend on the workspace package. The frontend needs to tell "the user typed
+// `exit`" apart from "the shell crashed" to decide whether to close the pane,
+// and the CLOSE frame is the only channel that can't be confused with terminal
+// output. 4000-4999 is WebSocket's private-use close-code range.
+const SHELL_EXIT_CLOSE_CODE = 4000;
+
+function encodeShellExit(exitCode: number, signal: number | undefined): string {
+  return JSON.stringify({ exitCode, signal: signal ?? 0 });
+}
+
 // --- scroll history ---------------------------------------------------------
 // Every live session tails its raw PTY output into a per-session ring
 // (Wave-style: history survives restarts without the frontend serializing
@@ -407,12 +420,41 @@ function activityChanged(): void {
   }
 }
 
-setInterval(() => {
-  for (const stream of activityStreams) {
+/**
+ * Clients watching the workspace layout. Every app window renders the same
+ * shared record, so a change made in one has to reach the others — without this
+ * a second window would keep PUTting the copy it hydrated with at startup and
+ * quietly undo the first window's edits (saveState is a whole-table rewrite).
+ *
+ * Like the activity stream above, events carry a complete snapshot, so a
+ * reconnect is self-healing. Each is tagged with the writer's client id, which
+ * that client uses to ignore the echo of its own save.
+ */
+const stateStreams = new Set<ServerResponse>();
+
+function stateEvent(clientId: string): string {
+  return `event: state\ndata: ${JSON.stringify({ clientId, ...loadState() })}\n\n`;
+}
+
+function stateChanged(clientId: string): void {
+  const event = stateEvent(clientId);
+  for (const stream of stateStreams) {
     try {
-      stream.write(": keepalive\n\n");
+      stream.write(event);
     } catch {
-      activityStreams.delete(stream);
+      stateStreams.delete(stream);
+    }
+  }
+}
+
+setInterval(() => {
+  for (const streams of [activityStreams, stateStreams]) {
+    for (const stream of streams) {
+      try {
+        stream.write(": keepalive\n\n");
+      } catch {
+        streams.delete(stream);
+      }
     }
   }
 }, 20_000).unref();
@@ -423,13 +465,28 @@ function isOpen(ws: WebSocket | null): ws is WebSocket {
 
 /** Wire a freshly spawned pty's output into its ring + whatever ws is attached. */
 function wireSession(id: string | undefined, session: PtySession): void {
+  // The PTY's foreground process group: proof of when a command — an agent
+  // included — hands the terminal back, where the rendered screen can only
+  // recognize a prompt by how it looks. See foregroundJob.ts for why this
+  // reads the name the shell answers to rather than the command it was
+  // spawned from, and why an unmoving job has to conclude nothing.
+  let shellJob = "";
+  const jobSampler = sampleOnceOutputSettles(() => {
+    const job = session.pty.process || "";
+    if (!shellJob) shellJob = job || (session.sshTarget ? "ssh" : SHELL);
+    if (id) activityTracker.noteForegroundJob(id, job, shellJob);
+  });
   session.pty.onData((data) => {
     if (isOpen(session.ws)) session.ws.send(data);
     ringAppend(session.ring, data);
-    if (id) activityTracker.noteOutput(id, data);
+    if (id) {
+      activityTracker.noteOutput(id, data);
+      jobSampler.noteOutput();
+    }
     if (IS_WIN) trackOscCwd(session.pty.pid, data);
   });
   session.pty.onExit(({ exitCode, signal }) => {
+    jobSampler.dispose();
     oscCwdByPid.delete(session.pty.pid);
     console.error(
       `[termany] shell exited (pid: ${session.pty.pid}, code: ${exitCode}, signal: ${signal ?? "none"})`
@@ -443,7 +500,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
           `\r\n\x1b[2m[termany] shell exited (code: ${exitCode}, signal: ${signal ?? "none"})\x1b[0m\r\n`
         );
       }
-      session.ws.close();
+      session.ws.close(SHELL_EXIT_CLOSE_CODE, encodeShellExit(exitCode, signal));
     }
     if (id) {
       activityTracker.noteExit(id, exitCode, signal);
@@ -873,10 +930,29 @@ const http = createServer((req, res) => {
     json(200, loadState());
     return;
   }
+  if (req.method === "GET" && reqUrl.pathname === "/api/state/events") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    });
+    stateStreams.add(res);
+    res.write("retry: 1000\n");
+    // Open with a snapshot so a client that reconnects after a dropped stream
+    // catches up on whatever it missed instead of drifting until its next save.
+    // The empty client id belongs to no one, so nobody treats it as an echo.
+    res.write(stateEvent(""));
+    res.on("close", () => stateStreams.delete(res));
+    res.on("error", () => stateStreams.delete(res));
+    return;
+  }
   if (req.method === "PUT" && req.url === "/api/state") {
     readJson(req)
       .then((body) => {
         saveState(body);
+        // `clientId` is the writer's own tag, not part of the layout — it comes
+        // straight back out on the stream so the sender can skip its own echo.
+        stateChanged(typeof body?.clientId === "string" ? body.clientId : "");
         json(200, { ok: true });
       })
       .catch(fail);
@@ -1181,10 +1257,13 @@ const http = createServer((req, res) => {
   // Per-agent CLI conversation history for the SideRail history browser.
   // Readers live in agentSessions.ts (claude, codex); unknown agents return
   // sessions: null so the frontend can show "not supported" instead of empty.
+  // Repeated `root` params scope the list to sessions under those directories
+  // (the browser passes the current repo's worktree roots).
   if (req.method === "GET" && reqUrl.pathname === "/api/agent-sessions") {
     (async () => {
       const agent = reqUrl.searchParams.get("agent") ?? "claude";
-      json(200, { sessions: await listAgentSessions(agent) });
+      const roots = reqUrl.searchParams.getAll("root").filter(Boolean);
+      json(200, { sessions: await listAgentSessions(agent, roots) });
     })().catch(fail);
     return;
   }
@@ -1242,6 +1321,16 @@ const http = createServer((req, res) => {
         }
       })
       .catch(fail);
+    return;
+  }
+
+  // Cheap repo shape (root + branch + worktree list) for scoping UIs — the
+  // full overview below computes per-worktree diff badges, far too slow for this.
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/worktrees") {
+    (async () => {
+      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
+      json(200, await worktreeOverview(cwd));
+    })().catch(fail);
     return;
   }
 

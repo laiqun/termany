@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExter
 import { createPortal } from "react-dom";
 import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
 import { useI18n } from "../i18n";
+import { useImeGuard } from "../imeGuard";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { withShortcut } from "../keybindings";
 import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
@@ -233,6 +234,7 @@ function PaneHeader({
   const closePane = useStore((s) => s.closePane);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
   const [editing, setEditing] = useState(false);
+  const ime = useImeGuard();
   const renameWidth = `${Math.max(8, leaf.title.length + 1)}ch`;
   useSyncExternalStore(
     subscribeAgentActivity,
@@ -277,13 +279,14 @@ function PaneHeader({
             style={{ width: renameWidth }}
             autoFocus
             defaultValue={leaf.title}
+            {...ime.props}
             onClick={(e) => e.stopPropagation()}
             onBlur={(e) => {
               renamePane(leaf.id, e.target.value.trim() || leaf.title);
               setEditing(false);
             }}
             onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
+              if (ime.handled(e)) return; // the IME is still using this key
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               else if (e.key === "Escape") setEditing(false);
             }}

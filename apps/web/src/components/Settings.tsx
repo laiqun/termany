@@ -13,6 +13,15 @@ import {
   registerCodexListing,
   type CodexListing,
 } from "../themes/codex-packs";
+import {
+  loadFontConfig,
+  saveFontConfig,
+  MIN_FONT_SIZE,
+  MAX_FONT_SIZE,
+  DEFAULT_FONT_CONFIG,
+  type FontConfig,
+} from "../font-config";
+import { applyFontFamily, applyFontSize } from "../terminal/manager";
 import { AgentSettings } from "./AgentSettings";
 import { CloseIcon, ExternalOpenIcon, GearIcon, RevealFolderIcon } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
@@ -62,6 +71,8 @@ export function Settings({
   const { language, setLanguage, t } = useI18n();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+
+  const [fontConfig, setFontConfig] = useState<FontConfig>(loadFontConfig);
 
   const [section, setSection] = useState<SettingsSection>(initialSection);
 
@@ -329,6 +340,76 @@ export function Settings({
               </div>
             </>
           )}
+
+          <div className="settings-section-title">{t("font.title")}</div>
+
+          <div className="font-setting">
+            <span>{t("font.family")}</span>
+            <input
+              className="font-family-input"
+              type="text"
+              spellCheck={false}
+              placeholder='Menlo, "SF Mono", Monaco, monospace'
+              value={fontConfig.family}
+              onChange={(e) => {
+                const next = { ...fontConfig, family: e.target.value };
+                setFontConfig(next);
+              }}
+              onBlur={(e) => {
+                const family = e.target.value.trim() || DEFAULT_FONT_CONFIG.family;
+                const next = { ...fontConfig, family };
+                setFontConfig(next);
+                saveFontConfig(next);
+                applyFontFamily(family);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+            />
+          </div>
+
+          <div className="font-setting">
+            <span>{t("font.size")}</span>
+            <div className="font-size-control">
+              <button
+                className="font-size-btn"
+                disabled={fontConfig.size <= MIN_FONT_SIZE}
+                onClick={() => {
+                  const next = { ...fontConfig, size: fontConfig.size - 1 };
+                  setFontConfig(next);
+                  saveFontConfig(next);
+                  applyFontSize(next.size);
+                }}
+              >
+                −
+              </button>
+              <span className="font-size-value">{fontConfig.size}px</span>
+              <button
+                className="font-size-btn"
+                disabled={fontConfig.size >= MAX_FONT_SIZE}
+                onClick={() => {
+                  const next = { ...fontConfig, size: fontConfig.size + 1 };
+                  setFontConfig(next);
+                  saveFontConfig(next);
+                  applyFontSize(next.size);
+                }}
+              >
+                +
+              </button>
+              <button
+                className="font-size-reset"
+                disabled={fontConfig.size === DEFAULT_FONT_CONFIG.size}
+                onClick={() => {
+                  const next = { ...fontConfig, size: DEFAULT_FONT_CONFIG.size };
+                  setFontConfig(next);
+                  saveFontConfig(next);
+                  applyFontSize(next.size);
+                }}
+              >
+                {t("font.reset")}
+              </button>
+            </div>
+          </div>
           </>
           )}
           {section === "about" && (

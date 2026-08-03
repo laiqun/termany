@@ -1,5 +1,6 @@
 import { WebSocketBackend, type ITerminalBackend } from "@termany/core";
 import { getLanguage, translate } from "../i18n";
+import { loadFontConfig } from "../font-config";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
@@ -12,10 +13,24 @@ import { ACTIONS, loadKeybindings, matchChord } from "../keybindings";
 import {
   agentConfirmationPromptVisible,
   agentInputPromptVisible,
+  screenSignature,
+  shellPromptVisible,
 } from "./agentActivityPrompt";
+import {
+  AgentIdleWatcher,
+  type AgentScreenTransition,
+} from "./agentIdleWatcher";
+import { SYMBOLS_FONT_FAMILY, withSymbolsFallback } from "./fonts";
 import { registerLocalPathLinks } from "./localLinks";
+import {
+  MAX_AUTO_RESTARTS,
+  RESTART_HEALTHY_MS,
+  shellExitDisposition,
+} from "./shellExit";
 import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
+import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
+import { createGlyphAtlasRepairer, onAtlasPagesMerged } from "./glyphAtlas";
 
 /**
  * The terminal session registry.
@@ -55,19 +70,6 @@ export interface Session {
   /** Increments for every PTY output chunk, including in-place TUI redraws. */
   contentVersion: number;
 }
-
-/**
- * The shell exiting on its own (typed `exit`, crashed) used to just leave the
- * pane dead with a "[session ended]" message — the user had to close the tab
- * and reopen a new one to keep working. Auto-respawning a fresh shell in the
- * same pane instead makes that recoverable by default. Capped so a shell
- * that dies instantly on every launch (bad rc file, missing binary) doesn't
- * spin forever — the counter resets once a shell survives a little while, so
- * this only kicks in for a tight crash loop, not e.g. someone repeatedly
- * typing `exit`.
- */
-const MAX_AUTO_RESTARTS = 5;
-const RESTART_HEALTHY_MS = 3000;
 
 /**
  * A mouse-wheel scroll only moves xterm's DOM scroll container immediately;
@@ -172,6 +174,17 @@ export type TerminalScrollState = {
 };
 
 const sessions = new Map<string, Session>();
+
+/**
+ * Every pane's WebGL renderer shares one glyph texture atlas but keeps its own
+ * GPU copy of it, and the atlas silently re-indexes its pages when it merges
+ * them — leaving idle panes drawing with coordinates their texture no longer
+ * matches. See glyphAtlas.ts; this puts all of them back in sync.
+ */
+const glyphAtlasRepairer = createGlyphAtlasRepairer({
+  terminals: () => [...sessions.values()].filter((s) => s.opened).map((s) => s.term),
+});
+
 // A pane may keep a local shell and several SSH shells alive simultaneously.
 // Only one is mounted, but switching does not tear down the others.
 const activeSessionByPane = new Map<string, string>();
@@ -180,6 +193,7 @@ const pendingCommands = new Map<string, string[]>();
 const scrollListeners = new Map<string, Set<(state: TerminalScrollState) => void>>();
 const connectionStatusListeners = new Set<() => void>();
 const SSH_EXIT_EVENT = "termany:ssh-session-exited";
+const SHELL_EXIT_EVENT = "termany:shell-session-exited";
 
 function notifyConnectionStatus() {
   for (const listener of connectionStatusListeners) listener();
@@ -203,6 +217,23 @@ export function subscribeSshNaturalExit(paneId: string, listener: () => void): (
   };
   window.addEventListener(SSH_EXIT_EVENT, onExit);
   return () => window.removeEventListener(SSH_EXIT_EVENT, onExit);
+}
+
+/**
+ * A local shell ended deliberately and its pane should go away with it.
+ *
+ * Global rather than per-pane (unlike the SSH hook above): the pane whose shell
+ * exited may be sitting in a backgrounded tab with no mounted component to hear
+ * about it, and it still needs to close. The store can't be imported here — it
+ * already imports this module — so App owns the listener.
+ */
+export function subscribeShellNaturalExit(listener: (paneId: string) => void): () => void {
+  const onExit = (event: Event) => {
+    const paneId = (event as CustomEvent<{ paneId: string }>).detail?.paneId;
+    if (paneId) listener(paneId);
+  };
+  window.addEventListener(SHELL_EXIT_EVENT, onExit);
+  return () => window.removeEventListener(SHELL_EXIT_EVENT, onExit);
 }
 
 export function terminalSessionId(paneId: string, sshTarget?: string): string {
@@ -230,13 +261,13 @@ let agentActivitySource: EventSource | null = null;
 let agentActivityInstance = "";
 let agentActivityRevision = -1;
 const retiredAgentActivityInstances = new Set<string>();
-const agentIdleTimers = new Map<string, number>();
+const agentIdleTimers = new Map<string, { timer: number; deadline: number }>();
 const agentIdleReports = new Map<string, number>();
-const agentSawAlternateScreen = new Set<string>();
+const agentIdleWatchers = new Map<string, AgentIdleWatcher>();
 const agentReportedInactiveEpochs = new Map<string, number>();
 const agentTaskStartScreens = new Map<
   string,
-  { taskEpoch: number; screen: string; contentVersion: number }
+  { taskEpoch: number; signature: string }
 >();
 const terminalInputSendChains = new Map<string, Promise<void>>();
 const commandSendChains = new Map<string, Promise<void>>();
@@ -252,11 +283,7 @@ const DONE_RE =
   /(?:^|\b)(done|completed|complete|finished|success|succeeded)(?:\b|$)|all checks passed|task complete|changes? applied|implementation complete/i;
 const WORKING_RE = /\b(working|thinking|running|executing|editing|applying|building|testing|installing|searching|reading)\b/i;
 const ALT_SCREEN_EXIT_RE = /\x1b\[\?1049l|\x1b\[\?47l|\x1b\[\?1047l/;
-const SHELL_PROMPT_RE = /(?:^|\n)[^\n]{0,96}(?:[$%#❯➜])\s*$/;
-const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›>]\s*$/;
-const AGENT_BUSY_SCREEN_RE =
-  /\b(?:esc|ctrl(?:\+|-)?c)\s+to\s+(?:interrupt|cancel|stop)\b|^[\s│┃┆┊╎╏|]*[•●◦✳✻⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*(?:working|thinking|running|executing|editing|applying|building|testing|installing|searching|reading)\b/im;
-const AGENT_IDLE_CONFIRM_MS = 200;
+const AGENT_IDLE_PROMPT_RE = /(?:^|\n)\s*[›❯>]\s*$/;
 const AGENT_REGISTER_TIMEOUT_MS = 2_000;
 
 function notifyAgentActivity() {
@@ -264,8 +291,8 @@ function notifyAgentActivity() {
 }
 
 function clearAgentIdleTimer(id: string) {
-  const timer = agentIdleTimers.get(id);
-  if (timer !== undefined) window.clearTimeout(timer);
+  const armed = agentIdleTimers.get(id);
+  if (armed) window.clearTimeout(armed.timer);
   agentIdleTimers.delete(id);
 }
 
@@ -468,61 +495,46 @@ function startLocalAgentActivity(
   const session = sessions.get(id);
   clearAgentIdleTimer(id);
   agentIdleReports.delete(id);
-  agentSawAlternateScreen.delete(id);
-  if (session?.term.buffer.active.type === "alternate") {
-    agentSawAlternateScreen.add(id);
-  }
+  agentIdleWatcher(id).reset(
+    session?.term.buffer.active.type === "alternate",
+  );
   agentReportedInactiveEpochs.delete(id);
   agentTaskStartScreens.set(id, {
     taskEpoch: nextEpoch,
-    screen: sessionVisibleText(id),
-    contentVersion: session?.contentVersion ?? 0,
+    signature: sessionScreenSignature(id),
   });
   setAgentActivity(id, "working", agent, nextEpoch);
 }
 
-type RenderedAgentTransition = {
-  status: Extract<AgentActivityStatus, "done" | "error">;
-  agentActive: boolean;
-};
+type RenderedAgentTransition = AgentScreenTransition;
 
-function visibleScreenActivityTransition(
-  id: string,
-): RenderedAgentTransition | null {
+function agentIdleWatcher(id: string): AgentIdleWatcher {
+  let watcher = agentIdleWatchers.get(id);
+  if (!watcher) {
+    watcher = new AgentIdleWatcher();
+    agentIdleWatchers.set(id, watcher);
+  }
+  return watcher;
+}
+
+/**
+ * Feed the freshly rendered screen to this session's watcher. Judging live is
+ * what lets a repaint restart the quiet window instead of banking silence the
+ * agent never actually took.
+ */
+function observeScreenForActivity(id: string): RenderedAgentTransition | null {
   const session = sessions.get(id);
   if (!session) return null;
-  const text = sessionVisibleText(id);
-  if (!text.trim()) return null;
-  if (session.term.buffer.active.type === "alternate") {
-    agentSawAlternateScreen.add(id);
-  }
-  if (agentConfirmationPromptVisible(text, sessionCursorLine(id))) {
-    return { status: "error", agentActive: true };
-  }
-  const busyTail = text
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim())
-    .slice(-12)
-    .join("\n");
-  if (AGENT_BUSY_SCREEN_RE.test(busyTail)) return null;
-  if (agentInputPromptVisible(text)) {
-    return { status: "done", agentActive: true };
-  }
-  const tail = text
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim())
-    .slice(-4)
-    .join("\n");
-  if (
-    session.term.buffer.active.type === "normal" &&
-    agentSawAlternateScreen.has(id) &&
-    SHELL_PROMPT_RE.test(tail)
-  ) {
-    return { status: "done", agentActive: false };
-  }
-  return null;
+  const watcher = agentIdleWatcher(id);
+  watcher.update(
+    {
+      visible: sessionVisibleText(id),
+      cursorLine: sessionCursorLine(id),
+      isAlternate: session.term.buffer.active.type === "alternate",
+    },
+    Date.now(),
+  );
+  return watcher.pending;
 }
 
 function completeAgentActivityIfIdle(id: string) {
@@ -536,19 +548,25 @@ function completeAgentActivityIfIdle(id: string) {
     clearAgentIdleTimer(id);
     return;
   }
-  const transition = visibleScreenActivityTransition(id);
+  const transition = observeScreenForActivity(id);
   const start = agentTaskStartScreens.get(id);
+  // A task the agent has not answered on screen yet concludes nothing: the
+  // composer it was submitted from still looks exactly like an idle one.
   if (
     activity.status === "working" &&
     start?.taskEpoch === activity.taskEpoch &&
-    start.screen === sessionVisibleText(id) &&
-    start.contentVersion === session.contentVersion
+    start.signature === sessionScreenSignature(id)
   ) {
     clearAgentIdleTimer(id);
     return;
   }
+  // A task that already reads as finished may still stop to ask something —
+  // agents idle at their composer between steps, so the question lands after
+  // the green. Waiting on a person is not the same as being done, so a
+  // confirmation is allowed to repaint a finished task; nothing else is.
   if (
     activity.status === "done" &&
+    transition?.status !== "error" &&
     (transition?.status !== "done" ||
       transition.agentActive ||
       agentReportedInactiveEpochs.get(id) === activity.taskEpoch)
@@ -560,34 +578,42 @@ function completeAgentActivityIfIdle(id: string) {
     clearAgentIdleTimer(id);
     return;
   }
-  if (
-    agentIdleTimers.has(id) ||
-    agentIdleReports.get(id) === activity.taskEpoch
-  ) {
+  if (agentIdleReports.get(id) === activity.taskEpoch) return;
+  // The watcher pushes its deadline out on every repaint, so re-arming only
+  // when the deadline actually moves keeps one timeout per quiet window.
+  const deadline = agentIdleWatcher(id).deadline;
+  if (deadline === null) {
+    clearAgentIdleTimer(id);
     return;
   }
+  const armed = agentIdleTimers.get(id);
+  if (armed?.deadline === deadline) return;
+  clearAgentIdleTimer(id);
 
   const observedEpoch = activity.taskEpoch;
   const observedStatus = transition.status;
-  agentIdleTimers.set(
-    id,
-    window.setTimeout(async () => {
+  agentIdleTimers.set(id, {
+    deadline,
+    timer: window.setTimeout(async () => {
       agentIdleTimers.delete(id);
       const latest = agentActivities.get(id);
-      const confirmed = visibleScreenActivityTransition(id);
+      const watcher = agentIdleWatcher(id);
+      const confirmed = watcher.pending;
       if (
         !latest ||
         (latest.status !== "working" && latest.status !== "done") ||
         latest.taskEpoch !== observedEpoch ||
         !confirmed ||
         confirmed.status !== observedStatus ||
+        watcher.deadline !== deadline ||
         (latest.status === "done" &&
+          confirmed.status !== "error" &&
           (confirmed.status !== "done" || confirmed.agentActive))
       ) {
         return;
       }
       if (isDemo) {
-        if (latest.status === "working") {
+        if (latest.status === "working" || confirmed.status === "error") {
           setAgentActivity(
             id,
             confirmed.status,
@@ -622,8 +648,8 @@ function completeAgentActivityIfIdle(id: string) {
           agentIdleReports.delete(id);
         }
       }
-    }, AGENT_IDLE_CONFIRM_MS),
-  );
+    }, Math.max(0, deadline - Date.now())),
+  });
 }
 
 function updateAgentActivityFromOutput(id: string, data: string) {
@@ -643,7 +669,7 @@ function updateAgentActivityFromOutput(id: string, data: string) {
     setAgentActivity(id, "done", agent);
     return;
   }
-  if (prev?.status === "working" && (ALT_SCREEN_EXIT_RE.test(data) || SHELL_PROMPT_RE.test(text) || AGENT_IDLE_PROMPT_RE.test(text))) {
+  if (prev?.status === "working" && (ALT_SCREEN_EXIT_RE.test(data) || shellPromptVisible(text) || AGENT_IDLE_PROMPT_RE.test(text))) {
     setAgentActivity(id, "done", agent);
     return;
   }
@@ -704,8 +730,7 @@ function writeTerminalInput(id: string, session: Session, data: string) {
           clearAgentIdleTimer(id);
           agentTaskStartScreens.set(id, {
             taskEpoch: registered.taskEpoch,
-            screen: sessionVisibleText(id),
-            contentVersion: session.contentVersion,
+            signature: sessionScreenSignature(id),
           });
         }
       }
@@ -918,7 +943,12 @@ let currentTermTheme: ITheme = {
   selectionBackground: "#2a3441",
 };
 
-const DEFAULT_FONT_SIZE = 13;
+/** User-configured font, loaded once at startup and updated from Settings.
+ *  Every new session starts with these; applyFontFamily / applyFontSize
+ *  push changes to all live sessions immediately. */
+let currentFontFamily: string = loadFontConfig().family;
+let currentFontSize: number = loadFontConfig().size;
+
 const MIN_FONT_SIZE = 9;
 const MAX_FONT_SIZE = 32;
 
@@ -934,12 +964,12 @@ function applyTerminalFontSize(id: string, next: number) {
 
 export function adjustTerminalFontSize(id: string, delta: number) {
   id = activeSessionId(id);
-  const current = sessions.get(id)?.term.options.fontSize ?? DEFAULT_FONT_SIZE;
+  const current = sessions.get(id)?.term.options.fontSize ?? currentFontSize;
   applyTerminalFontSize(id, current + delta);
 }
 
 export function resetTerminalFontSize(id: string) {
-  applyTerminalFontSize(id, DEFAULT_FONT_SIZE);
+  applyTerminalFontSize(id, currentFontSize);
 }
 
 const IMAGE_MIMES = new Set(["image/gif", "image/jpeg", "image/png", "image/tiff", "image/webp"]);
@@ -1076,6 +1106,41 @@ export function applyTermTheme(theme: ITheme) {
   for (const s of sessions.values()) s.term.options.theme = theme;
 }
 
+// The bundled "Symbols Nerd Font Mono" (@font-face in styles.css) loads
+// asynchronously, and the WebGL renderer caches every glyph it draws into a
+// texture atlas — icons painted before the font arrives would stay tofu boxes
+// forever. Once the font is actually usable, re-rasterize every open terminal;
+// sessions created after that pick the font up on their own.
+let symbolsFontWatch: Promise<void> | null = null;
+function refreshOnSymbolsFontLoad() {
+  if (symbolsFontWatch || typeof document === "undefined" || !document.fonts?.load) return;
+  symbolsFontWatch = document.fonts
+    .load(`${currentFontSize}px "${SYMBOLS_FONT_FAMILY}"`)
+    .then((faces) => {
+      if (faces.length === 0) return;
+      for (const s of sessions.values()) {
+        s.term.clearTextureAtlas();
+        s.term.refresh(0, s.term.rows - 1);
+      }
+    })
+    .catch(() => {
+      symbolsFontWatch = null;
+    });
+}
+
+/** Push a font family change to every live terminal + future sessions. The
+ *  symbols fallback rides along so Nerd Font icons survive any font choice. */
+export function applyFontFamily(family: string) {
+  currentFontFamily = family;
+  for (const s of sessions.values()) s.term.options.fontFamily = withSymbolsFallback(family);
+}
+
+/** Push a font size change to every live terminal + future sessions. */
+export function applyFontSize(size: number) {
+  currentFontSize = size;
+  for (const s of sessions.values()) s.term.options.fontSize = size;
+}
+
 function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
@@ -1084,8 +1149,8 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   el.className = "term-host";
 
   const term = new Terminal({
-    fontFamily: 'Menlo, "SF Mono", Monaco, monospace',
-    fontSize: DEFAULT_FONT_SIZE,
+    fontFamily: withSymbolsFallback(currentFontFamily),
+    fontSize: currentFontSize,
     scrollback: SCROLLBACK_LINES,
     cursorBlink: true,
     allowProposedApi: true,
@@ -1212,6 +1277,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     contentVersion: 0,
   };
   sessions.set(id, session);
+  refreshOnSymbolsFontLoad();
   if (sshTarget) notifyConnectionStatus();
 
   const wireBackend = (b: ITerminalBackend) => {
@@ -1231,7 +1297,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       }
       writeSessionData(id, data);
     });
-    b.onExit((reason) => {
+    b.onExit((reason, exit) => {
       if (agentActivities.has(id)) setAgentActivity(id, reason ? "error" : "done");
       if (sshTarget) {
         session.ended = true;
@@ -1247,13 +1313,25 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       }
       // A truthy reason means the WebSocket itself couldn't connect, which
       // already exhausted its own retry budget (see WebSocketBackend) before
-      // giving up — not worth immediately repeating that losing battle. Only
-      // a natural shell exit (no reason) is auto-respawned.
+      // giving up — not worth immediately repeating that losing battle, and
+      // the shell never ran, so there is nothing to conclude about intent.
       if (reason) {
         term.write(`\r\n\x1b[2m[session ended: ${reason}]\x1b[0m\r\n`);
         return;
       }
-      if (Date.now() - session.spawnedAt > RESTART_HEALTHY_MS) session.restartAttempts = 0;
+      const aliveMs = Date.now() - session.spawnedAt;
+      if (aliveMs > RESTART_HEALTHY_MS) session.restartAttempts = 0;
+      // The user ended this shell on purpose (`exit`, Ctrl+D), so take the pane
+      // with it the way every other terminal does. Only the pane's FOREGROUND
+      // session gets that treatment: a local shell idling behind a visible SSH
+      // session must stay alive, or switching back would land on a dead pane.
+      if (
+        shellExitDisposition(exit, aliveMs) === "close-pane" &&
+        activeSessionByPane.get(paneId) === id
+      ) {
+        window.dispatchEvent(new CustomEvent(SHELL_EXIT_EVENT, { detail: { paneId } }));
+        return;
+      }
       if (session.restartAttempts >= MAX_AUTO_RESTARTS) {
         term.write(`\r\n\x1b[2m[session ended]\x1b[0m\r\n`);
         return;
@@ -1540,12 +1618,17 @@ export function attachSession(
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => webgl.dispose());
+      // A page merge in the shared atlas rewrites glyph coordinates out from
+      // under every pane that isn't rendering right now, which is what makes
+      // text come back as the wrong characters until the pane is resized.
+      onAtlasPagesMerged(webgl, () => glyphAtlasRepairer.requestRepair());
       s.term.loadAddon(webgl);
     } catch {
       /* no WebGL available — DOM renderer still works */
     }
     fixWebkitImeDirectInsert(s.term);
     fixAbandonedImeFinalize(s.term);
+    fixWebkitGtkImeComposition(s.term, imeLog);
     traceImeEvents(s.term);
     s.term.onScroll(() => {
       const scrollState = readScrollState(s.term);
@@ -1797,6 +1880,11 @@ function sessionVisibleText(id: string): string {
   return lines.join("\n");
 }
 
+/** The visible screen reduced to what only real work could have changed. */
+function sessionScreenSignature(id: string): string {
+  return screenSignature(sessionVisibleText(id), sessionCursorLine(id));
+}
+
 function sessionCursorLine(id: string): string {
   const session = sessions.get(id);
   if (!session) return "";
@@ -1821,7 +1909,7 @@ export function disposeSession(id: string) {
   notifyConnectionStatus();
   clearAgentIdleTimer(id);
   agentIdleReports.delete(id);
-  agentSawAlternateScreen.delete(id);
+  agentIdleWatchers.delete(id);
   agentReportedInactiveEpochs.delete(id);
   agentTaskStartScreens.delete(id);
   terminalInputSendChains.delete(id);
@@ -1856,7 +1944,7 @@ export function disposePaneSessions(paneId: string) {
     restoreSnapshots.delete(id);
     clearAgentIdleTimer(id);
     agentIdleReports.delete(id);
-    agentSawAlternateScreen.delete(id);
+    agentIdleWatchers.delete(id);
     agentReportedInactiveEpochs.delete(id);
     agentTaskStartScreens.delete(id);
     terminalInputSendChains.delete(id);

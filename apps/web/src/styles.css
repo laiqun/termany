@@ -1,3 +1,19 @@
+/* Nerd Font symbols (v3.4.0, MIT — the notice ships in the build via
+   public/fonts/SymbolsNerdFontMono-LICENSE.txt). Consulted per-glyph for the
+   Private Use Area icons that prompt frameworks (p10k, starship, …) emit;
+   letters never fall through to it. Spliced into the terminal font stack by
+   src/terminal/fonts.ts. */
+@font-face {
+  font-family: "Symbols Nerd Font Mono";
+  src: url("./assets/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
+  font-display: swap;
+  /* Every glyph in this font is a full 1em (2048/2048) wide, but a terminal
+     cell is only as wide as the primary font's advance — Menlo/Monaco are
+     1233/2048 = 60.2% of an em — so unscaled icons spill ~1.66 cells and
+     overlap the text after them. Shrink the whole face to one cell. */
+  size-adjust: 60.2%;
+}
+
 /* Design tokens — every value here is driven by the active theme (see
    src/themes/). These defaults mirror the Default Dark theme so the first
    paint (before JS applies a theme) is already correct. */
@@ -673,6 +689,70 @@ html.tauri #root {
   background: rgba(74, 222, 128, 0.14);
   color: #4ade80;
 }
+/* The session's folder is gone (deleted worktree) — resume falls back. */
+.history-badge.stale {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fbbf24;
+}
+.search-row-breadcrumb.history-gone {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+/* Scope toggle in the input row: this repo (or folder) vs everything. */
+.history-scope {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.history-scope button {
+  padding: 2px 10px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.history-scope button.active {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+/* Worktree group header in repo scope: branch · path · count. */
+.history-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 10px 4px;
+  font-size: 11px;
+}
+.history-group-branch {
+  color: var(--fg);
+  font-weight: 600;
+}
+.history-group-path,
+.history-group-count {
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history-group-count {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+/* "Press Tab to search all sessions" line under the scoped empty state. */
+.history-scope-hint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
 
 .search-results {
   flex: 1;
@@ -1235,6 +1315,20 @@ html.tauri #root {
   border-radius: var(--radius-md);
   padding: 1px 6px;
   margin-left: 2px;
+  flex-shrink: 0;
+}
+/* Open in another window: still clickable — selecting it raises that window —
+   just clearly not somewhere this one is going. The dot marks the row. */
+.tree-row.elsewhere .tree-title {
+  opacity: 0.55;
+}
+.tree-elsewhere {
+  width: 5px;
+  height: 5px;
+  margin-left: 4px;
+  margin-right: 3px;
+  border-radius: 50%;
+  background: var(--fg-dim);
   flex-shrink: 0;
 }
 .activity-count {
@@ -3579,6 +3673,94 @@ html.tauri #root {
 .language-setting span {
   color: var(--fg);
   font-size: 13px;
+}
+
+.font-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 16px;
+  padding: 13px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-2);
+}
+.font-setting span {
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.font-size-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.font-size-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 15px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  cursor: pointer;
+}
+.font-size-btn:hover:not(:disabled) {
+  background: var(--bg-3);
+}
+.font-size-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.font-size-value {
+  display: inline-block;
+  min-width: 36px;
+  text-align: center;
+  font-size: 13px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--fg);
+}
+.font-size-reset {
+  margin-left: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.font-size-reset:hover:not(:disabled) {
+  color: var(--fg);
+}
+.font-size-reset:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.font-family-input {
+  width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  outline: none;
+}
+.font-family-input:focus {
+  border-color: var(--accent);
+}
+.font-family-input::placeholder {
+  color: var(--fg-dim);
+  opacity: 0.6;
 }
 
 /* Agent settings */

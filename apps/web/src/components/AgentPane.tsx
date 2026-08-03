@@ -5,6 +5,7 @@ import { modelLabelFor, modelMenuItems, shortModelName, type AcpConfigOption } f
 import { agentModelSetup } from "../agentModelSetup";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
+import { useImeGuard } from "../imeGuard";
 import { cwdCandidates, useStore, type AgentMessage, type AgentPart, type Pane } from "../state/store";
 import { queueCommand } from "../terminal/manager";
 import { CheckIcon, ChevronIcon, CopyIcon, FolderIcon, SendIcon, SpinnerIcon, StopIcon, TerminalIcon } from "./icons";
@@ -179,8 +180,7 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
   const [modelHelp, setModelHelp] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
-  const composingRef = useRef(false);
-  const compositionEndRef = useRef(-Infinity);
+  const ime = useImeGuard();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -600,26 +600,12 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
             placeholder={canSubmit ? t("agentChat.placeholder") : t("agentChat.noModel")}
             aria-label={t("agentChat.placeholder")}
             onChange={(event) => setDraft(event.target.value)}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onCompositionEnd={(event) => {
-              composingRef.current = false;
-              // WebKit fires compositionend *before* the keydown of the Enter that
-              // committed it, so isComposing is already false by then. Remember when
-              // the commit happened and swallow an Enter that lands right after it.
-              compositionEndRef.current = event.timeStamp;
-            }}
+            {...ime.props}
             onKeyDown={(event) => {
               if (event.key !== "Enter" || event.shiftKey) return;
-              if (
-                composingRef.current ||
-                event.nativeEvent.isComposing ||
-                event.nativeEvent.keyCode === 229 ||
-                event.timeStamp - compositionEndRef.current < 100
-              ) {
-                return;
-              }
+              // Enter both sends the message and confirms an IME composition;
+              // only the former is ours. See imeGuard.
+              if (ime.handled(event)) return;
               event.preventDefault();
               void submit();
             }}

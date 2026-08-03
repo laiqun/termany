@@ -191,6 +191,51 @@ test("cx and aliased interactive banners bootstrap activity", () => {
   assert.equal(aliased.snapshot()["pane-b"]?.agent, "codex");
 });
 
+test("a Claude Code banner bootstraps activity even when a box collapses onto it", () => {
+  const tracker = new AgentActivityTracker();
+  tracker.noteInput("pane-a", "cc\r");
+  assert.deepEqual(tracker.snapshot(), {});
+
+  // Claude Code draws its title inside a border, and stripping the cursor moves
+  // that positioned it leaves the version glued to the name — "Claude Codev2.x".
+  const banner = [
+    "\x1b[?1049h\x1b[H",
+    "╭─── Claude Code\x1b[Cv2.1.220 ───────────────╮\r\n",
+    "│ /help for help                            │\r\n",
+    "╰───────────────────────────────────────────╯\r\n",
+    `${"tips and warnings\r\n".repeat(40)}`,
+    "  ⏵⏵ auto mode on (shift+tab to cycle)\r\n",
+  ].join("");
+  for (let offset = 0; offset < banner.length; offset += 23) {
+    tracker.noteOutput("pane-a", banner.slice(offset, offset + 23));
+  }
+
+  assert.equal(tracker.snapshot()["pane-a"]?.status, "working");
+  assert.equal(tracker.snapshot()["pane-a"]?.agent, "claude");
+});
+
+test("a finished task still turns red when it stops to ask the user", () => {
+  const tracker = new AgentActivityTracker();
+  tracker.register("pane-a", "claude");
+  // The pane goes green first: agents idle at their composer between steps, and
+  // a question can land after that.
+  assert.equal(tracker.reportIdle("pane-a", 1, true), true);
+  assert.equal(tracker.snapshot()["pane-a"]?.status, "done");
+
+  assert.equal(tracker.reportBlocked("pane-a", 1), true);
+  assert.equal(tracker.snapshot()["pane-a"]?.status, "error");
+});
+
+test("a stale epoch cannot repaint a finished task red", () => {
+  const tracker = new AgentActivityTracker();
+  tracker.register("pane-a", "claude");
+  tracker.reportIdle("pane-a", 1, true);
+  tracker.noteInput("pane-a", "next question\r");
+
+  assert.equal(tracker.reportBlocked("pane-a", 1), false);
+  assert.equal(tracker.snapshot()["pane-a"]?.status, "working");
+});
+
 test("malformed OSC cannot swallow a later activity signal", () => {
   const tracker = new AgentActivityTracker();
   tracker.register("pane-a", "codex");

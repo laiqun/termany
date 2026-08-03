@@ -1,3 +1,5 @@
+import { foregroundJobIsShell } from "./foregroundJob.js";
+
 export type AgentActivityStatus = "working" | "done" | "error";
 
 export interface AgentActivity {
@@ -26,6 +28,8 @@ interface SessionStreamState {
   agentActive: boolean;
   /** A register request owns the next Enter, so it must not create a second epoch. */
   awaitingRegisteredInput: boolean;
+  /** True once the PTY's foreground job left the shell, until it comes back. */
+  sawForegroundCommand: boolean;
   acknowledgedEpoch?: number;
   taskEpoch: number;
   input: string;
@@ -112,8 +116,10 @@ function detectedInteractiveAgent(text: string): string | undefined {
   ) {
     return "codex";
   }
+  // No trailing \b after the name: stripping the escapes that positioned a box
+  // border can glue the version straight onto it ("Claude Codev2.1.220").
   if (
-    /\bClaude\s+Code(?:\s+v[^\s]+)?\b[\s\S]{0,1500}(?:bypass\s+permissions|shift\+tab\s+to\s+cycle)/i.test(
+    /\bClaude\s+Code(?:\s*v[\d.]+)?[\s\S]{0,1500}(?:bypass\s+permissions|shift\+tab\s+to\s+cycle)/i.test(
       text,
     )
   ) {
@@ -239,6 +245,43 @@ export class AgentActivityTracker {
     if (agent && !stream.agent) stream.agent = agent;
   }
 
+  /**
+   * Sample the PTY's foreground process group.
+   *
+   * This is the one observation here that cannot be staged by output: the
+   * shell taking the terminal back is proof the agent process is gone, where
+   * the rendered screen can only recognize a prompt by how it looks. An agent
+   * that exits therefore settles its task immediately instead of waiting out
+   * the quiet window.
+   *
+   * Only the away-and-back transition counts. A session whose job never
+   * leaves the shell — Windows conpty, or ssh, where the local job is `ssh`
+   * for its whole life — must conclude nothing, and neither must the gap
+   * between Enter and the agent actually taking the foreground.
+   */
+  noteForegroundJob(id: string, job: string, shellJob: string): void {
+    // node-pty types `process` as a string but hands back null while a process
+    // group is changing hands, which is exactly when this gets sampled.
+    if (typeof job !== "string" || !job.trim() || !shellJob.trim()) return;
+    const stream = this.stream(id);
+    if (!foregroundJobIsShell(job, shellJob)) {
+      stream.sawForegroundCommand = true;
+      return;
+    }
+    if (!stream.sawForegroundCommand) return;
+    stream.sawForegroundCommand = false;
+    stream.agentActive = false;
+    stream.awaitingRegisteredInput = false;
+    stream.agent = undefined;
+    stream.outputTail = "";
+    const current = this.activities.get(id);
+    // Only work in flight is settled by this. A question already asked is
+    // still owed an answer, and a finished task keeps the epoch it finished
+    // under so the client can still acknowledge it.
+    if (current?.status !== "working") return;
+    this.setCurrent(id, "done", current.taskEpoch, current.agent);
+  }
+
   /** Apply a rendered-screen idle observation only to the task it observed. */
   reportIdle(id: string, taskEpoch: number, agentActive: boolean): boolean {
     const current = this.activities.get(id);
@@ -256,7 +299,14 @@ export class AgentActivityTracker {
     return true;
   }
 
-  /** Mark an exact in-flight task as blocked on a user decision or input. */
+  /**
+   * Mark an exact in-flight task as blocked on a user decision or input.
+   *
+   * A question reaches this from "done" as well as from "working": agents idle
+   * at their composer between steps, so a task can already read as finished by
+   * the time it stops to ask something. Waiting on a person is never the same
+   * as being finished, and only the matching epoch may repaint it.
+   */
   reportBlocked(id: string, taskEpoch: number): boolean {
     const current = this.activities.get(id);
     if (!current || current.taskEpoch !== taskEpoch) return false;
@@ -264,7 +314,7 @@ export class AgentActivityTracker {
     if (stream.taskEpoch !== taskEpoch) return false;
     stream.agentActive = true;
     stream.awaitingRegisteredInput = false;
-    if (current.status !== "working") return current.status === "error";
+    if (current.status === "error") return true;
     this.setCurrent(id, "error", taskEpoch, current.agent ?? stream.agent);
     return true;
   }
@@ -317,6 +367,7 @@ export class AgentActivityTracker {
       stream = {
         agentActive: false,
         awaitingRegisteredInput: false,
+        sawForegroundCommand: false,
         taskEpoch: 0,
         input: "",
         outputTail: "",

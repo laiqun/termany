@@ -1,8 +1,9 @@
 import { PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
 import { useI18n } from "../i18n";
+import { useImeGuard } from "../imeGuard";
 import { withShortcut } from "../keybindings";
-import { activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
+import { activePageId, activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
 import {
   acknowledgeAgentActivities,
   agentActivitySummary,
@@ -93,7 +94,7 @@ function ActivityCounts({ activity }: { activity: ReturnType<typeof agentActivit
  */
 function ActiveItem({ entry }: { entry: ActiveEntry }) {
   const { node, trail, activity } = entry;
-  const activeId = useStore((s) => activeWorkspace(s).activeNode);
+  const activeId = useStore(activePageId);
   const setActiveNode = useStore((s) => s.setActiveNode);
   const viewedLeafIds = node.htabs
     .filter((tab) => tab.id === node.activeHTab)
@@ -133,7 +134,10 @@ function TreeItem({
   consumeSuppressedClick: () => boolean;
 }) {
   const { t } = useI18n();
-  const activeId = useStore((s) => activeWorkspace(s).activeNode);
+  const activeId = useStore(activePageId);
+  // Open in another window: still clickable — selecting it raises that window —
+  // but it can't be deleted from here, and it doesn't become this window's page.
+  const elsewhere = useStore((s) => s.takenPages.has(node.id));
   const setActiveNode = useStore((s) => s.setActiveNode);
   const toggleExpand = useStore((s) => s.toggleExpand);
   const addChildNode = useStore((s) => s.addChildNode);
@@ -142,6 +146,7 @@ function TreeItem({
   const moveNode = useStore((s) => s.moveNode);
   const moveHTab = useStore((s) => s.moveHTab);
   const [editing, setEditing] = useState(false);
+  const ime = useImeGuard();
   // Where a drag over this row would land: nest into it, or reorder as a
   // sibling before/after it (top/bottom quarter of the row).
   const [dropPos, setDropPos] = useState<TreeDropPos | null>(null);
@@ -159,6 +164,8 @@ function TreeItem({
     <>
       <div
         className={`tree-row ${node.id === activeId ? "active" : ""} ${
+          elsewhere ? "elsewhere" : ""
+        } ${
           activeDropPos === "into" ? "drop-target" : ""
         } ${activeDropPos === "before" ? "drop-before" : ""} ${
           activeDropPos === "after" ? "drop-after" : ""
@@ -238,6 +245,7 @@ function TreeItem({
 
         {editing ? (
           <input
+            {...ime.props}
             className="tree-rename"
             autoFocus
             defaultValue={node.title}
@@ -247,7 +255,7 @@ function TreeItem({
               setEditing(false);
             }}
             onKeyDown={(e) => {
-              if (e.nativeEvent.isComposing) return; // let the IME handle Enter/Esc
+              if (ime.handled(e)) return; // the IME is still using this key
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
               else if (e.key === "Escape") setEditing(false);
             }}
@@ -273,16 +281,19 @@ function TreeItem({
         >
           <PlusIcon />
         </button>
-        <button
-          className="tree-act"
-          title={t("sidebar.deletePageTree")}
-          onClick={(e) => {
-            e.stopPropagation();
-            deleteNode(node.id);
-          }}
-        >
-          <CloseIcon />
-        </button>
+        {!elsewhere && (
+          <button
+            className="tree-act"
+            title={t("sidebar.deletePageTree")}
+            onClick={(e) => {
+              e.stopPropagation();
+              deleteNode(node.id);
+            }}
+          >
+            <CloseIcon />
+          </button>
+        )}
+        {elsewhere && <span className="tree-elsewhere" title={t("sidebar.openInOtherWindow")} />}
         {node.htabs.length > 1 && (
           <span className="tree-count" title={t("sidebar.terminals", { count: node.htabs.length })}>
             {node.htabs.length}
@@ -310,6 +321,7 @@ function TreeItem({
 export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { t } = useI18n();
   const ws = useStore(activeWorkspace);
+  const activePage = useStore(activePageId);
   const addRootNode = useStore((s) => s.addRootNode);
   const collapseAll = useStore((s) => s.collapseAll);
   const moveNode = useStore((s) => s.moveNode);
@@ -326,9 +338,9 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
   // ⌘P jumps don't yank the sidebar around.
   useEffect(() => {
     treeRef.current
-      ?.querySelector(`[data-tree-node-id="${CSS.escape(ws.activeNode)}"]`)
+      ?.querySelector(`[data-tree-node-id="${CSS.escape(activePage)}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [ws.activeNode, ws.roots]);
+  }, [activePage, ws.roots]);
   const dragRef = useRef<{
     id: string;
     title: string;
@@ -357,9 +369,9 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
     if (collapsed) return;
     const tree = treeRef.current;
     const row = Array.from(tree?.querySelectorAll<HTMLElement>("[data-tree-node-id]") ?? [])
-      .find((candidate) => candidate.dataset.treeNodeId === ws.activeNode);
+      .find((candidate) => candidate.dataset.treeNodeId === activePage);
     row?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [collapsed, ws.activeNode, ws.id]);
+  }, [collapsed, activePage, ws.id]);
 
   const setDragUi = (next: NodeDragUi | null) => {
     dragUiRef.current = next;

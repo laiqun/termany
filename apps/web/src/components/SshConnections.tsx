@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
+import { useImeGuard } from "../imeGuard";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { useStore } from "../state/store";
 import { subscribeTerminalConnectionStatus, terminalConnectionStatus } from "../terminal/manager";
@@ -29,6 +30,7 @@ export function SshConnections({
   localLabel?: string;
 }) {
   const { t } = useI18n();
+  const ime = useImeGuard();
   const setPaneSshTarget = useStore((s) => s.setPaneSshTarget);
   const renamePane = useStore((s) => s.renamePane);
   const [open, setOpen] = useState(false);
@@ -216,10 +218,11 @@ export function SshConnections({
                   value={localName}
                   aria-label={t("ssh.localName")}
                   onClick={(event) => event.stopPropagation()}
+                  {...ime.props}
                   onChange={(event) => setLocalName(event.target.value)}
                   onBlur={finishLocalRename}
                   onKeyDown={(event) => {
-                    if (event.nativeEvent.isComposing) return;
+                    if (ime.handled(event)) return;
                     if (event.key === "Enter") (event.target as HTMLInputElement).blur();
                     else if (event.key === "Escape") setEditingLocal(false);
                   }}
