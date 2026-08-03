@@ -1,3 +1,19 @@
+/* Nerd Font symbols (v3.4.0, MIT — the notice ships in the build via
+   public/fonts/SymbolsNerdFontMono-LICENSE.txt). Consulted per-glyph for the
+   Private Use Area icons that prompt frameworks (p10k, starship, …) emit;
+   letters never fall through to it. Spliced into the terminal font stack by
+   src/terminal/fonts.ts. */
+@font-face {
+  font-family: "Symbols Nerd Font Mono";
+  src: url("./assets/fonts/SymbolsNerdFontMono-Regular.woff2") format("woff2");
+  font-display: swap;
+  /* Every glyph in this font is a full 1em (2048/2048) wide, but a terminal
+     cell is only as wide as the primary font's advance — Menlo/Monaco are
+     1233/2048 = 60.2% of an em — so unscaled icons spill ~1.66 cells and
+     overlap the text after them. Shrink the whole face to one cell. */
+  size-adjust: 60.2%;
+}
+
 /* Design tokens — every value here is driven by the active theme (see
    src/themes/). These defaults mirror the Default Dark theme so the first
    paint (before JS applies a theme) is already correct. */

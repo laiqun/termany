@@ -14,6 +14,7 @@ import {
   agentConfirmationPromptVisible,
   agentInputPromptVisible,
 } from "./agentActivityPrompt";
+import { SYMBOLS_FONT_FAMILY, withSymbolsFallback } from "./fonts";
 import { registerLocalPathLinks } from "./localLinks";
 import {
   MAX_AUTO_RESTARTS,
@@ -1092,10 +1093,33 @@ export function applyTermTheme(theme: ITheme) {
   for (const s of sessions.values()) s.term.options.theme = theme;
 }
 
-/** Push a font family change to every live terminal + future sessions. */
+// The bundled "Symbols Nerd Font Mono" (@font-face in styles.css) loads
+// asynchronously, and the WebGL renderer caches every glyph it draws into a
+// texture atlas — icons painted before the font arrives would stay tofu boxes
+// forever. Once the font is actually usable, re-rasterize every open terminal;
+// sessions created after that pick the font up on their own.
+let symbolsFontWatch: Promise<void> | null = null;
+function refreshOnSymbolsFontLoad() {
+  if (symbolsFontWatch || typeof document === "undefined" || !document.fonts?.load) return;
+  symbolsFontWatch = document.fonts
+    .load(`${currentFontSize}px "${SYMBOLS_FONT_FAMILY}"`)
+    .then((faces) => {
+      if (faces.length === 0) return;
+      for (const s of sessions.values()) {
+        s.term.clearTextureAtlas();
+        s.term.refresh(0, s.term.rows - 1);
+      }
+    })
+    .catch(() => {
+      symbolsFontWatch = null;
+    });
+}
+
+/** Push a font family change to every live terminal + future sessions. The
+ *  symbols fallback rides along so Nerd Font icons survive any font choice. */
 export function applyFontFamily(family: string) {
   currentFontFamily = family;
-  for (const s of sessions.values()) s.term.options.fontFamily = family;
+  for (const s of sessions.values()) s.term.options.fontFamily = withSymbolsFallback(family);
 }
 
 /** Push a font size change to every live terminal + future sessions. */
@@ -1112,7 +1136,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
   el.className = "term-host";
 
   const term = new Terminal({
-    fontFamily: currentFontFamily,
+    fontFamily: withSymbolsFallback(currentFontFamily),
     fontSize: currentFontSize,
     scrollback: SCROLLBACK_LINES,
     cursorBlink: true,
@@ -1240,6 +1264,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
     contentVersion: 0,
   };
   sessions.set(id, session);
+  refreshOnSymbolsFontLoad();
   if (sshTarget) notifyConnectionStatus();
 
   const wireBackend = (b: ITerminalBackend) => {
