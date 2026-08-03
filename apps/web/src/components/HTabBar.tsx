@@ -1,4 +1,3 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
 import { isTauri } from "../env";
@@ -6,6 +5,7 @@ import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { withShortcut } from "../keybindings";
 import { useStore, activeNode, type Pane } from "../state/store";
+import { titleBarBackground, useTitleBarGesture } from "../titleBar";
 import {
   acknowledgeAgentActivities,
   agentActivitySummary,
@@ -48,6 +48,7 @@ export function HTabBar() {
   const [editing, setEditing] = useState<string | null>(null);
   const suppressClickRef = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
+  const titleBar = useTitleBarGesture();
 
   // Keep the active tab on screen — a tab created past the right edge would
   // otherwise be active but invisible. `nearest` no-ops when it already is.
@@ -84,15 +85,6 @@ export function HTabBar() {
       </button>
     </div>
   );
-
-  // The empty parts of the strip drag the window (desktop). Tabs/buttons are
-  // interactive, so clicks land on them, not the drag region. Double-clicking
-  // that same empty area zooms the window, macOS title-bar style — guarded to
-  // the bar itself so it doesn't fire from a bubbled tab/button dblclick.
-  const onBarDoubleClick = (e: React.MouseEvent) => {
-    if (!isTauri || e.target !== e.currentTarget) return;
-    void getCurrentWindow().toggleMaximize();
-  };
 
   const startTabDrag = (tabId: string, e: React.PointerEvent<HTMLDivElement>) => {
     if (!node || e.button !== 0 || editing === tabId) return;
@@ -169,13 +161,17 @@ export function HTabBar() {
     window.addEventListener("pointercancel", onUp);
   };
 
+  // The bar doubles as the window's title bar: its empty parts drag the window
+  // and zoom it on a double-click. Both background elements are marked, so the
+  // gesture covers the whole bar minus the tabs and buttons — the strip is
+  // flex: 1, and it alone accounts for nearly all of that empty space.
   return (
-    <div className={cls} data-tauri-drag-region onDoubleClick={onBarDoubleClick}>
+    <div className={cls} {...titleBar} {...titleBarBackground}>
       {controls}
       {/* Only the tabs scroll; the workspace controls and the panel toggle stay
           pinned to either end. Without this the strip just overflowed and a
           newly created tab sat off-screen, active but invisible. */}
-      <div className="htab-strip" ref={stripRef} data-tauri-drag-region>
+      <div className="htab-strip" ref={stripRef} {...titleBarBackground}>
       {node?.htabs.map((h) => (
         (() => {
           const ids = leafIds(h.layout);
