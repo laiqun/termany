@@ -15,7 +15,18 @@ import { AgentActivityTracker } from "./agentActivity.js";
 import { listAgentSessions, listAgentUsage, warmAgentSessionCache } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
-import { acpRuntimeCwd, closeAcpRuntimes, closeAllAcpRuntimes, promptAcpRuntime, respondAcpPermission } from "./acpRuntime.js";
+import {
+  acpRuntimeConfig,
+  acpRuntimeCwd,
+  closeAcpRuntimes,
+  closeAllAcpRuntimes,
+  loadAcpRuntimeConfig,
+  promptAcpRuntime,
+  respondAcpPermission,
+  setAcpConfigOption,
+  type AcpRuntimeTarget,
+} from "./acpRuntime.js";
+import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, readSystemStats } from "./systemStats.js";
 import { listSshConnections, listSshProfiles, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, testSshProfile } from "./ssh.js";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -36,6 +47,7 @@ import { gitDiffs, gitOverview } from "./git.js";
 import { pickFolder } from "./folderPicker.js";
 import { testProvider } from "./providerTest.js";
 import { ptyEnvironment } from "./ptyEnvironment.js";
+import { resolveExecutable } from "./shellPath.js";
 import { generateTheme } from "./theme.js";
 
 /** Read a JSON request body (capped) into an object. */
@@ -142,14 +154,7 @@ declare const __TERMANY_VERSION__: string | undefined;
 const SERVER_VERSION = typeof __TERMANY_VERSION__ === "string" ? __TERMANY_VERSION__ : "dev";
 const IS_WIN = os.platform() === "win32";
 const PASTE_DIR = process.env.TERMANY_PASTE_DIR ?? `${os.tmpdir()}/termany-pastes`;
-// Launch a LOGIN shell so it runs /etc/zprofile + ~/.zprofile (Homebrew's
-// `brew shellenv`, fnm/pyenv/etc.) — a GUI app inherits only a minimal PATH,
-// so without this the user's profile hits "command not found".
 const execFileAsync = promisify(execFile);
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
 
 function firstShellToken(input: string): string {
   const trimmed = input.trim();
@@ -160,27 +165,8 @@ function firstShellToken(input: string): string {
 async function detectExecutable(command: string): Promise<{ command: string; installed: boolean; path?: string }> {
   const executable = firstShellToken(command);
   if (!executable) return { command, installed: false };
-  if (/[\\/]/.test(executable)) {
-    try {
-      await fs.promises.access(executable, fs.constants.X_OK);
-      return { command, installed: true, path: executable };
-    } catch {
-      return { command, installed: false };
-    }
-  }
-
-  try {
-    const { stdout } = IS_WIN
-      ? await execFileAsync("where.exe", [executable], { timeout: 2500 })
-      : await execFileAsync(SHELL, ["-lc", `command -v -- ${shellQuote(executable)}`], { timeout: 2500 });
-    const found = stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean);
-    return found ? { command, installed: true, path: found } : { command, installed: false };
-  } catch {
-    return { command, installed: false };
-  }
+  const found = await resolveExecutable(executable);
+  return found ? { command, installed: true, path: found } : { command, installed: false };
 }
 
 function windowsPowerShellPath(): string {
@@ -214,6 +200,13 @@ const OSC7_PS_HOOK = [
 // Windows PowerShell profiles commonly initialize prompt tooling, package
 // managers, network drives, or Conda. In a headless packaged app that can turn
 // a new terminal into a minutes-long hang before the interactive prompt exists.
+//
+// Elsewhere `-l` launches a LOGIN shell so it runs /etc/zprofile + ~/.zprofile
+// (Homebrew's `brew shellenv`, fnm/pyenv/etc.) — a GUI app inherits only a
+// minimal PATH, so without this the user's profile hits "command not found".
+// node-pty also hands it a tty, which makes it interactive and therefore reads
+// ~/.zshrc too; resolveExecutable() in shellPath.ts reproduces that for
+// commands the server spawns outside a PTY.
 const SHELL_ARGS = IS_WIN
   ? ["-NoLogo", "-NoProfile", "-NoExit", "-Command", OSC7_PS_HOOK]
   : ["-l"];
@@ -737,20 +730,31 @@ const http = createServer((req, res) => {
     return;
   }
 
+  if (req.method === "POST" && req.url === "/api/agent/acp/config") {
+    readJson(req)
+      .then(async (body) => {
+        const target = await acpTarget(body);
+        const configId = body?.configId ? String(body.configId) : "";
+        if (configId) {
+          json(200, { options: await setAcpConfigOption({ ...target, configId, value: String(body?.value ?? "") }) });
+          return;
+        }
+        // Serve what the agent said last time if we have it; only pay for a
+        // start-up when there is nothing to show.
+        const known = acpRuntimeConfig(target);
+        json(200, { options: known ?? (await loadAcpRuntimeConfig(target)) });
+      })
+      .catch(fail);
+    return;
+  }
+
   if (req.method === "POST" && req.url === "/api/agent/acp/chat") {
     readJson(req)
       .then(async (body) => {
-        const paneId = String(body?.paneId ?? "");
-        const agentId = String(body?.agentId ?? "");
+        const target = await acpTarget(body);
         const prompt = String(body?.prompt ?? "").trim();
-        if (!paneId || !agentId || !prompt) throw new Error("paneId, agentId and prompt are required");
-        // A folder the user picked explicitly wins over the inherited terminal
-        // cwd; if it has since vanished, fail loudly rather than silently
-        // landing the agent somewhere else.
-        const requested = body?.cwd ? String(body.cwd) : "";
-        const explicitCwd = requested ? await dirIfValid(requested) : undefined;
-        if (requested && !explicitCwd) throw new Error(`Working folder no longer exists: ${requested}`);
-        const cwd = explicitCwd ?? (await resolveSpawnCwd(body?.cwdFrom ? String(body.cwdFrom) : null, paneId));
+        if (!prompt) throw new Error("prompt is required");
+        const { paneId } = target;
         res.writeHead(200, {
           "Content-Type": "application/x-ndjson; charset=utf-8",
           "Cache-Control": "no-cache, no-transform",
@@ -767,10 +771,7 @@ const http = createServer((req, res) => {
         }, 10_000);
         try {
           await promptAcpRuntime({
-            paneId,
-            agentId,
-            cwd,
-            cwdExplicit: Boolean(explicitCwd),
+            ...target,
             prompt,
             signal: abort.signal,
             emit: (event) => {
@@ -1224,6 +1225,18 @@ const http = createServer((req, res) => {
     return;
   }
 
+  // Ports each pane's process tree is listening on right now, so the frontend
+  // can offer "open in browser" for a dev server that is actually up — and
+  // stop offering it the moment that server dies.
+  if (req.method === "GET" && reqUrl.pathname === "/api/session-ports") {
+    (async () => {
+      const rootPids: Record<string, number> = {};
+      for (const [id, session] of ptySessions) rootPids[id] = session.pty.pid;
+      json(200, { ports: await sessionListeningPorts(rootPids) });
+    })().catch(fail);
+    return;
+  }
+
   // The monitor's "quit process" action. killProcess() is the guard rail —
   // it rejects pid <= 1, this server's own pid, and anything but TERM/KILL —
   // so a bad request comes back as a 400 the UI can show, not a dead machine.
@@ -1500,6 +1513,29 @@ async function resolveSpawnCwd(
     if (saved) return saved;
   }
   return fallback;
+}
+
+/**
+ * Read the pane, agent, folder and remembered selector picks out of an ACP
+ * request body. Shared by the chat stream and the selector endpoint so both
+ * land on the same session — see acquire() in acpRuntime.ts.
+ */
+async function acpTarget(body: any): Promise<AcpRuntimeTarget> {
+  const paneId = String(body?.paneId ?? "");
+  const agentId = String(body?.agentId ?? "");
+  if (!paneId || !agentId) throw new Error("paneId and agentId are required");
+  // A folder the user picked explicitly wins over the inherited terminal cwd;
+  // if it has since vanished, fail loudly rather than silently landing the
+  // agent somewhere else.
+  const requested = body?.cwd ? String(body.cwd) : "";
+  const explicitCwd = requested ? await dirIfValid(requested) : undefined;
+  if (requested && !explicitCwd) throw new Error(`Working folder no longer exists: ${requested}`);
+  const cwd = explicitCwd ?? (await resolveSpawnCwd(body?.cwdFrom ? String(body.cwdFrom) : null, paneId));
+  const config: Record<string, string> = {};
+  for (const [key, value] of Object.entries(body?.config ?? {})) {
+    if (typeof value === "string") config[String(key)] = value;
+  }
+  return { paneId, agentId, cwd, cwdExplicit: Boolean(explicitCwd), config };
 }
 
 /**

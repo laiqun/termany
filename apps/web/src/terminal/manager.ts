@@ -21,6 +21,7 @@ import {
   RESTART_HEALTHY_MS,
   shellExitDisposition,
 } from "./shellExit";
+import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
 import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
 
@@ -1275,6 +1276,9 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       }
       session.contentVersion++;
       updateAgentActivityFromOutput(id, data);
+      // Live output only — a replayed history tail would advertise the URL of
+      // a dev server that died with the previous run.
+      noteSessionOutput(id, data);
       if (replaying) {
         pendingOutput.push(data);
         return;
@@ -1892,6 +1896,7 @@ export function disposeSession(id: string) {
   if (agentActivities.delete(id)) notifyAgentActivity();
   agentSessionKinds.delete(id);
   restoreSnapshots.delete(id);
+  forgetSessionUrls(id);
   if (isDemo) return;
   // Drop its persisted restore data — a closed pane should not come back.
   fetch(`${apiUrl()}/api/forget`, {
@@ -1925,6 +1930,7 @@ export function disposePaneSessions(paneId: string) {
     commandSendChains.delete(id);
     if (agentActivities.delete(id)) notifyAgentActivity();
     agentSessionKinds.delete(id);
+    forgetSessionUrls(id);
   }
   notifyConnectionStatus();
   if (isDemo || !ids.length) return;

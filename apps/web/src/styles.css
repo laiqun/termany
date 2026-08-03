@@ -251,6 +251,9 @@ html.tauri #root {
 .ws-switcher {
   position: relative;
   height: 36px;
+  /* A flex item with a set height still shrinks under pressure; this header
+     never should, however long the lists below it get. */
+  flex-shrink: 0;
   /* Part of the sidebar block: same bg, no divider — the whole sidebar (header
      + pages + tree) reads as one surface. The top-bar treatment is the tab
      strip's alone. */
@@ -820,6 +823,37 @@ html.tauri #root {
   padding: 16px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
+/* Prose, not a form: wider than the icon/name dialogs this shares a shell with. */
+.agent-models-dialog {
+  width: min(420px, calc(100vw - 32px));
+}
+.agent-models-dialog h2 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.agent-models-dialog p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-dim);
+}
+.agent-models-dialog code {
+  display: block;
+  /* The line after a command block starts a new step, so it needs more air
+     than the gap between two sentences of the same paragraph. */
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+  color: var(--fg);
+  font-size: 12px;
+  /* A command is copied by hand as often as it is clicked. */
+  user-select: text;
+  overflow-x: auto;
+  white-space: nowrap;
+}
 .ws-dialog-row {
   display: flex;
   align-items: center;
@@ -1015,15 +1049,15 @@ html.tauri #root {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
-/* Pages with running agents, above the tree. Sized to its content but capped,
-   so a burst of activity can't push the page tree off screen; it scrolls
-   itself past that point. */
+/* Pages with running agents, above the tree. Sized by its content: however many
+   pages are working, that is how tall the list is. It gives space back (and
+   starts scrolling) only once the tree below has none left to spare, and the
+   whole section folds away from its own header. */
 .active-section {
-  flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  flex: 0 1 auto;
   min-height: 0;
-  max-height: 34vh;
 }
 .active-list {
   overflow-y: auto;
@@ -1058,6 +1092,11 @@ html.tauri #root {
   overflow-y: auto;
   /* Wider horizontal inset so the row highlight sits clear of the sidebar edges. */
   padding: 6px 8px;
+  /* Where ACTIVE stops growing. An expanded tree squeezed to nothing reads as
+     broken, and with the tree collapsed this is the whitespace that accepts a
+     dragged tab to spin up a new page (see HTabBar) — a target that has to
+     survive however long the list above it gets. */
+  min-height: 96px;
 }
 .tree-row {
   position: relative; /* anchors the drop-before/after insertion line */
@@ -2072,6 +2111,38 @@ html.tauri #root {
   height: 10px;
   opacity: 0.7;
 }
+/* "Serving on :3035" — accented so a live dev server reads as a live thing,
+   not as one more grey header control. */
+.pane-url-btn {
+  width: auto;
+  gap: 3px;
+  padding: 0 4px 0 5px;
+  color: var(--accent);
+}
+.pane-url-btn > svg:first-child {
+  width: 13px;
+  height: 13px;
+}
+.pane-url-btn > svg:last-child {
+  width: 10px;
+  height: 10px;
+  opacity: 0.7;
+}
+.pane-url-port {
+  font-size: 11px;
+  font-family: Menlo, monospace;
+  line-height: 1;
+}
+.pop-panel.pane-url-panel {
+  max-width: min(420px, 80vw);
+}
+.pane-url-panel .pop-item-label {
+  font-family: Menlo, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* Header dropdown opens downward, hugging the right edge of its trigger. */
 .pop-panel.pane-view-panel {
   top: calc(100% + 4px);
@@ -2560,6 +2631,10 @@ html.tauri #root {
 }
 .pop-trigger {
   max-width: min(240px, 40vw);
+  /* vw is the window, not this pane. Without a shrinkable floor the trigger
+     holds its content width and a long model name runs under the send button
+     in a split pane, so let it give way and ellipsize instead. */
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -2583,6 +2658,7 @@ html.tauri #root {
   cursor: default;
 }
 .pop-trigger-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2614,10 +2690,13 @@ html.tauri #root {
 .pop-menu-left .pop-panel {
   right: 0;
 }
-/* Submenus fly out away from the composer edge their trigger hugs. */
+/* Submenus fly out away from the composer edge their trigger hugs. A model
+   list can carry names long enough to widen this past the window on its own,
+   before PopMenu's nudge has anything to work with. */
 .pop-sub {
   top: -6px;
   max-height: 320px;
+  max-width: min(320px, 70vw);
   overflow-y: auto;
 }
 .pop-menu-right .pop-sub {

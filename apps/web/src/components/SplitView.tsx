@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { beginDragCursor, createDragGhost, endDragCursor } from "../dragGhost";
 import { useI18n } from "../i18n";
@@ -12,7 +12,10 @@ import {
   agentActivityTitle,
   focusSession,
   subscribeAgentActivity,
+  terminalSessionId,
 } from "../terminal/manager";
+import { servedUrls, subscribeServedUrls } from "../terminal/servedUrls";
+import { openExternal } from "../openExternal";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
@@ -21,6 +24,7 @@ import {
   CheckIcon,
   ChevronIcon,
   CloseIcon,
+  ExternalOpenIcon,
   FilesIcon,
   GitBranchIcon,
   MaximizeIcon,
@@ -63,12 +67,9 @@ const PANE_VIEWS = [
   { view: "monitor", labelKey: "pane.view.monitor", Icon: ActivityIcon },
 ] as const;
 
-/** Header dropdown switching this pane between all four pane views — the same
- *  order ⌘E cycles through. */
-function PaneViewMenu({ leaf }: { leaf: Leaf }) {
-  const { t } = useI18n();
-  const setPaneView = useStore((s) => s.setPaneView);
-  const [open, setOpen] = useState(false);
+/** Dismiss-on-outside-click/Escape plus native-view occlusion, shared by the
+ *  header's dropdowns. */
+function usePaneHeadPopover(open: boolean, close: () => void) {
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const occluderId = useId();
@@ -76,12 +77,12 @@ function PaneViewMenu({ leaf }: { leaf: Leaf }) {
   useEffect(() => {
     if (!open) return;
     const onClick = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node)) close();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      setOpen(false);
+      close();
     };
     window.addEventListener("click", onClick);
     window.addEventListener("keydown", onKey, true);
@@ -89,7 +90,7 @@ function PaneViewMenu({ leaf }: { leaf: Leaf }) {
       window.removeEventListener("click", onClick);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [open]);
+  }, [open, close]);
 
   // Native previews paint above the DOM; blank the ones this panel covers.
   useEffect(() => {
@@ -97,6 +98,83 @@ function PaneViewMenu({ leaf }: { leaf: Leaf }) {
     registerOccluder(occluderId, panelRef.current.getBoundingClientRect());
     return () => unregisterOccluder(occluderId);
   }, [open, occluderId]);
+
+  return { rootRef, panelRef };
+}
+
+/**
+ * "Open what this pane is serving" — shown only while the pane's own process
+ * tree is actually listening on a TCP port (see terminal/servedUrls). One
+ * candidate opens on click; several drop down so the right dev server can be
+ * picked.
+ */
+function PaneServedUrls({ leaf }: { leaf: Leaf }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  const { rootRef, panelRef } = usePaneHeadPopover(open, close);
+  const sessionId = terminalSessionId(leaf.id, leaf.sshTarget);
+  const subscribe = useCallback(
+    (onChange: () => void) => subscribeServedUrls(sessionId, onChange),
+    [sessionId],
+  );
+  const snapshot = useCallback(() => servedUrls(sessionId), [sessionId]);
+  const urls = useSyncExternalStore(subscribe, snapshot, snapshot);
+
+  const launch = (url: string) => {
+    setOpen(false);
+    void openExternal(url).then((error) => {
+      if (error) console.warn("[termany] failed to open URL:", error);
+    });
+  };
+
+  if (!urls.length) return null;
+  const primary = urls[0];
+  return (
+    <div className="pane-view-menu pane-url-menu" ref={rootRef}>
+      <button
+        className="pane-btn pane-url-btn"
+        title={
+          urls.length > 1
+            ? t("pane.servedUrls")
+            : t("pane.openInBrowser", { url: primary.url })
+        }
+        aria-haspopup={urls.length > 1 ? "menu" : undefined}
+        aria-expanded={urls.length > 1 ? open : undefined}
+        onClick={() => (urls.length > 1 ? setOpen((was) => !was) : launch(primary.url))}
+      >
+        <WebIcon />
+        <span className="pane-url-port">{primary.port}</span>
+        {urls.length > 1 && <ChevronIcon dir="down" />}
+      </button>
+      {open && (
+        <div className="pop-panel pane-view-panel pane-url-panel" role="menu" ref={panelRef}>
+          {urls.map((entry) => (
+            <button
+              key={entry.port}
+              type="button"
+              role="menuitem"
+              className="pop-item"
+              onClick={() => launch(entry.url)}
+            >
+              <ExternalOpenIcon />
+              <span className="pop-item-label">{entry.url}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Header dropdown switching this pane between all four pane views — the same
+ *  order ⌘E cycles through. */
+function PaneViewMenu({ leaf }: { leaf: Leaf }) {
+  const { t } = useI18n();
+  const setPaneView = useStore((s) => s.setPaneView);
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  const { rootRef, panelRef } = usePaneHeadPopover(open, close);
 
   const current = leaf.view ?? "terminal";
   const CurrentIcon = PANE_VIEWS.find((entry) => entry.view === current)!.Icon;
@@ -218,6 +296,7 @@ function PaneHeader({
       </span>
       <span className="pane-head-spacer" />
       <div className="pane-head-actions">
+        {(leaf.view ?? "terminal") === "terminal" && <PaneServedUrls leaf={leaf} />}
         <PaneViewMenu leaf={leaf} />
         <button
           className="pane-btn"

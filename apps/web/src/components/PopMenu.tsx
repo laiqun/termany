@@ -2,6 +2,56 @@ import { useEffect, useId, useRef, useState } from "react";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { CheckIcon, ChevronIcon } from "./icons";
 
+/** Breathing room kept between a flown-out submenu and the edge that clips it. */
+const EDGE_MARGIN = 8;
+
+/**
+ * The box a submenu is actually free to occupy.
+ *
+ * Not the window: a pane is an `overflow: hidden` slot, so a flyout that leaves
+ * it is silently cut off — visible as model names missing their first few
+ * characters — while still measuring as comfortably on screen.
+ */
+function clipBounds(el: HTMLElement): { left: number; right: number; top: number; bottom: number } {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.overflowX !== "visible" || style.overflowY !== "visible") {
+      const rect = node.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+    }
+  }
+  const root = document.documentElement;
+  return { left: 0, right: root.clientWidth, top: 0, bottom: root.clientHeight };
+}
+
+/** How far one edge of `rect` sits outside `[low, high]`, as a correction. */
+function slideInto(start: number, end: number, low: number, high: number): number {
+  if (start < low + EDGE_MARGIN) return low + EDGE_MARGIN - start;
+  if (end > high - EDGE_MARGIN) return high - EDGE_MARGIN - end;
+  return 0;
+}
+
+/** Fit an open submenu inside that box: shrink it if it must, then slide it in. */
+function fitSubmenu(sub: HTMLElement): void {
+  // Cleared first so the stylesheet's own caps are what gets measured — the
+  // correction is then computed from scratch every time instead of compounding
+  // whatever the last opening left behind.
+  sub.style.maxWidth = "";
+  sub.style.maxHeight = "";
+  sub.style.transform = "";
+  const bounds = clipBounds(sub);
+  const styled = getComputedStyle(sub);
+  const room = (span: number, styledMax: string) =>
+    Math.max(Math.min(parseFloat(styledMax) || Infinity, span - EDGE_MARGIN * 2), 120);
+  sub.style.maxWidth = `${room(bounds.right - bounds.left, styled.maxWidth)}px`;
+  sub.style.maxHeight = `${room(bounds.bottom - bounds.top, styled.maxHeight)}px`;
+
+  const rect = sub.getBoundingClientRect();
+  const dx = Math.round(slideInto(rect.left, rect.right, bounds.left, bounds.right));
+  const dy = Math.round(slideInto(rect.top, rect.bottom, bounds.top, bounds.bottom));
+  if (dx || dy) sub.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+
 export interface PopMenuItem {
   id: string;
   label: string;
@@ -26,6 +76,7 @@ export function PopMenu({
   items,
   footer,
   side = "left",
+  onOpen,
   onSelect,
 }: {
   label: string;
@@ -34,6 +85,10 @@ export function PopMenu({
   items: PopMenuItem[];
   footer?: { label: string; onSelect: () => void };
   side?: "left" | "right";
+  /** Fired as the panel opens, for menus whose contents have to be fetched.
+   *  Opening is the earliest honest signal of intent — filling the menu ahead
+   *  of time would mean paying for it in every pane that never opens it. */
+  onOpen?: () => void;
   onSelect: (id: string) => void;
 }) {
   const occluderId = useId();
@@ -64,6 +119,10 @@ export function PopMenu({
 
   // Blank only the web/office preview panes these popups actually cover — native
   // views paint above the DOM and ignore z-index (see nativeViewOcclusion).
+  //
+  // The same pass fits an open submenu inside the pane. `side` says which way
+  // the flyout goes, but not whether there is room: a pane split narrow, or a
+  // list of long model names, pushes it past the edge that clips it.
   useEffect(() => {
     if (!open) {
       setOpenSub("");
@@ -73,8 +132,12 @@ export function PopMenu({
     const subId = `${occluderId}-sub`;
     const update = () => {
       if (panelRef.current) registerOccluder(panelId, panelRef.current.getBoundingClientRect());
-      if (subRef.current) registerOccluder(subId, subRef.current.getBoundingClientRect());
-      else unregisterOccluder(subId);
+      if (!subRef.current) {
+        unregisterOccluder(subId);
+        return;
+      }
+      fitSubmenu(subRef.current);
+      registerOccluder(subId, subRef.current.getBoundingClientRect());
     };
     update();
     window.addEventListener("resize", update);
@@ -99,7 +162,12 @@ export function PopMenu({
         aria-label={ariaLabel}
         aria-haspopup="menu"
         aria-expanded={open}
-        onClick={() => setOpen((was) => !was)}
+        onClick={() =>
+          setOpen((was) => {
+            if (!was) onOpen?.();
+            return !was;
+          })
+        }
       >
         <span className="pop-trigger-label">{label}</span>
         <ChevronIcon dir="down" />

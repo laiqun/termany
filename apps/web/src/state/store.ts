@@ -86,6 +86,11 @@ export type Pane =
       agentMessages?: AgentMessage[];
       /** "providerId/modelName"; unset follows the current default model. */
       agentModel?: string;
+      /** ACP session selector picks (model, and whatever else the agent
+       *  offers), as agentId → configId → value. An ACP session always starts
+       *  on the agent's defaults, so these are replayed onto every session the
+       *  pane opens; keyed by agent because the value ids are the agent's own. */
+      agentConfig?: Record<string, Record<string, string>>;
       /** Agent registry id for an ACP-backed native conversation. Undefined
        *  means "never chosen" (the pane defaults to the first enabled
        *  runtime); "" is an explicit Chat-mode choice (Termany's lightweight
@@ -256,6 +261,7 @@ interface State {
   setPaneAgentSession: (leafId: string, info: { agent: string; sessionId: string }) => void;
   setAgentMessages: (leafId: string, messages: AgentMessage[]) => void;
   setAgentModel: (leafId: string, model: string) => void;
+  setAgentConfigOption: (leafId: string, agentId: string, configId: string, value: string) => void;
   setAgentRuntime: (leafId: string, runtimeId: string) => void;
   setAgentCwd: (leafId: string, cwd: string) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
@@ -1302,6 +1308,17 @@ export const useStore = create<State>((set) => ({
   setAgentModel: (leafId, model) =>
     set((s) => ({
       workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({ ...leaf, agentModel: model })),
+    })),
+
+  setAgentConfigOption: (leafId, agentId, configId, value) =>
+    set((s) => ({
+      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
+        ...leaf,
+        agentConfig: {
+          ...leaf.agentConfig,
+          [agentId]: { ...leaf.agentConfig?.[agentId], [configId]: value },
+        },
+      })),
     })),
 
   setAgentRuntime: (leafId, runtimeId) =>

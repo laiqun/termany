@@ -19,6 +19,11 @@ const AGENTS_CHANGED_EVENT = "termany:agents-changed";
 // can strip stale localStorage entries instead of resurrecting them as
 // "custom" agents.
 const REMOVED_AGENT_IDS = new Set(["charm"]);
+// Bumped whenever a built-in gains or changes its ACP adapter. Registries saved
+// before the bump still carry `runtime: null` for it, which normalize() must
+// read as "predates the adapter" rather than "the user turned it off". Keep in
+// sync with RUNTIME_REVISION in apps/server/src/agentConfig.ts.
+const RUNTIME_REVISION = 1;
 
 export type AgentConfig = {
   id: string;
@@ -31,6 +36,8 @@ export type AgentConfig = {
   detected?: boolean;
   detectedPath?: string;
   runtime?: AgentRuntimeConfig;
+  /** Which generation of built-in ACP defaults this entry was written against. */
+  runtimeRevision?: number;
 };
 
 export type AgentRuntimeConfig = {
@@ -43,8 +50,9 @@ export type AgentRuntimeConfig = {
 
 type StoredAgentConfig = Partial<Omit<AgentConfig, "builtIn" | "detected" | "detectedPath" | "runtime">> & {
   id: string;
-  /** Missing in legacy data means "inherit the built-in adapter"; null means
-   *  the user explicitly disabled conversation runtime support. */
+  /** Missing in legacy data means "inherit the built-in adapter"; null paired
+   *  with the current runtimeRevision means the user explicitly disabled
+   *  conversation runtime support. */
   runtime?: AgentRuntimeConfig | null;
 };
 
@@ -57,6 +65,13 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: true,
     icon: claudeIcon,
     builtIn: true,
+    runtime: {
+      protocol: "acp",
+      command: "npx",
+      args: "-y @agentclientprotocol/claude-agent-acp",
+      distribution: "system",
+      modelSource: "agent",
+    },
   },
   {
     id: "codex",
@@ -66,6 +81,13 @@ export const DEFAULT_AGENTS: AgentConfig[] = [
     enabled: true,
     icon: codexIcon,
     builtIn: true,
+    runtime: {
+      protocol: "acp",
+      command: "npx",
+      args: "-y @agentclientprotocol/codex-acp",
+      distribution: "system",
+      modelSource: "agent",
+    },
   },
   {
     id: "gemini",
@@ -175,6 +197,7 @@ function storedShape(agent: AgentConfig): StoredAgentConfig {
     enabled: agent.enabled,
     icon: agent.builtIn ? undefined : agent.icon,
     runtime: agent.runtime ?? null,
+    runtimeRevision: RUNTIME_REVISION,
   };
 }
 
@@ -197,13 +220,16 @@ function normalize(saved: StoredAgentConfig[]): AgentConfig[] {
       const base = defaultById.get(id);
       const stored = savedById.get(id);
       if (base) {
+        // A stored `null` only counts as an explicit opt-out once the entry has
+        // seen the current defaults; older ones predate the built-in's adapter.
+        const stale = !stored?.runtimeRevision || stored.runtimeRevision < RUNTIME_REVISION;
+        const inherit = !stored || !("runtime" in stored) || (stored.runtime == null && stale);
         return {
           ...base,
           ...stored,
           icon: stored?.icon || base.icon,
-          runtime: stored && "runtime" in stored
-            ? stored.runtime ?? undefined
-            : base.runtime,
+          runtime: inherit ? base.runtime : stored.runtime ?? undefined,
+          runtimeRevision: RUNTIME_REVISION,
           builtIn: true,
         };
       }

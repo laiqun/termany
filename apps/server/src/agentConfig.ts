@@ -20,11 +20,45 @@ export interface AgentConfig {
   icon?: string;
   builtIn: boolean;
   runtime?: AgentRuntimeConfig | null;
+  /** Which generation of built-in ACP defaults this entry was written against. */
+  runtimeRevision?: number;
 }
 
+/** Bumped whenever a built-in gains or changes its ACP adapter, so registries
+ *  saved before that still pick the new default up. See sanitize(). */
+export const RUNTIME_REVISION = 1;
+
 const BUILTIN_AGENTS: AgentConfig[] = [
-  { id: "claude", name: "Claude", command: "claude", args: "--dangerously-skip-permissions", enabled: true, builtIn: true },
-  { id: "codex", name: "Codex", command: "codex", args: "--dangerously-bypass-approvals-and-sandbox", enabled: true, builtIn: true },
+  {
+    id: "claude",
+    name: "Claude",
+    command: "claude",
+    args: "--dangerously-skip-permissions",
+    enabled: true,
+    builtIn: true,
+    runtime: {
+      protocol: "acp",
+      command: "npx",
+      args: "-y @agentclientprotocol/claude-agent-acp",
+      distribution: "system",
+      modelSource: "agent",
+    },
+  },
+  {
+    id: "codex",
+    name: "Codex",
+    command: "codex",
+    args: "--dangerously-bypass-approvals-and-sandbox",
+    enabled: true,
+    builtIn: true,
+    runtime: {
+      protocol: "acp",
+      command: "npx",
+      args: "-y @agentclientprotocol/codex-acp",
+      distribution: "system",
+      modelSource: "agent",
+    },
+  },
   { id: "gemini", name: "Gemini", command: "gemini", args: "--yolo", enabled: false, builtIn: true },
   { id: "openclaw", name: "OpenClaw", command: "openclaw", args: "", enabled: true, builtIn: true },
   { id: "fastclaw", name: "FastClaw", command: "fastclaw", args: "", enabled: false, builtIn: true },
@@ -68,6 +102,14 @@ function sanitize(input: any, builtIn = false, fallback?: AgentConfig): AgentCon
   const id = String(input?.id ?? "").trim();
   if (!id) return null;
   const command = String(input?.command ?? "").trim();
+  const revision = Number(input?.runtimeRevision);
+  const stale = !Number.isFinite(revision) || revision < RUNTIME_REVISION;
+  const hasRuntimeKey = Object.prototype.hasOwnProperty.call(input ?? {}, "runtime");
+  // A stored `null` means "the user turned conversation support off" — but only
+  // once the entry has seen the current defaults. Registries written before a
+  // built-in gained its adapter also hold null, and those must be backfilled or
+  // the agent would never appear in the chat picker.
+  const inherit = !hasRuntimeKey || (input?.runtime == null && stale);
   return {
     id,
     name: String(input?.name ?? "").trim() || id,
@@ -76,11 +118,8 @@ function sanitize(input: any, builtIn = false, fallback?: AgentConfig): AgentCon
     enabled: input?.enabled !== false,
     icon: typeof input?.icon === "string" ? input.icon : undefined,
     builtIn,
-    runtime: Object.prototype.hasOwnProperty.call(input ?? {}, "runtime")
-      ? input?.runtime === null
-        ? null
-        : runtime(input?.runtime)
-      : fallback?.runtime,
+    runtime: inherit ? fallback?.runtime : input?.runtime === null ? null : runtime(input?.runtime),
+    runtimeRevision: RUNTIME_REVISION,
   };
 }
 

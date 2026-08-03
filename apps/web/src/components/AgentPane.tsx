@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAgentConfigs } from "../agents";
+import { modelLabelFor, modelMenuItems, shortModelName, type AcpConfigOption } from "../agentModelMenu";
+import { agentModelSetup } from "../agentModelSetup";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { cwdCandidates, useStore, type AgentMessage, type AgentPart, type Pane } from "../state/store";
@@ -37,6 +40,7 @@ interface PendingPermission {
   title: string;
   options: PermissionOption[];
 }
+
 
 function message(role: AgentMessage["role"], content: string): AgentMessage {
   return { id: crypto.randomUUID(), role, content, createdAt: Date.now() };
@@ -156,6 +160,7 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
   const { t } = useI18n();
   const setAgentMessages = useStore((s) => s.setAgentMessages);
   const setAgentModel = useStore((s) => s.setAgentModel);
+  const setAgentConfigOption = useStore((s) => s.setAgentConfigOption);
   const setAgentRuntime = useStore((s) => s.setAgentRuntime);
   const setAgentCwd = useStore((s) => s.setAgentCwd);
   const addPane = useStore((s) => s.addPane);
@@ -168,6 +173,10 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
   const [copied, setCopied] = useState("");
   const [cwdInfo, setCwdInfo] = useState<{ cwd: string; home: string } | null>(null);
   const [picking, setPicking] = useState(false);
+  /** null until the selector menu is first opened — see loadAcpConfig. */
+  const [acpConfig, setAcpConfig] = useState<AcpConfigOption[] | null>(null);
+  const [acpConfigBusy, setAcpConfigBusy] = useState(false);
+  const [modelHelp, setModelHelp] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const streamingRef = useRef(false);
   const composingRef = useRef(false);
@@ -257,8 +266,64 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
   const hasModel = options.some((option) => option.value === selectedModel);
   const activeRuntime = runtimes.find((agent) => agent.id === selectedRuntime);
   const canSubmit = selectedRuntime ? true : hasModel;
+
+  // The picks this pane replays onto every session it opens for this agent.
+  const acpPicks = useMemo(
+    () => (selectedRuntime ? (leaf.agentConfig?.[selectedRuntime] ?? {}) : {}),
+    [leaf.agentConfig, selectedRuntime]
+  );
+  const modelSetup = agentModelSetup(activeRuntime);
+  const acpModel = acpConfig?.find((option) => option.category === "model" && option.type === "select");
+  // Before the menu has ever been opened the pane may have no session at all,
+  // so the remembered pick is the only name available — and none was ever the
+  // resting state anyway.
+  const acpModelValue = acpModel?.currentValue ?? acpPicks.model ?? "";
+  const acpModelLabel = acpModelValue ? shortModelName(modelLabelFor(acpModel, acpModelValue)) : "";
+
+  // Switching agent or folder puts the pane on a different session whose
+  // selectors are the new agent's, so drop what the old one reported.
+  useEffect(() => {
+    setAcpConfig(null);
+  }, [selectedRuntime, leaf.agentCwd]);
+
+  /**
+   * Ask the pane's session what it offers, optionally setting one selector on
+   * the way. Starting an agent costs seconds and a process, so this runs when
+   * the menu is opened rather than when the pane mounts.
+   */
+  const loadAcpConfig = async (change?: { configId: string; value: string }) => {
+    if (!selectedRuntime || acpConfigBusy) return;
+    setAcpConfigBusy(true);
+    try {
+      const response = await fetch(apiPath("/api/agent/acp/config"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          paneId: leaf.id,
+          agentId: selectedRuntime,
+          cwd: leaf.agentCwd || undefined,
+          cwdFrom: cwdCandidates(useStore.getState(), leaf.id).join(","),
+          config: acpPicks,
+          ...change,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error ?? `request failed (${response.status})`);
+      setAcpConfig(data.options ?? []);
+      if (change) setAgentConfigOption(leaf.id, selectedRuntime, change.configId, change.value);
+    } catch {
+      // An agent that can't start says so loudly on the first prompt; the menu
+      // just stays on its resting label rather than growing an error state.
+      setAcpConfig([]);
+    } finally {
+      setAcpConfigBusy(false);
+    }
+  };
+
   const modelLabel = selectedRuntime
-    ? t("agentChat.modelAgentManaged")
+    ? acpConfigBusy && !acpConfig
+      ? t("agentChat.modelLoading")
+      : acpModelLabel || t("agentChat.modelAuto")
     : hasModel
       ? selectedModel.slice(selectedModel.indexOf("/") + 1)
       : t("agentChat.modelNone");
@@ -305,6 +370,7 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
                 agentId: selectedRuntime,
                 cwd: leaf.agentCwd || undefined,
                 cwdFrom: cwdCandidates(useStore.getState(), leaf.id).join(","),
+                config: acpPicks,
                 prompt: content,
               }
             : {
@@ -597,19 +663,42 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
               side="left"
               ariaLabel={t("agentChat.model")}
               label={modelLabel}
-              disabled={Boolean(selectedRuntime) || streaming}
-              items={(models?.providers ?? []).map((provider) => ({
-                id: provider.id,
-                label: provider.name,
-                checked: selectedModel.startsWith(`${provider.id}/`),
-                items: provider.models.map((modelName) => ({
-                  id: `${provider.id}/${modelName}`,
-                  label: modelName,
-                  checked: `${provider.id}/${modelName}` === selectedModel,
-                })),
-              }))}
-              footer={{ label: t("agentChat.manageModels"), onSelect: () => openSettings("models") }}
-              onSelect={(id) => setAgentModel(leaf.id, id)}
+              disabled={streaming}
+              items={
+                selectedRuntime
+                  ? acpModel
+                    ? modelMenuItems(acpModel, acpModelValue)
+                    : // Empty id: an inert row while the agent starts, or when
+                      // it turns out to expose no model selector at all.
+                      [
+                        {
+                          id: "",
+                          label: acpConfigBusy ? t("agentChat.modelLoading") : t("agentChat.modelAgentManaged"),
+                        },
+                      ]
+                  : (models?.providers ?? []).map((provider) => ({
+                      id: provider.id,
+                      label: provider.name,
+                      checked: selectedModel.startsWith(`${provider.id}/`),
+                      items: provider.models.map((modelName) => ({
+                        id: `${provider.id}/${modelName}`,
+                        label: modelName,
+                        checked: `${provider.id}/${modelName}` === selectedModel,
+                      })),
+                    }))
+              }
+              // Same row in both modes, but an ACP agent's models are the
+              // agent's own — Termany's model settings would be a dead end, so
+              // it explains where they really come from instead.
+              footer={{
+                label: t("agentChat.manageModels"),
+                onSelect: () => (selectedRuntime ? setModelHelp(true) : openSettings("models")),
+              }}
+              onOpen={selectedRuntime ? () => void loadAcpConfig() : undefined}
+              onSelect={(id) => {
+                if (!selectedRuntime) return setAgentModel(leaf.id, id);
+                if (id && acpModel) void loadAcpConfig({ configId: acpModel.id, value: id });
+              }}
             />
             <button
               className={`agent-send ${streaming ? "agent-stop" : ""}`}
@@ -622,6 +711,51 @@ export function AgentPane({ leaf }: { leaf: Leaf }) {
           </div>
         </div>
       </div>
+      {/* Portalled: a pane is an `overflow: hidden` slot and would clip it. */}
+      {modelHelp &&
+        activeRuntime &&
+        createPortal(
+          <div
+            className="ws-dialog-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setModelHelp(false);
+            }}
+          >
+            <div className="ws-dialog agent-models-dialog" role="dialog" aria-modal="true">
+              <h2>{t("agentChat.agentModelsTitle", { agent: activeRuntime.name })}</h2>
+              <p>{t("agentChat.agentModelsBody", { agent: activeRuntime.name })}</p>
+              {modelSetup.configPath && (
+                <>
+                  <p>{t("agentChat.agentModelsConfig", { agent: activeRuntime.name })}</p>
+                  <code>{modelSetup.configPath}</code>
+                </>
+              )}
+              {modelSetup.loginCommand && (
+                <>
+                  <p>{t("agentChat.agentModelsSignIn", { agent: activeRuntime.name })}</p>
+                  <code>{modelSetup.loginCommand}</code>
+                </>
+              )}
+              <div className="ws-dialog-actions">
+                <button className="ws-dialog-btn" onClick={() => setModelHelp(false)}>
+                  {t("common.close")}
+                </button>
+                {modelSetup.loginCommand && (
+                  <button
+                    className="ws-dialog-btn primary"
+                    onClick={() => {
+                      setModelHelp(false);
+                      runSnippet(modelSetup.loginCommand!);
+                    }}
+                  >
+                    {t("agentChat.agentModelsRun")}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
