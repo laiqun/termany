@@ -188,6 +188,26 @@ fn parse_version_field(body: &str) -> Option<String> {
     Some(value.to_owned())
 }
 
+/// Count task records that are still actively working. The server owns this
+/// ledger across every window, so it is the authoritative update/restart guard.
+fn parse_running_task_count(body: &str) -> Option<usize> {
+    let payload: serde_json::Value = serde_json::from_str(body).ok()?;
+    let activities = payload.get("activities")?.as_object()?;
+    Some(
+        activities
+            .values()
+            .filter(|activity| activity.get("status").and_then(|v| v.as_str()) == Some("working"))
+            .count(),
+    )
+}
+
+fn running_server_task_count() -> usize {
+    server_get("/api/activity")
+        .as_deref()
+        .and_then(parse_running_task_count)
+        .unwrap_or(0)
+}
+
 /// Is a server already listening on our port, and is it OURS?
 ///
 /// In a packaged build there is no `pnpm dev:web` to start the backend, so the
@@ -200,10 +220,12 @@ fn parse_version_field(body: &str) -> Option<String> {
 /// we reuse it, this build's UI ends up talking to an older backend and every
 /// route added since that release 404s — the user sees a dashboard stuck on
 /// "Could not load …" with nothing obviously wrong. So a version mismatch
-/// counts as unhealthy: the caller then kills it and spawns the matching one.
+/// normally counts as unhealthy: the caller kills it and spawns the matching
+/// one. The exception is a server that still owns a working task; preserving
+/// that process takes priority, and the next safe relaunch completes the swap.
 ///
-/// Mismatch in either direction restarts, including the rarer
-/// downgrade/run-an-older-build case — matching this app beats guessing.
+/// This applies in either direction, including the rarer downgrade/run-an-
+/// older-build case — matching this app beats guessing once it is safe.
 fn existing_server_matches(expected: &str) -> bool {
     let Some(body) = server_get("/api/version") else {
         return false;
@@ -211,6 +233,13 @@ fn existing_server_matches(expected: &str) -> bool {
     match parse_version_field(&body) {
         Some(found) if found == expected => true,
         Some(found) => {
+            let running = running_server_task_count();
+            if running > 0 {
+                log::warn!(
+                    "[termany] server on localhost:{SERVER_PORT} is version {found}, this app is {expected}, but it owns {running} running task(s) — deferring the server upgrade"
+                );
+                return true;
+            }
             log::warn!(
                 "[termany] server on localhost:{SERVER_PORT} is version {found}, this app is {expected} — restarting it"
             );
@@ -538,10 +567,18 @@ fn kill_server(app: &tauri::AppHandle) {
 /// reopening the app — but a self-update swaps the server binary underneath
 /// it, so the frontend calls this right before `relaunch()` to make sure the
 /// next launch starts a server that matches the new build instead of talking
-/// to a stale one. No-op in dev (no bundled server, no managed state).
+/// to a stale one. Return a non-zero count instead of stopping when another
+/// window started a task after the frontend's first safety check. No-op in dev
+/// (no bundled server, no managed state).
 #[tauri::command]
-fn stop_server(app: tauri::AppHandle) {
+fn stop_server(app: tauri::AppHandle) -> usize {
+    let running = running_server_task_count();
+    if running > 0 {
+        log::info!("[termany] deferring update restart for {running} running task(s)");
+        return running;
+    }
     kill_server(&app);
+    0
 }
 
 #[tauri::command]
@@ -1263,7 +1300,7 @@ pub fn run() {
 mod tests {
     use super::{
         is_termany_server_command, node_compatible_windows_path, parse_pid_lines,
-        parse_version_field,
+        parse_running_task_count, parse_version_field,
     };
     use std::path::{Path, PathBuf};
 
@@ -1286,6 +1323,18 @@ mod tests {
         assert_eq!(parse_version_field("{}"), None);
         assert_eq!(parse_version_field("not json at all"), None);
         assert_eq!(parse_version_field(r#"{"version":"#), None);
+    }
+
+    #[test]
+    fn counts_only_working_server_tasks() {
+        assert_eq!(
+            parse_running_task_count(
+                r#"{"activities":{"a":{"status":"working"},"b":{"status":"done"},"c":{"status":"error"},"d":{"status":"working"}}}"#
+            ),
+            Some(2)
+        );
+        assert_eq!(parse_running_task_count(r#"{"activities":{}}"#), Some(0));
+        assert_eq!(parse_running_task_count("not json"), None);
     }
 
     #[test]

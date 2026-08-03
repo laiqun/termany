@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AgentHistory } from "./components/AgentHistory";
 import { FindBar } from "./components/FindBar";
 import { GitDiff } from "./components/GitDiff";
-import { AgentUsage } from "./components/AgentUsage";
 import { HTabBar } from "./components/HTabBar";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
@@ -96,8 +94,6 @@ export function App() {
   const openSettings = useCallback(() => setSettingsSection(lastSettingsSection.current), []);
   const [searchOpen, setSearchOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
-  const [claudeHistoryOpen, setClaudeHistoryOpen] = useState(false);
-  const [agentUsageOpen, setAgentUsageOpen] = useState(false);
   const [gitDiffOpen, setGitDiffOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
@@ -126,12 +122,7 @@ export function App() {
   // registers its own rect via nativeViewOcclusion instead, so it only
   // blanks the pane(s) it actually overlaps (see SideRail.tsx).
   useEffect(() => {
-    const suppressed =
-      settingsOpen ||
-      searchOpen ||
-      claudeHistoryOpen ||
-      agentUsageOpen ||
-      gitDiffOpen;
+    const suppressed = settingsOpen || searchOpen || gitDiffOpen;
     document.body.classList.toggle("native-webviews-suppressed", suppressed);
     window.dispatchEvent(
       new CustomEvent("termany:native-webviews-suppressed", { detail: suppressed }),
@@ -142,7 +133,7 @@ export function App() {
         new CustomEvent("termany:native-webviews-suppressed", { detail: false }),
       );
     };
-  }, [settingsOpen, searchOpen, claudeHistoryOpen, agentUsageOpen, gitDiffOpen]);
+  }, [settingsOpen, searchOpen, gitDiffOpen]);
 
   // What every bindable action DOES. The catalog itself (ids, labels, default
   // chords) lives in keybindings.ts; this is the other half. Two things drive
@@ -209,8 +200,8 @@ export function App() {
         lastSettingsSection.current = "appearance";
         setSettingsSection((cur) => (cur === "appearance" ? null : "appearance"));
       },
-      openAgentHistory: () => setClaudeHistoryOpen((o) => !o),
-      openAgentUsage: () => setAgentUsageOpen((o) => !o),
+      openAgentHistory: (s) => s.addPane("history"),
+      openAgentUsage: (s) => s.addPane("usage"),
       openSystemMonitor: (s) => s.addPane("monitor"),
       search: () => setSearchOpen((o) => !o),
       find: () => setFindOpen(true),
@@ -387,8 +378,6 @@ export function App() {
             lastSettingsSection.current = "agents";
             setSettingsSection("agents");
           }}
-          onOpenClaudeHistory={() => setClaudeHistoryOpen(true)}
-          onOpenAgentUsage={() => setAgentUsageOpen(true)}
         />
       )}
       {settingsOpen && (
@@ -403,8 +392,6 @@ export function App() {
       {searchOpen && (
         <SearchPalette onClose={() => setSearchOpen(false)} onRunAction={runAction} />
       )}
-      {claudeHistoryOpen && <AgentHistory onClose={() => setClaudeHistoryOpen(false)} />}
-      {agentUsageOpen && <AgentUsage onClose={() => setAgentUsageOpen(false)} />}
       {gitDiffOpen && <GitDiff session={gitSession} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>

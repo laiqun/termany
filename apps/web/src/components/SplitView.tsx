@@ -17,10 +17,13 @@ import {
 } from "../terminal/manager";
 import { servedUrls, subscribeServedUrls } from "../terminal/servedUrls";
 import { openExternal } from "../openExternal";
+import { AgentHistory } from "./AgentHistory";
+import { AgentUsage } from "./AgentUsage";
 import { FileTree } from "./FileTree";
 import { GitDiffView } from "./GitDiffView";
 import {
   ActivityIcon,
+  ChartIcon,
   ChatIcon,
   CheckIcon,
   ChevronIcon,
@@ -28,6 +31,7 @@ import {
   ExternalOpenIcon,
   FilesIcon,
   GitBranchIcon,
+  HistoryIcon,
   MaximizeIcon,
   RestoreIcon,
   TerminalIcon,
@@ -66,6 +70,8 @@ const PANE_VIEWS = [
   { view: "agent", labelKey: "pane.view.agent", Icon: ChatIcon },
   { view: "web", labelKey: "pane.view.web", Icon: WebIcon },
   { view: "monitor", labelKey: "pane.view.monitor", Icon: ActivityIcon },
+  { view: "history", labelKey: "pane.view.history", Icon: HistoryIcon },
+  { view: "usage", labelKey: "pane.view.usage", Icon: ChartIcon },
 ] as const;
 
 /** Dismiss-on-outside-click/Escape plus native-view occlusion, shared by the
@@ -168,11 +174,11 @@ function PaneServedUrls({ leaf }: { leaf: Leaf }) {
   );
 }
 
-/** Header dropdown switching this pane between all four pane views — the same
- *  order ⌘E cycles through. */
+/** Header dropdown switching this pane between every available pane view. */
 function PaneViewMenu({ leaf }: { leaf: Leaf }) {
   const { t } = useI18n();
   const setPaneView = useStore((s) => s.setPaneView);
+  const railVisibility = useStore((s) => s.railVisibility);
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   const { rootRef, panelRef } = usePaneHeadPopover(open, close);
@@ -181,7 +187,7 @@ function PaneViewMenu({ leaf }: { leaf: Leaf }) {
   const CurrentIcon = PANE_VIEWS.find((entry) => entry.view === current)!.Icon;
   const availableViews = leaf.sshTarget
     ? PANE_VIEWS.filter((entry) => entry.view === "terminal")
-    : PANE_VIEWS;
+    : PANE_VIEWS.filter((entry) => railVisibility[entry.view]);
   return (
     <div className="pane-view-menu" ref={rootRef}>
       <button
@@ -380,6 +386,10 @@ function PaneSlot({
           <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
         ) : leaf.view === "monitor" ? (
           <SystemMonitor />
+        ) : leaf.view === "history" ? (
+          <AgentHistory autoFocus={focused} />
+        ) : leaf.view === "usage" ? (
+          <AgentUsage />
         ) : leaf.view === "web" ? (
           <WebBrowserPane
             id={leaf.id}

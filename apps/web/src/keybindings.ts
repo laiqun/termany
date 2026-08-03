@@ -86,7 +86,7 @@ const ACTION_DEFINITIONS: ActionDef[] = [
   { id: "resizePaneRight", label: "Move divider right", group: "Tabs & panes", default: { code: "ArrowRight", meta: true, ctrl: true } },
   { id: "resizePaneUp", label: "Move divider up", group: "Tabs & panes", default: { code: "ArrowUp", meta: true, ctrl: true } },
   { id: "resizePaneDown", label: "Move divider down", group: "Tabs & panes", default: { code: "ArrowDown", meta: true, ctrl: true } },
-  { id: "togglePaneView", label: "Cycle terminal / files / git diff / conversation / browser view", group: "Tabs & panes", default: { code: "KeyE", meta: true } },
+  { id: "togglePaneView", label: "Cycle visible pane views", group: "Tabs & panes", default: { code: "KeyE", meta: true } },
   { id: "zoomTerminalIn", label: "Increase terminal text size", group: "Appearance", default: { code: "Equal", meta: true, shift: true } },
   { id: "zoomTerminalOut", label: "Decrease terminal text size", group: "Appearance", default: { code: "Minus", meta: true } },
   { id: "resetTerminalZoom", label: "Reset terminal text size", group: "Appearance", default: { code: "Digit0", meta: true } },
