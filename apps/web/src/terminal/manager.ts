@@ -30,6 +30,7 @@ import {
 import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
 import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
+import { createGlyphAtlasRepairer, onAtlasPagesMerged } from "./glyphAtlas";
 
 /**
  * The terminal session registry.
@@ -173,6 +174,17 @@ export type TerminalScrollState = {
 };
 
 const sessions = new Map<string, Session>();
+
+/**
+ * Every pane's WebGL renderer shares one glyph texture atlas but keeps its own
+ * GPU copy of it, and the atlas silently re-indexes its pages when it merges
+ * them — leaving idle panes drawing with coordinates their texture no longer
+ * matches. See glyphAtlas.ts; this puts all of them back in sync.
+ */
+const glyphAtlasRepairer = createGlyphAtlasRepairer({
+  terminals: () => [...sessions.values()].filter((s) => s.opened).map((s) => s.term),
+});
+
 // A pane may keep a local shell and several SSH shells alive simultaneously.
 // Only one is mounted, but switching does not tear down the others.
 const activeSessionByPane = new Map<string, string>();
@@ -1606,6 +1618,10 @@ export function attachSession(
     try {
       const webgl = new WebglAddon();
       webgl.onContextLoss(() => webgl.dispose());
+      // A page merge in the shared atlas rewrites glyph coordinates out from
+      // under every pane that isn't rendering right now, which is what makes
+      // text come back as the wrong characters until the pane is resized.
+      onAtlasPagesMerged(webgl, () => glyphAtlasRepairer.requestRepair());
       s.term.loadAddon(webgl);
     } catch {
       /* no WebGL available — DOM renderer still works */
