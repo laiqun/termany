@@ -320,6 +320,10 @@ function PaneHeader({
           <button
             className="pane-btn"
             title={withShortcut("Close pane", "closePane")}
+            // Don't let the slot's mousedown focus a pane we're about to close:
+            // it would make closing ANY pane look like closing the focused one,
+            // and focus would leave the pane the user was actually working in.
+            onMouseDown={(e) => e.stopPropagation()}
             onClick={() => closePane(leaf.id)}
           >
             <CloseIcon />

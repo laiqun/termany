@@ -1592,13 +1592,23 @@ function fixAbandonedImeFinalize(term: Terminal) {
   );
 }
 
-/** Attach the session's element into `host` and open the terminal (once). */
+/**
+ * Attach the session's element into `host` and open the terminal (once).
+ *
+ * `focus` must say whether this pane is the focused one. Removing a pane
+ * collapses its parent split, which changes the React key of every surviving
+ * pane in it and remounts them all; taking the keyboard unconditionally here
+ * handed it to whichever pane happened to mount LAST while the focus ring
+ * stayed on the pane the store had focused. Ring and keyboard then disagreed
+ * until the next click.
+ */
 export function attachSession(
   id: string,
   host: HTMLElement,
   cwdFrom?: string[],
   sshTarget?: string,
-  paneId = id
+  paneId = id,
+  focus = true
 ) {
   activeSessionByPane.set(paneId, id);
   let owned = sessionIdsByPane.get(paneId);
@@ -1646,7 +1656,7 @@ export function attachSession(
     s.opened = true;
   }
   fitSession(id);
-  focusSession(id);
+  if (focus) focusSession(id);
   const queued = pendingCommands.get(paneId) ?? pendingCommands.get(id);
   if (queued?.length) {
     pendingCommands.delete(paneId);

@@ -78,7 +78,18 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    attachSession(sessionId, host, cwdCandidates(useStore.getState(), id), sshTarget, id);
+    // Read, don't subscribe: only whether THIS pane owns the keyboard at the
+    // moment it mounts. A pane that remounts because a sibling closed must not
+    // pull focus off the pane the store actually focused.
+    const state = useStore.getState();
+    attachSession(
+      sessionId,
+      host,
+      cwdCandidates(state, id),
+      sshTarget,
+      id,
+      activeHtab(state)?.focused === id
+    );
     const unsubscribeScrollState = subscribeTerminalScrollState(sessionId, setScrollState);
 
     // Coalesce resize bursts (window/split-drag fires RO every frame) to ONE fit

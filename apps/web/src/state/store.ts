@@ -15,6 +15,7 @@ import {
 } from "../rail-config";
 import { claimPage, readWindowPref, writeWindowPref } from "./windows";
 import { stepWorkspace } from "./layoutMerge";
+import { nextFocusAfterClose } from "./paneFocus";
 import { nextCyclablePaneView } from "./paneViewCycle";
 
 /**
@@ -877,6 +878,9 @@ function closeLeaf(s: State, leafId: string): Partial<State> {
   const { workspaceId, nodeId, htab } = home;
   disposePaneSessions(leafId);
   const layout = removeLeaf(htab.layout, leafId);
+  // Resolved against the layout as it stood, so the siblings are still there to
+  // pick from; `removeLeaf` only drops `leafId`, so the neighbour survives it.
+  const neighbor = nextFocusAfterClose(htab.layout, leafId);
   return {
     workspaces: inWs(s.workspaces, workspaceId, (ws) => ({
       ...ws,
@@ -897,7 +901,7 @@ function closeLeaf(s: State, leafId: string): Partial<State> {
             return {
               ...h,
               layout,
-              focused: h.focused === leafId ? firstLeaf(layout) : h.focused,
+              focused: h.focused === leafId ? (neighbor ?? firstLeaf(layout)) : h.focused,
               maximized: h.maximized === leafId ? undefined : h.maximized,
             };
           }),
@@ -1700,6 +1704,7 @@ export const useStore = create<State>((set, get) => ({
           const dragged = source ? findLeaf(source.layout, dragId) : undefined;
           if (!source || !target || !dragged) return n;
           const without = removeLeaf(source.layout, dragId);
+          const neighbor = nextFocusAfterClose(source.layout, dragId);
           return {
             ...n,
             activeHTab: targetHTabId,
@@ -1712,7 +1717,7 @@ export const useStore = create<State>((set, get) => ({
                 return {
                   ...h,
                   layout: without,
-                  focused: h.focused === dragId ? firstLeaf(without) : h.focused,
+                  focused: h.focused === dragId ? (neighbor ?? firstLeaf(without)) : h.focused,
                   maximized: h.maximized === dragId ? undefined : h.maximized,
                 };
               }
@@ -1741,6 +1746,7 @@ export const useStore = create<State>((set, get) => ({
           if (!source || !dragged) return n;
           const without = removeLeaf(source.layout, dragId);
           if (!without) return n; // last pane of the tab — nothing to detach
+          const neighbor = nextFocusAfterClose(source.layout, dragId);
           const created: HTab = {
             id: id(),
             title: dragged.title,
@@ -1756,7 +1762,7 @@ export const useStore = create<State>((set, get) => ({
                   ? {
                       ...h,
                       layout: without,
-                      focused: h.focused === dragId ? firstLeaf(without) : h.focused,
+                      focused: h.focused === dragId ? (neighbor ?? firstLeaf(without)) : h.focused,
                       maximized: h.maximized === dragId ? undefined : h.maximized,
                     }
                   : h
@@ -1780,6 +1786,7 @@ export const useStore = create<State>((set, get) => ({
         if (!from || !source || !dragged || !findNode(ws.roots, toNodeId)) return ws;
         const without = removeLeaf(source.layout, dragId);
         if (!without) return ws; // last pane of the tab — nothing to detach
+        const neighbor = nextFocusAfterClose(source.layout, dragId);
         const created: HTab = {
           id: id(),
           title: dragged.title,
@@ -1793,7 +1800,7 @@ export const useStore = create<State>((set, get) => ({
               ? {
                   ...h,
                   layout: without,
-                  focused: h.focused === dragId ? firstLeaf(without) : h.focused,
+                  focused: h.focused === dragId ? (neighbor ?? firstLeaf(without)) : h.focused,
                   maximized: h.maximized === dragId ? undefined : h.maximized,
                 }
               : h
