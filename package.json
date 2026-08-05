@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "postinstall": "node scripts/fix-pty-perms.mjs",
-    "dev": "npm run dev:web",
+    "dev": "npm run dev:desktop",
     "desktop": "npm run dev:desktop",
     "dev:web": "concurrently -k -n server,web -c green,cyan \"npm:dev:server\" \"npm:dev:web-client\"",
     "dev:desktop": "concurrently -k -n server,web,app -c green,cyan,magenta \"npm:dev:server\" \"npm:dev:web-client\" \"npm:dev:app\"",
