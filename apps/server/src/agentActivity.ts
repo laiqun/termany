@@ -300,6 +300,36 @@ export class AgentActivityTracker {
   }
 
   /**
+   * Pull a settled task back to working on live-screen evidence for its
+   * exact epoch.
+   *
+   * The green latch protects unread *true* completions from being swallowed
+   * by output. A completion settled too early inverts that protection: an
+   * agent that stalls past the client's quiet window reads as finished, and
+   * once latched, nothing the screen paints can say otherwise — the session
+   * stays green through half an hour of visible work. A spinner repainting
+   * under the same epoch is proof the task never ended, so it, and only it,
+   * may repaint the latch. An answered question resumes through here too:
+   * keypress-only menus never reach the input heuristics, so the busy screen
+   * that follows is the only evidence the question was dealt with.
+   *
+   * A rendered screen may repaint the latch, never re-own the pty: once the
+   * foreground sampler has seen the shell take the terminal back, the agent
+   * process is gone and no spinner row still on screen can bring it back.
+   */
+  reportWorking(id: string, taskEpoch: number): boolean {
+    const current = this.activities.get(id);
+    if (!current || current.taskEpoch !== taskEpoch) return false;
+    const stream = this.stream(id);
+    if (stream.taskEpoch !== taskEpoch) return false;
+    if (!stream.agentActive) return false;
+    stream.awaitingRegisteredInput = false;
+    if (current.status === "working") return true;
+    this.setCurrent(id, "working", taskEpoch, current.agent ?? stream.agent);
+    return true;
+  }
+
+  /**
    * Mark an exact in-flight task as blocked on a user decision or input.
    *
    * A question reaches this from "done" as well as from "working": agents idle

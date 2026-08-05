@@ -683,7 +683,7 @@ const http = createServer((req, res) => {
           id.length > 256 ||
           !Number.isSafeInteger(taskEpoch) ||
           taskEpoch <= 0 ||
-          (status !== "done" && status !== "error") ||
+          (status !== "done" && status !== "error" && status !== "working") ||
           typeof body?.agentActive !== "boolean"
         ) {
           json(400, {
@@ -691,12 +691,19 @@ const http = createServer((req, res) => {
           });
           return;
         }
-        if (status === "error") {
+        let accepted = true;
+        if (status === "working") {
+          // Live busy evidence retracting a premature completion. Epoch-checked
+          // like the others: only the task the screen was watching may resume,
+          // and only while the pty is still the agent's. The verdict is
+          // reported so a refused client stops re-sending it every frame.
+          accepted = activityTracker.reportWorking(id, taskEpoch);
+        } else if (status === "error") {
           activityTracker.reportBlocked(id, taskEpoch);
         } else {
           activityTracker.reportIdle(id, taskEpoch, body.agentActive);
         }
-        json(200, { ok: true, ...activityPayload() });
+        json(200, { ok: true, accepted, ...activityPayload() });
       })
       .catch(fail);
     return;

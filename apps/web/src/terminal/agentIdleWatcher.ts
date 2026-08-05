@@ -30,6 +30,7 @@ export class AgentIdleWatcher {
   private sawInputPrompt = false;
   private armedSignature: string | null = null;
   private armed: { at: number; transition: AgentScreenTransition } | null = null;
+  private lastBusyVisible = false;
 
   constructor(private readonly quietMs: number = AGENT_IDLE_QUIET_MS) {}
 
@@ -60,21 +61,36 @@ export class AgentIdleWatcher {
     return this.armed?.transition ?? null;
   }
 
+  /**
+   * Whether the latest screen carried positive busy evidence. The veto that
+   * keeps a busy screen from arming the quiet window doubles as the ledger's
+   * proof that a settled status was settled too early: an agent repainting
+   * its spinner did not finish, whatever the dot says.
+   */
+  get busyVisible(): boolean {
+    return this.lastBusyVisible;
+  }
+
   /** A new task on the same session starts from a clean slate. */
   reset(isAlternate: boolean): void {
     this.sawAlternate = isAlternate;
     this.sawInputPrompt = false;
     this.armed = null;
     this.armedSignature = null;
+    this.lastBusyVisible = false;
   }
 
   private transition(view: AgentScreenView): AgentScreenTransition | null {
+    this.lastBusyVisible = false;
     if (!view.visible.trim()) return null;
     if (view.isAlternate) this.sawAlternate = true;
     if (agentConfirmationPromptVisible(view.visible, view.cursorLine)) {
       return { status: "error", agentActive: true };
     }
-    if (agentBusyScreenVisible(view.visible)) return null;
+    if (agentBusyScreenVisible(view.visible)) {
+      this.lastBusyVisible = true;
+      return null;
+    }
 
     const inputPrompt = agentInputPromptVisible(view.visible);
     if (inputPrompt) this.sawInputPrompt = true;

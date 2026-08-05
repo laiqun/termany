@@ -66,8 +66,14 @@ const ASCII_PROMPT_SCAN_ROWS = 6;
 const CONFIRMATION_PROMPT_SCAN_ROWS = 14;
 const BUSY_SCAN_ROWS = 12;
 const SHELL_PROMPT_MAX_CHARS = 96;
-/** Spinner glyphs: bullets, the sparkle block agents cycle, and braille. */
-const SPINNER_GLYPHS = "•●◦✳-✿⠁-⣿";
+/**
+ * Spinner glyphs: bullets, the frames Claude Code actually cycles (· ✢ ✳ ∗ ✻
+ * ✽ — observed live; only the last four sit in the U+2733–273F block), and
+ * braille. ⏺ is deliberately absent: tool rows outlive the call that painted
+ * them and truncate long arguments with a mid-row ellipsis, which would pin
+ * the dot amber for as long as such a row stays on screen.
+ */
+const SPINNER_GLYPHS = "•●◦·✢∗✳-✿⠁-⣿";
 /** The one busy marker agents spell out in words rather than glyphs. */
 const BUSY_INTERRUPT_RE =
   /\b(?:esc|escape|ctrl(?:\+|-)?c)\s+to\s+(?:interrupt|cancel|stop)\b/i;
