@@ -3,8 +3,8 @@ import {
   attachSession,
   detachSession,
   fitSession,
-  focusSession,
   noteManualScroll,
+  reconcileTerminalFocus,
   scrollSessionToBottom,
   scrollSessionToTop,
   subscribeTerminalScrollState,
@@ -13,6 +13,7 @@ import {
   type TerminalScrollState,
 } from "../terminal/manager";
 import { subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
+import { reconcileAttachedTerminalFocus } from "../terminal/focusHandoff";
 import { activeHtab, cwdCandidates, useStore } from "../state/store";
 import { openLocalPathsInSession } from "../terminal/openLocalPath";
 import { ChevronIcon } from "./icons";
@@ -78,9 +79,6 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    // Read, don't subscribe: only whether THIS pane owns the keyboard at the
-    // moment it mounts. A pane that remounts because a sibling closed must not
-    // pull focus off the pane the store actually focused.
     const state = useStore.getState();
     attachSession(
       sessionId,
@@ -88,8 +86,21 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
       cwdCandidates(state, id),
       sshTarget,
       id,
-      activeHtab(state)?.focused === id
     );
+
+    // Attaching is the terminal's readiness boundary. The parent SplitView
+    // normally reconciles after its children mount, but a newly-created pane
+    // must not depend on React's cross-component passive-effect ordering to
+    // receive the keyboard. Project the canonical store focus once now and
+    // once after layout/default browser focus has settled. Re-reading the
+    // store in both passes prevents a stale attach from stealing focus if the
+    // user switched panes in the meantime.
+    const cancelFocusHandoff = reconcileAttachedTerminalFocus(
+      id,
+      () => activeHtab(useStore.getState())?.focused,
+      reconcileTerminalFocus,
+    );
+
     const unsubscribeScrollState = subscribeTerminalScrollState(sessionId, setScrollState);
 
     // Coalesce resize bursts (window/split-drag fires RO every frame) to ONE fit
@@ -106,6 +117,7 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
     ro.observe(host);
 
     return () => {
+      cancelFocusHandoff();
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       unsubscribeScrollState();
@@ -171,7 +183,6 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
       <div
         className="term-pane-host"
         ref={hostRef}
-        onMouseDown={() => focusSession(sessionId)}
         onWheel={() => {
           noteManualScroll(sessionId);
           revealScrollJump();

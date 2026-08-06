@@ -2026,7 +2026,7 @@ html.tauri #root {
 /* Draw the focus ring as a top-most overlay so it sits ABOVE the opaque header
    (an inset box-shadow gets painted over by the header's background). It lands
    exactly on the card's own 1px border, recolouring the whole outline. */
-.pane-slot.focused::after {
+.pane-slot.focused.show-focus-ring::after {
   content: "";
   position: absolute;
   inset: 0;
