@@ -255,6 +255,8 @@ export type AgentActivity = {
 };
 
 const agentActivities = new Map<string, AgentActivity>();
+/** Runtime session ids whose terminal input still belongs to an agent TUI. */
+const agentActiveSessions = new Set<string>();
 const agentActivityListeners = new Set<() => void>();
 const agentSessionKinds = new Map<string, AgentActivity["agent"]>();
 let agentActivitySource: EventSource | null = null;
@@ -353,6 +355,13 @@ function applyAgentActivityPayload(payload: any) {
     });
     if (agent) agentSessionKinds.set(id, agent);
   }
+  const nextActiveSessions = new Set<string>(
+    Array.isArray(payload.activeSessions)
+      ? payload.activeSessions.filter(
+          (id: unknown): id is string => typeof id === "string" && !!id,
+        )
+      : [],
+  );
 
   const before = [...agentActivities.entries()]
     .map(
@@ -366,7 +375,9 @@ function applyAgentActivityPayload(payload: any) {
         `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`,
     )
     .join("|");
-  if (before === after) {
+  const activeBefore = [...agentActiveSessions].sort().join("|");
+  const activeAfter = [...nextActiveSessions].sort().join("|");
+  if (before === after && activeBefore === activeAfter) {
     for (const [id, activity] of next) {
       if (activity.status === "working" || activity.status === "done") {
         completeAgentActivityIfIdle(id);
@@ -387,6 +398,8 @@ function applyAgentActivityPayload(payload: any) {
   }
   agentActivities.clear();
   for (const [id, activity] of next) agentActivities.set(id, activity);
+  agentActiveSessions.clear();
+  for (const id of nextActiveSessions) agentActiveSessions.add(id);
   notifyAgentActivity();
   for (const [id, activity] of next) {
     if (activity.status === "working" || activity.status === "done") {
@@ -508,6 +521,7 @@ function startLocalAgentActivity(
     taskEpoch: nextEpoch,
     signature: sessionScreenSignature(id),
   });
+  agentActiveSessions.add(id);
   setAgentActivity(id, "working", agent, nextEpoch);
 }
 
@@ -643,6 +657,10 @@ function completeAgentActivityIfIdle(id: string) {
         agentRetractableEpochs.set(id, observedEpoch);
       }
       if (isDemo) {
+        const presenceChanged = confirmed.agentActive
+          ? !agentActiveSessions.has(id)
+          : agentActiveSessions.delete(id);
+        if (confirmed.agentActive) agentActiveSessions.add(id);
         if (latest.status === "working" || confirmed.status === "error") {
           setAgentActivity(
             id,
@@ -650,6 +668,8 @@ function completeAgentActivityIfIdle(id: string) {
             latest.agent,
             observedEpoch,
           );
+        } else if (presenceChanged) {
+          notifyAgentActivity();
         }
         return;
       }
@@ -757,6 +777,10 @@ function updateAgentActivityFromOutput(id: string, data: string) {
   const agent = detectAgent(text);
   const isAgentOutput = !!prev || !!agent || AGENT_RE.test(text);
   if (!isAgentOutput) return;
+  if ((agent || AGENT_RE.test(text)) && !agentActiveSessions.has(id)) {
+    agentActiveSessions.add(id);
+    notifyAgentActivity();
+  }
 
   if (ERROR_RE.test(text) && !BENIGN_ERROR_RE.test(text)) {
     setAgentActivity(id, "error", agent);
@@ -852,10 +876,16 @@ export function agentActivitySnapshot(ids: string[]): string {
   return ids.map((id) => {
     id = activeSessionId(id);
     const activity = agentActivities.get(id);
+    const active = agentActiveSessions.has(id) ? "active" : "inactive";
     return activity
-      ? `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`
-      : `${id}:`;
+      ? `${id}:${active}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`
+      : `${id}:${active}:`;
   }).join("|");
+}
+
+/** Whether any of these panes is still inside an agent TUI conversation. */
+export function hasActiveAgentSession(ids: string[]): boolean {
+  return ids.some((id) => agentActiveSessions.has(activeSessionId(id)));
 }
 
 export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
@@ -888,6 +918,13 @@ export function agentActivitySummary(ids: string[]): AgentActivitySummary {
 
 export function acknowledgeAgentActivities(ids: string[]) {
   const items = [...new Set(ids.map(activeSessionId))].flatMap((id) => {
+    // A finished turn inside a still-open agent TUI is session state, not a
+    // read-once notification. Navigation (active row, page, tab and pane
+    // focus) all comes through here, so refuse the acknowledgement before it
+    // reaches the server. The server repeats this guard for cross-window and
+    // stale-client safety, but keeping it here also makes a click incapable
+    // of removing the row while the local activity snapshot says it is live.
+    if (agentActiveSessions.has(id)) return [];
     const activity = agentActivities.get(id);
     return activity?.status === "done"
       ? [{ id, taskEpoch: activity.taskEpoch }]
@@ -2023,7 +2060,9 @@ export function disposeSession(id: string) {
   agentTaskStartScreens.delete(id);
   terminalInputSendChains.delete(id);
   commandSendChains.delete(id);
-  if (agentActivities.delete(id)) notifyAgentActivity();
+  const activityChanged = agentActivities.delete(id);
+  const presenceChanged = agentActiveSessions.delete(id);
+  if (activityChanged || presenceChanged) notifyAgentActivity();
   agentSessionKinds.delete(id);
   restoreSnapshots.delete(id);
   forgetSessionUrls(id);
@@ -2060,7 +2099,9 @@ export function disposePaneSessions(paneId: string) {
     agentTaskStartScreens.delete(id);
     terminalInputSendChains.delete(id);
     commandSendChains.delete(id);
-    if (agentActivities.delete(id)) notifyAgentActivity();
+    const activityChanged = agentActivities.delete(id);
+    const presenceChanged = agentActiveSessions.delete(id);
+    if (activityChanged || presenceChanged) notifyAgentActivity();
     agentSessionKinds.delete(id);
     forgetSessionUrls(id);
   }

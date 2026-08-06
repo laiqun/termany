@@ -8,8 +8,8 @@ import { AgentActivityTracker } from "./agentActivity.js";
  * A completion settled too early inverts that protection — the agent is
  * still working and the latch keeps the lie — so live busy evidence for the
  * exact same epoch is allowed to pull the task back to working. Nothing
- * else is: a guessed or stale epoch must bounce off, and an acknowledged
- * completion is gone for good.
+ * else is: a guessed or stale epoch must bounce off, and a completion
+ * acknowledged after the agent exits is gone for good.
  */
 
 function tracker(): { tracker: AgentActivityTracker; changes: () => number } {
@@ -65,10 +65,15 @@ test("a rendered screen cannot re-own a pty the shell took back", () => {
   assert.equal(t.snapshot().s1.status, "done");
 });
 
-test("an acknowledged completion stays cleared", () => {
+test("a completion acknowledged after the agent exits stays cleared", () => {
   const { tracker: t } = tracker();
   t.register("s1", "claude");
   t.reportIdle("s1", 1, true);
+  // An idle composer is still a live conversation and cannot be dismissed by
+  // viewing it. Only after the foreground job returns to the shell does the
+  // green completion become a read-once notification.
+  t.noteForegroundJob("s1", "2.1.220", "/bin/zsh");
+  t.noteForegroundJob("s1", "zsh", "/bin/zsh");
   t.acknowledge([{ id: "s1", taskEpoch: 1 }]);
   assert.equal(t.reportWorking("s1", 1), false);
   assert.equal(t.snapshot().s1, undefined);

@@ -33,18 +33,25 @@ test("ordinary output mentioning an error does not turn a task red", () => {
   assert.equal(tracker.snapshot()["pane-a"]?.status, "working");
 });
 
-test("explicit idle titles finish a task and acknowledgement clears only green", () => {
+test("an idle agent stays active and green until its TUI returns to the shell", () => {
   const tracker = new AgentActivityTracker();
   tracker.register("done-pane", "claude");
   tracker.register("error-pane", "codex", "error");
 
   tracker.noteOutput("done-pane", "\x1b]2;Claude Code | Ready\x07");
   assert.equal(tracker.snapshot()["done-pane"]?.status, "done");
+  assert.deepEqual(tracker.activeSessionIds().sort(), ["done-pane", "error-pane"]);
 
   tracker.acknowledge([
     { id: "done-pane", taskEpoch: 1 },
     { id: "error-pane", taskEpoch: 1 },
   ]);
+  assert.equal(tracker.snapshot()["done-pane"]?.status, "done");
+  assert.equal(tracker.snapshot()["error-pane"]?.status, "error");
+
+  tracker.reportIdle("done-pane", 1, false);
+  assert.deepEqual(tracker.activeSessionIds(), ["error-pane"]);
+  tracker.acknowledge([{ id: "done-pane", taskEpoch: 1 }]);
   assert.equal(tracker.snapshot()["done-pane"], undefined);
   assert.equal(tracker.snapshot()["error-pane"]?.status, "error");
 });
@@ -145,6 +152,10 @@ test("a stale acknowledgement cannot clear a newer completed task", () => {
 
   tracker.acknowledge([{ id: "pane-a", taskEpoch: 1 }]);
   assert.equal(tracker.snapshot()["pane-a"]?.taskEpoch, 2);
+  tracker.acknowledge([{ id: "pane-a", taskEpoch: 2 }]);
+  assert.equal(tracker.snapshot()["pane-a"]?.taskEpoch, 2);
+
+  tracker.reportIdle("pane-a", 2, false);
   tracker.acknowledge([{ id: "pane-a", taskEpoch: 2 }]);
   assert.equal(tracker.snapshot()["pane-a"], undefined);
 });
@@ -250,6 +261,7 @@ test("server wires the shared tracker through PTY input, output, and APIs", () =
   assert.match(server, /new AgentActivityTracker/);
   assert.match(server, /activityTracker\.noteInput/);
   assert.match(server, /activityTracker\.noteOutput/);
+  assert.match(server, /activeSessions: activityTracker\.activeSessionIds\(\)/);
   assert.match(server, /\/api\/activity\/events/);
   assert.match(server, /\/api\/activity\/register/);
   assert.match(server, /\/api\/activity\/ack/);

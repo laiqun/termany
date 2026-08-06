@@ -15,7 +15,14 @@ import {
   subscribeAgentActivity,
   terminalSessionId,
 } from "../terminal/manager";
-import { servedUrls, subscribeServedUrls } from "../terminal/servedUrls";
+import {
+  cancelServedUrlForward,
+  forwardServedUrl,
+  servedUrlBrowserUrl,
+  servedUrls,
+  subscribeServedUrls,
+  type ServedUrl,
+} from "../terminal/servedUrls";
 import { openExternal } from "../openExternal";
 import { AgentHistory } from "./AgentHistory";
 import { AgentUsage } from "./AgentUsage";
@@ -34,6 +41,7 @@ import {
   HistoryIcon,
   MaximizeIcon,
   RestoreIcon,
+  SpinnerIcon,
   TerminalIcon,
   WebIcon,
 } from "./icons";
@@ -110,14 +118,16 @@ function usePaneHeadPopover(open: boolean, close: () => void) {
 }
 
 /**
- * "Open what this pane is serving" — shown only while the pane's own process
- * tree is actually listening on a TCP port (see terminal/servedUrls). One
+ * "Open what this pane is serving" — local listeners come from the pane's
+ * process tree; SSH listeners come from its authenticated remote. One
  * candidate opens on click; several drop down so the right dev server can be
- * picked.
+ * picked, forwarded, or closed.
  */
 function PaneServedUrls({ leaf }: { leaf: Leaf }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [busyPort, setBusyPort] = useState<number | null>(null);
+  const [error, setError] = useState("");
   const close = useCallback(() => setOpen(false), []);
   const { rootRef, panelRef } = usePaneHeadPopover(open, close);
   const sessionId = terminalSessionId(leaf.id, leaf.sshTarget);
@@ -128,46 +138,98 @@ function PaneServedUrls({ leaf }: { leaf: Leaf }) {
   const snapshot = useCallback(() => servedUrls(sessionId), [sessionId]);
   const urls = useSyncExternalStore(subscribe, snapshot, snapshot);
 
-  const launch = (url: string) => {
-    setOpen(false);
-    void openExternal(url).then((error) => {
-      if (error) console.warn("[termany] failed to open URL:", error);
-    });
+  const launch = async (entry: ServedUrl) => {
+    setBusyPort(entry.port);
+    setError("");
+    try {
+      const url = await forwardServedUrl(sessionId, entry);
+      setOpen(false);
+      const openError = await openExternal(url);
+      if (openError) throw new Error(openError);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setOpen(true);
+    } finally {
+      setBusyPort(null);
+    }
+  };
+
+  const cancelForward = async (entry: ServedUrl) => {
+    setBusyPort(entry.port);
+    setError("");
+    try {
+      await cancelServedUrlForward(sessionId, entry);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusyPort(null);
+    }
   };
 
   if (!urls.length) return null;
   const primary = urls[0];
+  const hasMenu = urls.length > 1 || urls.some((entry) => entry.localPort);
   return (
     <div className="pane-view-menu pane-url-menu" ref={rootRef}>
       <button
         className="pane-btn pane-url-btn"
         title={
-          urls.length > 1
+          hasMenu
             ? t("pane.servedUrls")
-            : t("pane.openInBrowser", { url: primary.url })
+            : t("pane.openInBrowser", { url: servedUrlBrowserUrl(primary) })
         }
-        aria-haspopup={urls.length > 1 ? "menu" : undefined}
-        aria-expanded={urls.length > 1 ? open : undefined}
-        onClick={() => (urls.length > 1 ? setOpen((was) => !was) : launch(primary.url))}
+        aria-haspopup={hasMenu || error ? "menu" : undefined}
+        aria-expanded={hasMenu || error ? open : undefined}
+        disabled={busyPort === primary.port}
+        onClick={() => (hasMenu ? setOpen((was) => !was) : void launch(primary))}
       >
-        <WebIcon />
-        <span className="pane-url-port">{primary.port}</span>
-        {urls.length > 1 && <ChevronIcon dir="down" />}
+        {busyPort === primary.port ? <SpinnerIcon /> : <WebIcon />}
+        <span className="pane-url-port">
+          {primary.localPort ? `${primary.port}→${primary.localPort}` : primary.port}
+        </span>
+        {hasMenu && <ChevronIcon dir="down" />}
       </button>
-      {open && (
+      {open && (hasMenu || error) && (
         <div className="pop-panel pane-view-panel pane-url-panel" role="menu" ref={panelRef}>
           {urls.map((entry) => (
-            <button
-              key={entry.port}
-              type="button"
-              role="menuitem"
-              className="pop-item"
-              onClick={() => launch(entry.url)}
-            >
-              <ExternalOpenIcon />
-              <span className="pop-item-label">{entry.url}</span>
-            </button>
+            <div className="pane-port-row" key={entry.port}>
+              <button
+                type="button"
+                role="menuitem"
+                className="pop-item pane-port-open"
+                disabled={busyPort === entry.port}
+                onClick={() => void launch(entry)}
+              >
+                {busyPort === entry.port ? (
+                  <SpinnerIcon />
+                ) : entry.localPort ? (
+                  <CheckIcon />
+                ) : (
+                  <ExternalOpenIcon />
+                )}
+                <span className="pop-item-label">
+                  {entry.remote
+                    ? entry.localPort
+                      ? `ssh:${entry.port} → localhost:${entry.localPort}`
+                      : `ssh:${entry.port}`
+                    : entry.url}
+                </span>
+              </button>
+              {entry.remote && entry.localPort && (
+                <button
+                  type="button"
+                  className="pane-port-cancel"
+                  title={t("common.close")}
+                  aria-label={t("common.close")}
+                  disabled={busyPort === entry.port}
+                  onClick={() => void cancelForward(entry)}
+                >
+                  <CloseIcon />
+                </button>
+              )}
+            </div>
           ))}
+          {error && <div className="pane-port-error">{error}</div>}
         </div>
       )}
     </div>
