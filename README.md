@@ -66,7 +66,8 @@ An agent runs in one pane, and its diff opens in the pane next to it.
 - **Per-pane SSH.** Each pane picks its own connection, so a local shell and two remote hosts
   can sit in one tab. Add a connection with a display name, an optional port, and automatic,
   password, or identity-file authentication. **Test connection** checks it before you need
-  it. A dropped session reconnects when you press Enter.
+  it. A dropped session reconnects when you press Enter. When a remote pane starts serving a
+  port, one click opens an SSH forward on loopback, so the remote URL opens locally.
 - **Session history across worktrees.** ⇧⌘H lists past agent conversations for the repository
   that holds the focused pane. Sessions group by branch, and cover every worktree of that
   repository. Sessions whose directory no longer exists appear under **Deleted worktrees**,
@@ -92,10 +93,10 @@ output and cache tokens, a daily chart, and breakdowns by model and by project.
 
 ## Appearance and keys
 
-Thirteen themes ship built in. A theme restyles the whole window, not only the terminal
+Fourteen themes ship built in. A theme restyles the whole window, not only the terminal
 palette: the sidebar, the tab strip, the gap and corner radius of each pane, and the shadow
-under it all come from the theme. Step through them with ⌥⌘. and ⌥⌘, or open the picker
-with ⌥⌘T.
+under it all come from the theme — far enough that Windows 98 gets its bevels and navy title
+bars back. Step through them with ⌥⌘. and ⌥⌘, or open the picker with ⌥⌘T.
 
 <table>
   <tr>
@@ -120,13 +121,13 @@ with ⌥⌘T.
   </tr>
   <tr>
     <td align="center"><img src="docs/themes/phosphor.png" alt="The Phosphor theme: a green CRT, flush edge to edge"><br><b>Phosphor</b><br><sub>Dark</sub></td>
-    <td></td>
+    <td align="center"><img src="docs/themes/win98.png" alt="The Windows 98 theme: bevelled gray chrome, a navy title bar, and a black VGA console"><br><b>Windows 98</b><br><sub>Light</sub></td>
     <td></td>
   </tr>
 </table>
 
 Any [CodexThemes](https://codexthemes.ai) pack you install appears in Settings → Appearance
-with its artwork, and applies in one click, next to the thirteen above.
+with its artwork, and applies in one click, next to the fourteen above.
 
 All ~60 actions are rebindable in Settings → Keyboard. The right-hand rail hides the tools
 you do not use. The interface ships in 21 languages.
