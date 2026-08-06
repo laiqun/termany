@@ -9,6 +9,7 @@ import {
   agentActivitySummary,
   agentActivitySnapshot,
   agentActivityTitle,
+  hasActiveAgentSession,
   subscribeAgentActivity,
   type AgentActivityStatus,
 } from "../terminal/manager";
@@ -53,8 +54,9 @@ const ACTIVITY_RANK: Record<AgentActivityStatus, number> = { error: 3, working: 
 
 function collectActiveEntries(nodes: TreeNode[], trail: string[] = [], out: ActiveEntry[] = []) {
   for (const node of nodes) {
-    const activity = agentActivitySummary(ownLeafIds(node));
-    if (activity.working || activity.done || activity.error) out.push({ node, trail, activity });
+    const leafIds = ownLeafIds(node);
+    const activity = agentActivitySummary(leafIds);
+    if (hasActiveAgentSession(leafIds)) out.push({ node, trail, activity });
     collectActiveEntries(node.children, [...trail, node.title], out);
   }
   return out;
@@ -469,9 +471,8 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
   return (
     <div className="sidebar">
       <WorkspaceSwitcher onOpenSettings={onOpenSettings} />
-      {/* Pages with agent work of their own, hoisted above the tree — in a long
-          sidebar the busy page is often scrolled out of sight. Only rendered
-          when something is actually running, so it costs nothing when idle. */}
+      {/* Pages whose own panes are still inside an agent TUI, hoisted above the
+          tree. Task state is independent and stays in the traffic-light counts. */}
       {activeEntries.length > 0 && (
         <div className="active-section">
           <div className="section-head">

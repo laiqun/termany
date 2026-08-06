@@ -30,6 +30,7 @@ import {
 import { sessionListeningPorts } from "./sessionPorts.js";
 import { KillError, killProcess, readSystemStats } from "./systemStats.js";
 import { listSshConnections, listSshProfiles, saveSshProfileFromTarget, saveSshProfiles, sshArgsForConnection, testSshProfile } from "./ssh.js";
+import { SshPortForwarding } from "./sshPortForwarding.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { listConfig, saveConfig } from "./config.js";
 import {
@@ -395,12 +396,14 @@ const activityStreams = new Set<ServerResponse>();
 const activityInstance = `${process.pid}-${Date.now().toString(36)}`;
 let activityRevision = 0;
 const activityTracker = new AgentActivityTracker({ onChange: activityChanged });
+const sshPortForwarding = new SshPortForwarding();
 
 function activityPayload() {
   return {
     instance: activityInstance,
     revision: activityRevision,
     activities: activityTracker.snapshot(),
+    activeSessions: activityTracker.activeSessionIds(),
   };
 }
 
@@ -504,6 +507,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
     }
     if (id) {
       activityTracker.noteExit(id, exitCode, signal);
+      sshPortForwarding.remove(id);
       // Natural exit — flush final history so it still restores as plain
       // scrollback (cwd/history stay in the DB; only /api/forget wipes them).
       if (session.ring.dirty) {
@@ -523,6 +527,7 @@ function wireSession(id: string | undefined, session: PtySession): void {
 /** Kill a session's live process (if any), preserving its restore history. */
 function killSession(id: string): void {
   activityTracker.remove(id);
+  sshPortForwarding.remove(id);
   const session = ptySessions.get(id);
   if (!session) return;
   if (session.ring.dirty) {
@@ -683,7 +688,7 @@ const http = createServer((req, res) => {
           id.length > 256 ||
           !Number.isSafeInteger(taskEpoch) ||
           taskEpoch <= 0 ||
-          (status !== "done" && status !== "error") ||
+          (status !== "done" && status !== "error" && status !== "working") ||
           typeof body?.agentActive !== "boolean"
         ) {
           json(400, {
@@ -691,12 +696,19 @@ const http = createServer((req, res) => {
           });
           return;
         }
-        if (status === "error") {
+        let accepted = true;
+        if (status === "working") {
+          // Live busy evidence retracting a premature completion. Epoch-checked
+          // like the others: only the task the screen was watching may resume,
+          // and only while the pty is still the agent's. The verdict is
+          // reported so a refused client stops re-sending it every frame.
+          accepted = activityTracker.reportWorking(id, taskEpoch);
+        } else if (status === "error") {
           activityTracker.reportBlocked(id, taskEpoch);
         } else {
           activityTracker.reportIdle(id, taskEpoch, body.agentActive);
         }
-        json(200, { ok: true, ...activityPayload() });
+        json(200, { ok: true, accepted, ...activityPayload() });
       })
       .catch(fail);
     return;
@@ -1306,9 +1318,61 @@ const http = createServer((req, res) => {
     res.setHeader("Cache-Control", "no-store");
     (async () => {
       const rootPids: Record<string, number> = {};
-      for (const [id, session] of ptySessions) rootPids[id] = session.pty.pid;
-      json(200, { ports: await sessionListeningPorts(rootPids) });
+      const remoteIds: string[] = [];
+      for (const [id, session] of ptySessions) {
+        if (session.sshTarget && sshPortForwarding.isRemote(id)) remoteIds.push(id);
+        else rootPids[id] = session.pty.pid;
+      }
+      const [localPorts, remoteEntries] = await Promise.all([
+        sessionListeningPorts(rootPids),
+        Promise.all(
+          remoteIds.map(
+            async (id) => [id, await sshPortForwarding.listRemotePorts(id)] as const,
+          ),
+        ),
+      ]);
+      const ports = { ...localPorts };
+      const forwards: Record<string, ReturnType<SshPortForwarding["snapshot"]>> = {};
+      for (const [id, list] of remoteEntries) {
+        const active = sshPortForwarding.snapshot(id);
+        const visible = [...new Set([...list, ...active.map((item) => item.remotePort)])].sort(
+          (a, b) => a - b,
+        );
+        if (visible.length) ports[id] = visible;
+        forwards[id] = active;
+      }
+      json(200, { ports, remoteSessions: remoteIds, forwards });
     })().catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/ssh-port-forward") {
+    readJson(req)
+      .then(async (body) => {
+        const sessionId = typeof body?.session === "string" ? body.session : "";
+        try {
+          const forward = await sshPortForwarding.forward(sessionId, body?.remotePort);
+          json(200, { ok: true, forward });
+        } catch (error) {
+          json(400, { error: error instanceof Error ? error.message : String(error) });
+        }
+      })
+      .catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/ssh-port-forward/cancel") {
+    readJson(req)
+      .then(async (body) => {
+        const sessionId = typeof body?.session === "string" ? body.session : "";
+        try {
+          await sshPortForwarding.cancel(sessionId, body?.remotePort);
+          json(200, { ok: true });
+        } catch (error) {
+          json(400, { error: error instanceof Error ? error.message : String(error) });
+        }
+      })
+      .catch(fail);
     return;
   }
 
@@ -1777,8 +1841,18 @@ wss.on("connection", async (ws: WebSocket, req) => {
   });
 
   let sshArgs: string[] | undefined;
+  let sshConnectionArgs: string[] | undefined;
+  let sshControlPath = "";
   try {
-    if (sshTarget) sshArgs = sshArgsForConnection(sshTarget);
+    if (sshTarget) {
+      sshConnectionArgs = sshArgsForConnection(sshTarget);
+      sshArgs = sshConnectionArgs;
+      if (sessionId) {
+        const prepared = sshPortForwarding.prepare(sessionId, sshTarget, sshArgs);
+        sshArgs = prepared.args;
+        sshControlPath = prepared.controlPath;
+      }
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (ws.readyState === ws.OPEN) {
@@ -1820,6 +1894,9 @@ wss.on("connection", async (ws: WebSocket, req) => {
   };
   if (sessionId) ptySessions.set(sessionId, session);
   else ephemeralSessions.add(session);
+  if (sessionId && sshTarget && sshConnectionArgs) {
+    sshPortForwarding.register(sessionId, sshConnectionArgs, sshControlPath);
+  }
   if (sessionId) activityTracker.bindAgent(sessionId, agent);
   wireSession(sessionId ?? undefined, session);
 

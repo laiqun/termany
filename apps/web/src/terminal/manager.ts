@@ -255,6 +255,8 @@ export type AgentActivity = {
 };
 
 const agentActivities = new Map<string, AgentActivity>();
+/** Runtime session ids whose terminal input still belongs to an agent TUI. */
+const agentActiveSessions = new Set<string>();
 const agentActivityListeners = new Set<() => void>();
 const agentSessionKinds = new Map<string, AgentActivity["agent"]>();
 let agentActivitySource: EventSource | null = null;
@@ -263,8 +265,11 @@ let agentActivityRevision = -1;
 const retiredAgentActivityInstances = new Set<string>();
 const agentIdleTimers = new Map<string, { timer: number; deadline: number }>();
 const agentIdleReports = new Map<string, number>();
+const agentResumeReports = new Map<string, number>();
 const agentIdleWatchers = new Map<string, AgentIdleWatcher>();
 const agentReportedInactiveEpochs = new Map<string, number>();
+/** Epochs this client's own quiet window settled — the only ones it may retract. */
+const agentRetractableEpochs = new Map<string, number>();
 const agentTaskStartScreens = new Map<
   string,
   { taskEpoch: number; signature: string }
@@ -350,6 +355,13 @@ function applyAgentActivityPayload(payload: any) {
     });
     if (agent) agentSessionKinds.set(id, agent);
   }
+  const nextActiveSessions = new Set<string>(
+    Array.isArray(payload.activeSessions)
+      ? payload.activeSessions.filter(
+          (id: unknown): id is string => typeof id === "string" && !!id,
+        )
+      : [],
+  );
 
   const before = [...agentActivities.entries()]
     .map(
@@ -363,7 +375,9 @@ function applyAgentActivityPayload(payload: any) {
         `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`,
     )
     .join("|");
-  if (before === after) {
+  const activeBefore = [...agentActiveSessions].sort().join("|");
+  const activeAfter = [...nextActiveSessions].sort().join("|");
+  if (before === after && activeBefore === activeAfter) {
     for (const [id, activity] of next) {
       if (activity.status === "working" || activity.status === "done") {
         completeAgentActivityIfIdle(id);
@@ -384,6 +398,8 @@ function applyAgentActivityPayload(payload: any) {
   }
   agentActivities.clear();
   for (const [id, activity] of next) agentActivities.set(id, activity);
+  agentActiveSessions.clear();
+  for (const id of nextActiveSessions) agentActiveSessions.add(id);
   notifyAgentActivity();
   for (const [id, activity] of next) {
     if (activity.status === "working" || activity.status === "done") {
@@ -495,14 +511,17 @@ function startLocalAgentActivity(
   const session = sessions.get(id);
   clearAgentIdleTimer(id);
   agentIdleReports.delete(id);
+  agentResumeReports.delete(id);
   agentIdleWatcher(id).reset(
     session?.term.buffer.active.type === "alternate",
   );
   agentReportedInactiveEpochs.delete(id);
+  agentRetractableEpochs.delete(id);
   agentTaskStartScreens.set(id, {
     taskEpoch: nextEpoch,
     signature: sessionScreenSignature(id),
   });
+  agentActiveSessions.add(id);
   setAgentActivity(id, "working", agent, nextEpoch);
 }
 
@@ -540,15 +559,35 @@ function observeScreenForActivity(id: string): RenderedAgentTransition | null {
 function completeAgentActivityIfIdle(id: string) {
   const activity = agentActivities.get(id);
   const session = sessions.get(id);
-  if (
-    !activity ||
-    !session ||
-    (activity.status !== "working" && activity.status !== "done")
-  ) {
+  if (!activity || !session) {
     clearAgentIdleTimer(id);
     return;
   }
   const transition = observeScreenForActivity(id);
+  // A settled status contradicted by fresh busy evidence was settled too
+  // early: the agent stalled past the quiet window and is still working the
+  // exact same task. Only a completion this quiet window itself produced, on
+  // a screen the agent still owned, may be taken back that way — a done the
+  // pty proved (an agent that exited, an OSC report) is not the screen's to
+  // overturn, and a question waiting on a person is never demoted to work in
+  // progress. Only the live screen may say so — a viewport scrolled into
+  // history replays old spinner rows, hence the follow guard.
+  if (
+    activity.status === "done" &&
+    agentRetractableEpochs.get(id) === activity.taskEpoch &&
+    agentReportedInactiveEpochs.get(id) !== activity.taskEpoch &&
+    transition === null &&
+    agentIdleWatcher(id).busyVisible &&
+    session.followOutput
+  ) {
+    clearAgentIdleTimer(id);
+    resumeAgentActivity(id, activity);
+    return;
+  }
+  if (activity.status !== "working" && activity.status !== "done") {
+    clearAgentIdleTimer(id);
+    return;
+  }
   const start = agentTaskStartScreens.get(id);
   // A task the agent has not answered on screen yet concludes nothing: the
   // composer it was submitted from still looks exactly like an idle one.
@@ -612,7 +651,16 @@ function completeAgentActivityIfIdle(id: string) {
       ) {
         return;
       }
+      // Settled by this quiet window, on a screen the agent still owned: the
+      // one shape of completion live busy evidence is allowed to take back.
+      if (confirmed.status === "done" && confirmed.agentActive) {
+        agentRetractableEpochs.set(id, observedEpoch);
+      }
       if (isDemo) {
+        const presenceChanged = confirmed.agentActive
+          ? !agentActiveSessions.has(id)
+          : agentActiveSessions.delete(id);
+        if (confirmed.agentActive) agentActiveSessions.add(id);
         if (latest.status === "working" || confirmed.status === "error") {
           setAgentActivity(
             id,
@@ -620,6 +668,8 @@ function completeAgentActivityIfIdle(id: string) {
             latest.agent,
             observedEpoch,
           );
+        } else if (presenceChanged) {
+          notifyAgentActivity();
         }
         return;
       }
@@ -652,6 +702,73 @@ function completeAgentActivityIfIdle(id: string) {
   });
 }
 
+/**
+ * Pull a prematurely settled task back to working: the screen is repainting
+ * busy evidence for the same epoch, so it never actually finished. This is
+ * the user's manual recovery — pressing Enter to force yellow — made
+ * automatic and side-effect free: same epoch rather than a new task, and no
+ * bytes written to the pty, so the agent is never fed a stray newline.
+ * Local first, so the dot recovers ahead of the server round-trip.
+ */
+function resumeAgentActivity(id: string, activity: AgentActivity) {
+  if (agentResumeReports.get(id) === activity.taskEpoch) return;
+  agentResumeReports.set(id, activity.taskEpoch);
+  // One retraction per completion this quiet window settled: spending the mark
+  // here keeps a later authoritative done for the same epoch — an OSC report,
+  // an agent that exited — out of reach of a stale busy row, and keeps a
+  // refusal from re-firing on every rendered frame. Put back below when the
+  // report never reached the server.
+  agentRetractableEpochs.delete(id);
+  setAgentActivity(id, "working", activity.agent, activity.taskEpoch);
+  if (isDemo) {
+    agentResumeReports.delete(id);
+    return;
+  }
+  void (async () => {
+    let accepted = false;
+    let answered = false;
+    try {
+      const response = await fetch(`${apiUrl()}/api/activity/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id,
+          taskEpoch: activity.taskEpoch,
+          status: "working",
+          agentActive: true,
+        }),
+      });
+      if (response.ok) {
+        const payload = await readJsonResponse(response);
+        // The server refuses a session whose pty the shell already took back,
+        // and says so: a refusal is an answer, not a lost report.
+        answered = true;
+        accepted = payload?.accepted !== false;
+        applyAgentActivityPayload(payload);
+      }
+    } catch {
+      // Put back below, so the next rendered write retries the retraction.
+    } finally {
+      const latest = agentActivities.get(id);
+      const sameTask = latest?.taskEpoch === activity.taskEpoch;
+      // A refused or unsent retraction has to give the optimistic yellow back,
+      // or the entry condition above stays false and the retry never comes.
+      if (!accepted && sameTask && latest?.status === "working") {
+        setAgentActivity(id, activity.status, activity.agent, activity.taskEpoch);
+      }
+      // Only a report that never got an answer is worth asking again; a
+      // refusal stands, or the dot strobes against a server that keeps saying
+      // no on every frame.
+      if (!answered && sameTask) {
+        agentRetractableEpochs.set(id, activity.taskEpoch);
+      }
+      if (agentResumeReports.get(id) === activity.taskEpoch) {
+        agentResumeReports.delete(id);
+      }
+    }
+  })();
+}
+
 function updateAgentActivityFromOutput(id: string, data: string) {
   if (!isDemo) return;
   const text = stripTerminalControls(data);
@@ -660,6 +777,10 @@ function updateAgentActivityFromOutput(id: string, data: string) {
   const agent = detectAgent(text);
   const isAgentOutput = !!prev || !!agent || AGENT_RE.test(text);
   if (!isAgentOutput) return;
+  if ((agent || AGENT_RE.test(text)) && !agentActiveSessions.has(id)) {
+    agentActiveSessions.add(id);
+    notifyAgentActivity();
+  }
 
   if (ERROR_RE.test(text) && !BENIGN_ERROR_RE.test(text)) {
     setAgentActivity(id, "error", agent);
@@ -755,10 +876,16 @@ export function agentActivitySnapshot(ids: string[]): string {
   return ids.map((id) => {
     id = activeSessionId(id);
     const activity = agentActivities.get(id);
+    const active = agentActiveSessions.has(id) ? "active" : "inactive";
     return activity
-      ? `${id}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`
-      : `${id}:`;
+      ? `${id}:${active}:${activity.status}:${activity.agent ?? ""}:${activity.updatedAt}:${activity.taskEpoch}`
+      : `${id}:${active}:`;
   }).join("|");
+}
+
+/** Whether any of these panes is still inside an agent TUI conversation. */
+export function hasActiveAgentSession(ids: string[]): boolean {
+  return ids.some((id) => agentActiveSessions.has(activeSessionId(id)));
 }
 
 export function aggregateAgentActivity(ids: string[]): AgentActivity | null {
@@ -791,6 +918,13 @@ export function agentActivitySummary(ids: string[]): AgentActivitySummary {
 
 export function acknowledgeAgentActivities(ids: string[]) {
   const items = [...new Set(ids.map(activeSessionId))].flatMap((id) => {
+    // A finished turn inside a still-open agent TUI is session state, not a
+    // read-once notification. Navigation (active row, page, tab and pane
+    // focus) all comes through here, so refuse the acknowledgement before it
+    // reaches the server. The server repeats this guard for cross-window and
+    // stale-client safety, but keeping it here also makes a click incapable
+    // of removing the row while the local activity snapshot says it is live.
+    if (agentActiveSessions.has(id)) return [];
     const activity = agentActivities.get(id);
     return activity?.status === "done"
       ? [{ id, taskEpoch: activity.taskEpoch }]
@@ -1592,13 +1726,23 @@ function fixAbandonedImeFinalize(term: Terminal) {
   );
 }
 
-/** Attach the session's element into `host` and open the terminal (once). */
+/**
+ * Attach the session's element into `host` and open the terminal (once).
+ *
+ * `focus` must say whether this pane is the focused one. Removing a pane
+ * collapses its parent split, which changes the React key of every surviving
+ * pane in it and remounts them all; taking the keyboard unconditionally here
+ * handed it to whichever pane happened to mount LAST while the focus ring
+ * stayed on the pane the store had focused. Ring and keyboard then disagreed
+ * until the next click.
+ */
 export function attachSession(
   id: string,
   host: HTMLElement,
   cwdFrom?: string[],
   sshTarget?: string,
-  paneId = id
+  paneId = id,
+  focus = true
 ) {
   activeSessionByPane.set(paneId, id);
   let owned = sessionIdsByPane.get(paneId);
@@ -1646,7 +1790,7 @@ export function attachSession(
     s.opened = true;
   }
   fitSession(id);
-  focusSession(id);
+  if (focus) focusSession(id);
   const queued = pendingCommands.get(paneId) ?? pendingCommands.get(id);
   if (queued?.length) {
     pendingCommands.delete(paneId);
@@ -1909,12 +2053,16 @@ export function disposeSession(id: string) {
   notifyConnectionStatus();
   clearAgentIdleTimer(id);
   agentIdleReports.delete(id);
+  agentResumeReports.delete(id);
   agentIdleWatchers.delete(id);
   agentReportedInactiveEpochs.delete(id);
+  agentRetractableEpochs.delete(id);
   agentTaskStartScreens.delete(id);
   terminalInputSendChains.delete(id);
   commandSendChains.delete(id);
-  if (agentActivities.delete(id)) notifyAgentActivity();
+  const activityChanged = agentActivities.delete(id);
+  const presenceChanged = agentActiveSessions.delete(id);
+  if (activityChanged || presenceChanged) notifyAgentActivity();
   agentSessionKinds.delete(id);
   restoreSnapshots.delete(id);
   forgetSessionUrls(id);
@@ -1944,12 +2092,16 @@ export function disposePaneSessions(paneId: string) {
     restoreSnapshots.delete(id);
     clearAgentIdleTimer(id);
     agentIdleReports.delete(id);
+    agentResumeReports.delete(id);
     agentIdleWatchers.delete(id);
     agentReportedInactiveEpochs.delete(id);
+    agentRetractableEpochs.delete(id);
     agentTaskStartScreens.delete(id);
     terminalInputSendChains.delete(id);
     commandSendChains.delete(id);
-    if (agentActivities.delete(id)) notifyAgentActivity();
+    const activityChanged = agentActivities.delete(id);
+    const presenceChanged = agentActiveSessions.delete(id);
+    if (activityChanged || presenceChanged) notifyAgentActivity();
     agentSessionKinds.delete(id);
     forgetSessionUrls(id);
   }
