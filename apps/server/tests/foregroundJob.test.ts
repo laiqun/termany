@@ -38,6 +38,7 @@ test("a task ends the moment the shell gets the terminal back", () => {
   runAndExit(tracker, "pane-a");
 
   assert.equal(tracker.snapshot()["pane-a"].status, "done");
+  assert.deepEqual(tracker.activeSessionIds(), []);
 });
 
 test("the shell holding the terminal at task start is not an exit", () => {
@@ -131,4 +132,5 @@ test("a blocked task is not finished by the shell returning", () => {
   runAndExit(tracker, "pane-a");
 
   assert.equal(tracker.snapshot()["pane-a"].status, "error");
+  assert.deepEqual(tracker.activeSessionIds(), []);
 });

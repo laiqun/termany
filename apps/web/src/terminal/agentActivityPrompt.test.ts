@@ -49,6 +49,31 @@ test("a spinner line keeps Claude Code working even with an unknown verb", () =>
   assert.equal(agentBusyScreenVisible(screen("claude-busy-tokens")), true);
 });
 
+test("every spinner frame Claude Code cycles reads as busy", () => {
+  // Observed live: the spinner cycles · ✢ ✳ ∗ ✻ ✽, and only half of those
+  // were in the glyph class. A stall on a wrong frame let the quiet window
+  // finish a running task: replaying the recorded turn, 83 of its 85
+  // stall-exposed moments had exactly such a spinner row on screen.
+  for (const frame of ["·", "✢", "✳", "∗", "✻", "✽"]) {
+    assert.equal(
+      agentBusyScreenVisible(`${frame} Billowing… (30m 38s · ↓ 78.3k tokens)`),
+      true,
+      `spinner frame ${frame} must read as busy`,
+    );
+  }
+});
+
+test("a tool row's truncation ellipsis is not busy", () => {
+  // ⏺ rows outlive the tool call that painted them, and long arguments
+  // truncate with a mid-row ellipsis. Counting ⏺ as a spinner would pin the
+  // dot amber for as long as such a row stays on screen, so it is left out:
+  // while a tool runs, the real spinner row below it carries the turn.
+  assert.equal(
+    agentBusyScreenVisible("⏺ Read(/Users/oldcai/programs/…/manager.ts)"),
+    false,
+  );
+});
+
 test("Claude Code's finished summary line is not busy", () => {
   // "✻ Sautéed for 2s" reports elapsed time after the answer landed.
   assert.equal(agentBusyScreenVisible(screen("claude-answered")), false);

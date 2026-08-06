@@ -270,6 +270,7 @@ export class AgentActivityTracker {
     }
     if (!stream.sawForegroundCommand) return;
     stream.sawForegroundCommand = false;
+    const activeChanged = stream.agentActive;
     stream.agentActive = false;
     stream.awaitingRegisteredInput = false;
     stream.agent = undefined;
@@ -278,7 +279,10 @@ export class AgentActivityTracker {
     // Only work in flight is settled by this. A question already asked is
     // still owed an answer, and a finished task keeps the epoch it finished
     // under so the client can still acknowledge it.
-    if (current?.status !== "working") return;
+    if (current?.status !== "working") {
+      if (activeChanged) this.onChange?.();
+      return;
+    }
     this.setCurrent(id, "done", current.taskEpoch, current.agent);
   }
 
@@ -288,14 +292,48 @@ export class AgentActivityTracker {
     if (!current || current.taskEpoch !== taskEpoch) return false;
     const stream = this.stream(id);
     if (stream.taskEpoch !== taskEpoch) return false;
+    const activeChanged = stream.agentActive !== agentActive;
     stream.agentActive = agentActive;
     stream.awaitingRegisteredInput = false;
     if (!agentActive) {
       stream.agent = undefined;
       stream.outputTail = "";
     }
-    if (current.status !== "working") return current.status === "done";
+    if (current.status !== "working") {
+      if (activeChanged) this.onChange?.();
+      return current.status === "done";
+    }
     this.setCurrent(id, "done", taskEpoch, current.agent ?? stream.agent);
+    return true;
+  }
+
+  /**
+   * Pull a settled task back to working on live-screen evidence for its
+   * exact epoch.
+   *
+   * The green latch protects unread *true* completions from being swallowed
+   * by output. A completion settled too early inverts that protection: an
+   * agent that stalls past the client's quiet window reads as finished, and
+   * once latched, nothing the screen paints can say otherwise — the session
+   * stays green through half an hour of visible work. A spinner repainting
+   * under the same epoch is proof the task never ended, so it, and only it,
+   * may repaint the latch. An answered question resumes through here too:
+   * keypress-only menus never reach the input heuristics, so the busy screen
+   * that follows is the only evidence the question was dealt with.
+   *
+   * A rendered screen may repaint the latch, never re-own the pty: once the
+   * foreground sampler has seen the shell take the terminal back, the agent
+   * process is gone and no spinner row still on screen can bring it back.
+   */
+  reportWorking(id: string, taskEpoch: number): boolean {
+    const current = this.activities.get(id);
+    if (!current || current.taskEpoch !== taskEpoch) return false;
+    const stream = this.stream(id);
+    if (stream.taskEpoch !== taskEpoch) return false;
+    if (!stream.agentActive) return false;
+    stream.awaitingRegisteredInput = false;
+    if (current.status === "working") return true;
+    this.setCurrent(id, "working", taskEpoch, current.agent ?? stream.agent);
     return true;
   }
 
@@ -312,33 +350,53 @@ export class AgentActivityTracker {
     if (!current || current.taskEpoch !== taskEpoch) return false;
     const stream = this.stream(id);
     if (stream.taskEpoch !== taskEpoch) return false;
+    const activeChanged = !stream.agentActive;
     stream.agentActive = true;
     stream.awaitingRegisteredInput = false;
-    if (current.status === "error") return true;
+    if (current.status === "error") {
+      if (activeChanged) this.onChange?.();
+      return true;
+    }
     this.setCurrent(id, "error", taskEpoch, current.agent ?? stream.agent);
     return true;
   }
 
   noteExit(id: string, exitCode: number, signal?: number): void {
-    const current = this.activities.get(id);
-    if (!current) return;
     const stream = this.stream(id);
+    const activeChanged = stream.agentActive;
     stream.agentActive = false;
     stream.awaitingRegisteredInput = false;
-    this.setCurrent(
+    const current = this.activities.get(id);
+    if (!current) {
+      if (activeChanged) this.onChange?.();
+      return;
+    }
+    const statusChanged = this.setCurrent(
       id,
       exitCode === 0 && !signal ? "done" : "error",
       current.taskEpoch,
       current.agent,
     );
+    if (activeChanged && !statusChanged) this.onChange?.();
   }
 
-  /** Clear green only when the client acknowledges that exact task generation. */
+  /**
+   * Clear green only when the client acknowledges that exact task generation
+   * after the agent has returned control to the shell. While its TUI still
+   * owns input, green is the current state of that live agent session rather
+   * than a read-once notification.
+   */
   acknowledge(items: AgentActivityAcknowledgement[]): void {
     let changed = false;
     for (const { id, taskEpoch } of items) {
       const current = this.activities.get(id);
-      if (current?.status !== "done" || current.taskEpoch !== taskEpoch) continue;
+      if (
+        current?.status !== "done" ||
+        current.taskEpoch !== taskEpoch ||
+        this.stream(id).agentActive
+      ) {
+        continue;
+      }
       this.activities.delete(id);
       this.stream(id).acknowledgedEpoch = taskEpoch;
       changed = true;
@@ -347,7 +405,8 @@ export class AgentActivityTracker {
   }
 
   remove(id: string): void {
-    const changed = this.activities.delete(id);
+    const changed =
+      this.activities.delete(id) || this.streams.get(id)?.agentActive === true;
     this.streams.delete(id);
     if (changed) this.onChange?.();
   }
@@ -359,6 +418,13 @@ export class AgentActivityTracker {
         { ...activity },
       ]),
     );
+  }
+
+  /** Sessions whose terminal input still belongs to an agent TUI. */
+  activeSessionIds(): string[] {
+    return [...this.streams.entries()]
+      .filter(([, stream]) => stream.agentActive)
+      .map(([id]) => id);
   }
 
   private stream(id: string): SessionStreamState {
@@ -423,13 +489,20 @@ export class AgentActivityTracker {
   ): void {
     const stream = this.stream(id);
     if (status === "working") {
+      const activeChanged = !stream.agentActive;
       stream.agentActive = true;
       stream.awaitingRegisteredInput = false;
       const current = this.activities.get(id);
       if (!current || current.status !== "working") {
         this.startTask(id, agent, false);
       } else {
-        this.setCurrent(id, "working", current.taskEpoch, agent);
+        const statusChanged = this.setCurrent(
+          id,
+          "working",
+          current.taskEpoch,
+          agent,
+        );
+        if (activeChanged && !statusChanged) this.onChange?.();
       }
       return;
     }
@@ -444,7 +517,7 @@ export class AgentActivityTracker {
     status: AgentActivityStatus,
     taskEpoch: number,
     agent?: string,
-  ): void {
+  ): boolean {
     const previous = this.activities.get(id);
     const normalizedAgent = cleanAgent(agent) ?? previous?.agent;
     if (
@@ -452,7 +525,7 @@ export class AgentActivityTracker {
       previous.agent === normalizedAgent &&
       previous.taskEpoch === taskEpoch
     ) {
-      return;
+      return false;
     }
     this.activities.set(id, {
       status,
@@ -461,6 +534,7 @@ export class AgentActivityTracker {
       taskEpoch,
     });
     this.onChange?.();
+    return true;
   }
 
   private extractOsc(
