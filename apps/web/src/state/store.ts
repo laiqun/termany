@@ -1960,14 +1960,16 @@ export function activeNode(s: State): TreeNode | undefined {
 }
 
 /**
- * The session a repo-scoped panel (the git diff viewer) should follow. Usually
- * the focused leaf, but a files/git/web leaf has no shell of its own to resolve
- * a directory from — it follows its anchor pane, the same rule tabCwdSource
- * applies everywhere else.
+ * The session chain a repo-scoped panel (the git diff viewer) should follow,
+ * comma-separated for the server's sessionCwd: the focused leaf first — or,
+ * for a shell-less files/git/web leaf, its anchor pane, the same rule
+ * tabCwdSource applies everywhere else — then the rest of the anchor chain,
+ * so an anchor that is itself shell-less still resolves to a directory.
  */
 export function focusedCwdSession(s: State): string | undefined {
   const h = activeHtab(s);
-  return h ? tabCwdSource(h) : undefined;
+  const source = h ? tabCwdSource(h) : undefined;
+  return source ? cwdCandidates(s, source).join(",") : undefined;
 }
 
 /** Find a leaf by id anywhere — anchors can point across pages and workspaces. */

@@ -233,10 +233,13 @@ function FileCard({
 }
 
 /**
- * Git diff viewer for the repo containing `session`'s cwd. Renders as a pane
- * view (the SideRail branch button) or inside the ⌘⌥G modal — same body, the
- * variant only changes the frame. Files are listed GitHub-style: one expandable
- * card each, with its unified diff and old/new line gutters inline.
+ * Git diff viewer for the repo containing `session`'s cwd. `session` is a
+ * comma-separated candidate chain (the pane, then its anchors — see
+ * cwdCandidates), which the server walks to the first resolvable directory.
+ * Renders as a pane view (the SideRail branch button) or inside the ⌘⌥G
+ * modal — same body, the variant only changes the frame. Files are listed
+ * GitHub-style: one expandable card each, with its unified diff and old/new
+ * line gutters inline.
  *
  * The compare picker switches between the working tree (staged / unstaged /
  * untracked, the default) and "what this branch changes vs <branch>", measured

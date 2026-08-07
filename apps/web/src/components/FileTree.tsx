@@ -652,11 +652,12 @@ export function FileTree({
 }: {
   sessionId: string;
   /** A files-view pane has no PTY session of its own to resolve a live cwd
-   *  from, so the root directory is instead resolved from WHATEVER pane was
-   *  focused when this one was created (set once, at creation — see addPane
-   *  in state/store.ts). Falls back to `sessionId` itself so toggling an
-   *  EXISTING terminal pane to its file-tree view (which does have a live
-   *  session) still opens rooted at that same pane's own cwd, as before. */
+   *  from, so the root directory is instead resolved from a comma-separated
+   *  candidate chain: this pane first, then the anchor chain it was created
+   *  from (see cwdCandidates in state/store.ts). The chain leads with
+   *  `sessionId` itself, so toggling an EXISTING terminal pane to its
+   *  file-tree view (which does have a live session) still opens rooted at
+   *  that same pane's own cwd, as before. */
   initialCwdFrom?: string;
   explicitRoot?: string;
   explicitSelected?: string;

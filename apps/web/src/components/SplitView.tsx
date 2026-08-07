@@ -5,7 +5,7 @@ import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
 import { withShortcut } from "../keybindings";
-import { activeHtab, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
+import { activeHtab, cwdCandidates, paneCount, useStore, type DropEdge, type HTab, type Pane } from "../state/store";
 import {
   acknowledgeAgentActivities,
   aggregateAgentActivity,
@@ -431,6 +431,9 @@ function PaneSlot({
   const focused = useStore((s) => activeHtab(s)?.focused === leaf.id);
   const setFocusedPane = useStore((s) => s.setFocusedPane);
   const setPaneWebUrl = useStore((s) => s.setPaneWebUrl);
+  // Candidate chain for the shell-less views (git diff, files): the pane
+  // itself first, then its anchors — the server walks it for a directory.
+  const cwdChain = useStore((s) => cwdCandidates(s, leaf.id).join(","));
   const dropEdge = dropTarget?.id === leaf.id ? dropTarget.edge : null;
   const isTerminal = (leaf.view ?? "terminal") === "terminal";
 
@@ -470,12 +473,12 @@ function PaneSlot({
         {leaf.view === "files" ? (
           <FileTree
             sessionId={leaf.id}
-            initialCwdFrom={leaf.cwdFrom}
+            initialCwdFrom={cwdChain}
             explicitRoot={leaf.filesRoot}
             explicitSelected={leaf.filesSelected}
           />
         ) : leaf.view === "git" ? (
-          <GitDiffView session={leaf.cwdFrom ?? leaf.id} variant="pane" viewId={leaf.id} />
+          <GitDiffView session={cwdChain} variant="pane" viewId={leaf.id} />
         ) : leaf.view === "monitor" ? (
           <SystemMonitor />
         ) : leaf.view === "history" ? (

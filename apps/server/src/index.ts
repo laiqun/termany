@@ -1038,11 +1038,7 @@ const http = createServer((req, res) => {
       .then(async (body) => {
         const sessionId = String(body?.session ?? "");
         const paths = Array.isArray(body?.paths) ? body.paths.slice(0, 64).map(String) : [];
-        const pty = ptySessions.get(sessionId)?.pty;
-        const cwd =
-          (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
-          (await dirIfValid(getSessionCwd(sessionId) ?? undefined)) ??
-          os.homedir();
+        const cwd = await sessionCwd(sessionId);
         const resolved = await Promise.all(
           paths.map(async (p: string) => {
             let abs = p;
@@ -1075,11 +1071,7 @@ const http = createServer((req, res) => {
       if (dir === "~") dir = os.homedir();
       else if (dir?.startsWith("~/")) dir = path.join(os.homedir(), dir.slice(2));
       if (!dir) {
-        const pty = ptySessions.get(sessionId)?.pty;
-        dir =
-          (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
-          (await dirIfValid(getSessionCwd(sessionId) ?? undefined)) ??
-          os.homedir();
+        dir = await sessionCwd(sessionId);
       }
       dir = path.resolve(dir);
       const names = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -1615,17 +1607,24 @@ async function dirIfValid(dir: string | undefined): Promise<string | undefined> 
 }
 
 /**
- * The directory a pane is "in" right now: its shell's live cwd, else the last
- * one persisted for it by the sweep, else home. Anchors the endpoints that act
- * on whatever the focused terminal is currently looking at.
+ * The directory a pane is "in" right now. `sessionIds` is a comma-separated
+ * candidate chain — the pane itself first, then its anchors (see cwdCandidates
+ * in the web app) — because a shell-less pane (git diff, files, web) has no
+ * directory of its own and only its anchor chain does. For each candidate a
+ * live shell's cwd wins, then an ACP agent's bound folder (agent panes have no
+ * PTY for cwdForPid to read), then the last directory the sweep persisted.
+ * Anchors the endpoints that act on whatever the focused pane is looking at.
  */
-async function sessionCwd(sessionId: string): Promise<string> {
-  const pty = ptySessions.get(sessionId)?.pty;
-  return (
-    (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
-    (await dirIfValid(getSessionCwd(sessionId) ?? undefined)) ??
-    os.homedir()
-  );
+async function sessionCwd(sessionIds: string): Promise<string> {
+  for (const id of sessionIds.split(",").filter(Boolean).slice(0, 8)) {
+    const pty = ptySessions.get(id)?.pty;
+    const cwd =
+      (await dirIfValid(pty ? await cwdForPid(pty.pid) : undefined)) ??
+      (await dirIfValid(acpRuntimeCwd(id))) ??
+      (await dirIfValid(getSessionCwd(id) ?? undefined));
+    if (cwd) return cwd;
+  }
+  return os.homedir();
 }
 
 /**
@@ -1653,6 +1652,9 @@ async function resolveSpawnCwd(
       pty ? await (followForeground ? paneCwd(pty.pid) : cwdForPid(pty.pid)) : undefined,
     );
     if (live) return live;
+    // An agent pane has no PTY, but its ACP session knows the folder it bound to.
+    const agent = await dirIfValid(acpRuntimeCwd(source));
+    if (agent) return agent;
     const remembered = await dirIfValid(getSessionCwd(source) ?? undefined);
     if (remembered) return remembered;
   }
