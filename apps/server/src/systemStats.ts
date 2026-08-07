@@ -274,17 +274,23 @@ async function listeningPorts(): Promise<Map<number, number[]>> {
 
 /**
  * The Windows counterpart of the `lsof` parse: `netstat` ships with every
- * install and `-a -n -o -p tcp` prints one "proto local foreign state pid"
- * row per socket — the same shape, columns in a different order.
+ * install and `-a -n -o` prints one "proto local foreign state pid" row per
+ * socket — the same shape, columns in a different order.
+ *
+ * Both address families must be requested explicitly: `-p tcp` alone filters
+ * to IPv4, silently dropping dev servers bound only to `::1` (Vite's default),
+ * so "who has port 3000?" would come up empty for exactly the processes this
+ * column exists to find.
  */
 async function windowsListeningPorts(): Promise<Map<number, number[]>> {
   const byPid = new Map<number, Set<number>>();
-  let stdout: string;
-  try {
-    ({ stdout } = await execAsync("netstat -ano -p tcp", { maxBuffer: 4 * 1024 * 1024 }));
-  } catch {
-    return new Map();
-  }
+  const opts = { maxBuffer: 4 * 1024 * 1024 };
+  const [v4, v6] = await Promise.all([
+    execAsync("netstat -ano -p tcp", opts).catch(() => null),
+    execAsync("netstat -ano -p tcpv6", opts).catch(() => null),
+  ]);
+  const stdout = [v4?.stdout, v6?.stdout].filter(Boolean).join("\n");
+  if (!stdout) return new Map();
 
   for (const line of stdout.split("\n")) {
     // "  TCP    127.0.0.1:3000    0.0.0.0:0    LISTENING    1234"
