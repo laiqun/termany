@@ -154,6 +154,11 @@ async function listWorktrees(root: string): Promise<Omit<GitWorktree, "files">[]
       const lines = block.split("\n").map((l) => l.trim());
       const dir = lines.find((l) => l.startsWith("worktree "))?.slice(9);
       if (!dir || lines.includes("bare")) continue;
+      // A renamed or deleted worktree stays registered until `git worktree
+      // prune` (marked "prunable"). Pointing the panel at the ghost path makes
+      // every git spawn fail — Windows reports the missing cwd as "spawn git
+      // ENOENT" — so the entry is dropped rather than offered as a target.
+      if (!fs.existsSync(dir)) continue;
       const branch = lines.find((l) => l.startsWith("branch "))?.slice(7) ?? "";
       const head = lines.find((l) => l.startsWith("HEAD "))?.slice(5) ?? "";
       list.push({
