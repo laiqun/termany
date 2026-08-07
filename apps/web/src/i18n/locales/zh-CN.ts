@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "重命名自 {path}",
   "gitdiff.overflow": "改动文件过多，未能全部列出。",
   "gitdiff.mainWorktree": "主仓库",
+  "gitdiff.workingDir": "工作目录",
 
   "history.placeholder": "搜索 {agent} 会话…",
   "history.loading": "正在加载会话…",

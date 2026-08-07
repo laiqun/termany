@@ -467,6 +467,7 @@ export default {
   "gitdiff.renamedFrom": "{path} से नाम बदला गया",
   "gitdiff.overflow": "बदली गई फ़ाइलें इतनी ज़्यादा हैं कि सब नहीं दिखाई जा सकतीं।",
   "gitdiff.mainWorktree": "मुख्य चेकआउट",
+  "gitdiff.workingDir": "कार्यशील निर्देशिका",
 
   "history.placeholder": "{agent} के सत्र खोजें…",
   "history.loading": "सत्र लोड हो रहे हैं…",

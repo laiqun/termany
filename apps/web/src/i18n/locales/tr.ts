@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "{path} yolundan yeniden adlandırıldı",
   "gitdiff.overflow": "Değişen dosya sayısı hepsini listelemek için fazla.",
   "gitdiff.mainWorktree": "Ana kopya",
+  "gitdiff.workingDir": "Çalışma dizini",
 
   "history.placeholder": "{agent} oturumlarında ara…",
   "history.loading": "Oturumlar yükleniyor…",

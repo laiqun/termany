@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "hernoemd vanaf {path}",
   "gitdiff.overflow": "Te veel gewijzigde bestanden om ze allemaal te tonen.",
   "gitdiff.mainWorktree": "Hoofdkopie",
+  "gitdiff.workingDir": "Werkmap",
 
   "history.placeholder": "Zoek in {agent}-sessies…",
   "history.loading": "Sessies laden…",

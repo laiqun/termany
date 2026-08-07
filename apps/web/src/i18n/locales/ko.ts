@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "{path}에서 이름 변경됨",
   "gitdiff.overflow": "변경된 파일이 너무 많아 전부 나열할 수 없습니다.",
   "gitdiff.mainWorktree": "기본 체크아웃",
+  "gitdiff.workingDir": "작업 디렉터리",
 
   "history.placeholder": "{agent} 세션 검색…",
   "history.loading": "세션 불러오는 중…",

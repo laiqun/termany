@@ -468,6 +468,7 @@ export default {
   "gitdiff.renamedFrom": "переименован из {path}",
   "gitdiff.overflow": "Изменённых файлов слишком много, чтобы показать все.",
   "gitdiff.mainWorktree": "Основная рабочая копия",
+  "gitdiff.workingDir": "Рабочий каталог",
 
   "history.placeholder": "Поиск сессий {agent}…",
   "history.loading": "Загрузка сессий…",

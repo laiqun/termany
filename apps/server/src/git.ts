@@ -54,9 +54,15 @@ export type GitWorktree = {
 };
 
 export type GitOverview =
-  | { repo: false }
+  | {
+      repo: false;
+      /** The directory the panel resolved to — echoed for its address bar. */
+      cwd: string;
+    }
   | {
       repo: true;
+      /** The directory the panel resolved to — echoed for its address bar. */
+      cwd: string;
       root: string;
       branch: string;
       /** Echoed back so the client knows which compare produced these rows. */
@@ -394,7 +400,7 @@ export async function worktreeOverview(cwd: string): Promise<
 
 export async function gitOverview(cwd: string, scope: GitScope = {}): Promise<GitOverview> {
   const resolved = await resolveScope(cwd, scope.worktree);
-  if (!resolved) return { repo: false };
+  if (!resolved) return { repo: false, cwd };
   const { root, worktrees } = resolved;
 
   const [branch, refs] = await Promise.all([currentBranch(root), listRefs(root)]);
@@ -436,6 +442,7 @@ export async function gitOverview(cwd: string, scope: GitScope = {}): Promise<Gi
   const overflow = rows.length > MAX_ROWS;
   return {
     repo: true,
+    cwd,
     root,
     branch,
     ...(useBase ? { base: useBase } : {}),

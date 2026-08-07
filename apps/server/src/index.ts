@@ -1399,15 +1399,20 @@ const http = createServer((req, res) => {
   }
 
   // Changed files (plus branch and worktree lists) for the repo containing the
-  // focused pane's cwd, or for `worktree` when the panel has been pointed at a
-  // sibling one. An absent `base` lets the server pick the compare; an empty
-  // one is the user asking for the working tree split into staged/unstaged/
-  // untracked; a named one is "what this branch changes vs that branch",
-  // measured from their merge base. Returns { repo: false } rather than an
-  // error when the directory isn't in a repo — an empty state, not a failure.
+  // focused pane's cwd — or the directory the panel's address bar names, which
+  // wins over the session — or for `worktree` when the panel has been pointed
+  // at a sibling one. An absent `base` lets the server pick the compare; an
+  // empty one is the user asking for the working tree split into staged/
+  // unstaged/untracked; a named one is "what this branch changes vs that
+  // branch", measured from their merge base. Returns { repo: false } rather
+  // than an error when the directory isn't in a repo — an empty state, not a
+  // failure.
   if (req.method === "GET" && reqUrl.pathname === "/api/git/overview") {
     (async () => {
-      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
+      const cwd = await gitPanelCwd(
+        reqUrl.searchParams.get("cwd"),
+        reqUrl.searchParams.get("session") ?? "",
+      );
       json(
         200,
         await gitOverview(cwd, {
@@ -1425,7 +1430,10 @@ const http = createServer((req, res) => {
   if (req.method === "POST" && reqUrl.pathname === "/api/git/diffs") {
     readJson(req)
       .then(async (body) => {
-        const cwd = await sessionCwd(String(body?.session ?? ""));
+        const cwd = await gitPanelCwd(
+          body?.cwd ? String(body.cwd) : null,
+          String(body?.session ?? ""),
+        );
         const files = Array.isArray(body?.files) ? body.files : [];
         json(200, {
           diffs: await gitDiffs({
@@ -1625,6 +1633,20 @@ async function sessionCwd(sessionIds: string): Promise<string> {
     if (cwd) return cwd;
   }
   return os.homedir();
+}
+
+/**
+ * The directory a git panel request should read from: an explicit pick from
+ * the panel's address bar wins verbatim — even a path that doesn't exist, so
+ * a typo shows "not a repo" against what was typed instead of silently
+ * snapping back to the session's directory — else the session chain's
+ * resolution. A leading "~" expands the way the file tree's address bar does.
+ */
+async function gitPanelCwd(requested: string | null, sessionIds: string): Promise<string> {
+  let dir = (requested ?? "").trim();
+  if (dir === "~") dir = os.homedir();
+  else if (dir.startsWith("~/")) dir = path.join(os.homedir(), dir.slice(2));
+  return dir || sessionCwd(sessionIds);
 }
 
 /**

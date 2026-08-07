@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
+import { useImeGuard } from "../imeGuard";
 import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
@@ -26,9 +27,10 @@ interface GitWorktree {
 }
 
 type Overview =
-  | { repo: false }
+  | { repo: false; cwd: string }
   | {
       repo: true;
+      cwd: string;
       root: string;
       branch: string;
       base?: string;
@@ -125,6 +127,7 @@ const rowKey = (r: GitRow) => `${r.section}:${r.path}`;
 interface CachedView {
   base: string | Auto;
   worktree: string | Auto;
+  cwd: string | Auto;
   collapsed: Record<string, boolean>;
   diffs: Record<string, DiffPayload>;
   overview: Overview | null | undefined;
@@ -151,6 +154,7 @@ function remember(viewId: string, patch: Partial<CachedView>) {
   viewCache.set(viewId, {
     base: null,
     worktree: null,
+    cwd: null,
     collapsed: {},
     diffs: {},
     overview: undefined,
@@ -236,6 +240,8 @@ function FileCard({
  * Git diff viewer for the repo containing `session`'s cwd. `session` is a
  * comma-separated candidate chain (the pane, then its anchors — see
  * cwdCandidates), which the server walks to the first resolvable directory.
+ * The toolbar's address bar shows where the panel landed and accepts a typed
+ * path to override it (empty reverts to following the session).
  * Renders as a pane view (the SideRail branch button) or inside the ⌘⌥G
  * modal — same body, the variant only changes the frame. Files are listed
  * GitHub-style: one expandable card each, with its unified diff and old/new
@@ -256,10 +262,13 @@ export function GitDiffView({
   viewId: string;
 }) {
   const { t } = useI18n();
+  const ime = useImeGuard();
   const cached = viewCache.get(viewId);
   const [overview, setOverview] = useState<Overview | null | undefined>(cached?.overview);
   const [base, setBase] = useState<string | Auto>(cached?.base ?? null);
   const [worktree, setWorktree] = useState<string | Auto>(cached?.worktree ?? null);
+  // Directory the user typed into the address bar; null follows the session.
+  const [cwd, setCwd] = useState<string | Auto>(cached?.cwd ?? null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(cached?.collapsed ?? {});
   const [diffs, setDiffs] = useState<Record<string, DiffPayload>>(cached?.diffs ?? {});
   const filesRef = useRef<HTMLDivElement>(null);
@@ -273,6 +282,7 @@ export function GitDiffView({
       const params = new URLSearchParams({ session });
       if (base !== null) params.set("base", base);
       if (worktree !== null) params.set("worktree", worktree);
+      if (cwd !== null) params.set("cwd", cwd);
       const r = await fetch(apiPath(`/api/git/overview?${params}`));
       if (!r.ok) throw new Error(String(r.status));
       setOverview((await r.json()) as Overview);
@@ -280,7 +290,7 @@ export function GitDiffView({
     } catch {
       setOverview(null);
     }
-  }, [session, base, worktree]);
+  }, [session, base, worktree, cwd]);
 
   useEffect(() => {
     load();
@@ -294,8 +304,8 @@ export function GitDiffView({
   }, [load]);
 
   useEffect(() => {
-    remember(viewId, { overview, base, worktree, collapsed, diffs });
-  }, [viewId, overview, base, worktree, collapsed, diffs]);
+    remember(viewId, { overview, base, worktree, cwd, collapsed, diffs });
+  }, [viewId, overview, base, worktree, cwd, collapsed, diffs]);
 
   /**
    * The compare actually in force: the user's pick, else whatever the server
@@ -317,6 +327,35 @@ export function GitDiffView({
     setCollapsed({});
     setDiffs({});
   }, []);
+
+  /**
+   * Point the panel at a typed directory (the address bar). Everything scoped
+   * to the old directory goes back to automatic for the same reason as a
+   * worktree switch; null hands the panel back to following the session.
+   */
+  const selectCwd = useCallback((next: string | Auto) => {
+    setCwd(next);
+    setWorktree(null);
+    setBase(null);
+    setCollapsed({});
+    setDiffs({});
+  }, []);
+
+  /**
+   * What the address bar shows: the user's pick while one stands, else the
+   * repo root in a repo (the panel's real scope — the session's cwd may be a
+   * subdirectory of it), else the directory the server resolved and found
+   * repo-less.
+   */
+  const shownDir = cwd ?? (overview?.repo ? overview.root : overview?.cwd ?? "");
+
+  // The address bar's own draft text — separate from `shownDir` so typing
+  // doesn't fight the resolved value; synced back whenever not focused.
+  const [dirDraft, setDirDraft] = useState(shownDir);
+  const [dirFocused, setDirFocused] = useState(false);
+  useEffect(() => {
+    if (!dirFocused) setDirDraft(shownDir);
+  }, [shownDir, dirFocused]);
 
   // Restore before paint so a remount (zen, drag to another tab) doesn't flash
   // at the top of the file before jumping back.
@@ -372,6 +411,7 @@ export function GitDiffView({
           body: JSON.stringify({
             session,
             base: shownBase || undefined,
+            cwd: cwd ?? undefined,
             worktree: overview?.repo ? overview.root : undefined,
             files: expandedRows.map((row) => ({
               path: row.path,
@@ -393,7 +433,7 @@ export function GitDiffView({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revision, expandedKeys, session, shownBase]);
+  }, [revision, expandedKeys, session, shownBase, cwd]);
 
   const groups = useMemo(() => {
     const order: Section[] = ["changed", "staged", "unstaged", "untracked"];
@@ -445,6 +485,35 @@ export function GitDiffView({
           <GitBranchIcon />
           <span>{overview && overview.repo ? overview.branch : t("gitdiff.title")}</span>
         </span>
+        {/* The directory the panel reads from, editable so a wrong guess (the
+            session-followed default) can be corrected in place. Empty + Enter
+            hands it back to following the session. */}
+        <input
+          className="gd-dir"
+          {...ime.props}
+          value={dirDraft}
+          spellCheck={false}
+          title={shownDir}
+          aria-label={t("gitdiff.workingDir")}
+          placeholder={t("gitdiff.workingDir")}
+          onFocus={() => setDirFocused(true)}
+          onChange={(e) => setDirDraft(e.target.value)}
+          onBlur={() => {
+            setDirFocused(false);
+            setDirDraft(shownDir);
+          }}
+          onKeyDown={(e) => {
+            if (ime.handled(e)) return;
+            if (e.key === "Enter") {
+              const target = dirDraft.trim();
+              if (target !== shownDir) selectCwd(target || null);
+              (e.target as HTMLInputElement).blur();
+            } else if (e.key === "Escape") {
+              setDirDraft(shownDir);
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+        />
         {overview && overview.repo && (
           <>
             {worktreeOptions.length > 1 && (

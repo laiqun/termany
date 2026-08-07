@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "diganti nama dari {path}",
   "gitdiff.overflow": "Terlalu banyak berkas berubah untuk didaftar semua.",
   "gitdiff.mainWorktree": "Salinan utama",
+  "gitdiff.workingDir": "Direktori kerja",
 
   "history.placeholder": "Cari sesi {agent}…",
   "history.loading": "Memuat sesi…",

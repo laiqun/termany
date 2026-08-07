@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "đổi tên từ {path}",
   "gitdiff.overflow": "Quá nhiều tệp thay đổi nên không liệt kê hết được.",
   "gitdiff.mainWorktree": "Bản làm việc chính",
+  "gitdiff.workingDir": "Thư mục làm việc",
 
   "history.placeholder": "Tìm phiên của {agent}…",
   "history.loading": "Đang tải các phiên…",

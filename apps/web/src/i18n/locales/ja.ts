@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "{path} から名称変更",
   "gitdiff.overflow": "変更されたファイルが多すぎて、すべては表示できません。",
   "gitdiff.mainWorktree": "メインのチェックアウト",
+  "gitdiff.workingDir": "作業ディレクトリ",
 
   "history.placeholder": "{agent} のセッションを検索…",
   "history.loading": "セッションを読み込み中…",

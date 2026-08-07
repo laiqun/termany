@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "由 {path} 更名而來",
   "gitdiff.overflow": "變更的檔案太多，無法全部列出。",
   "gitdiff.mainWorktree": "主要工作目錄",
+  "gitdiff.workingDir": "工作目錄",
 
   "history.placeholder": "搜尋 {agent} 工作階段…",
   "history.loading": "正在載入工作階段…",

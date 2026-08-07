@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "omdöpt från {path}",
   "gitdiff.overflow": "För många ändrade filer för att lista alla.",
   "gitdiff.mainWorktree": "Huvudkopian",
+  "gitdiff.workingDir": "Arbetskatalog",
 
   "history.placeholder": "Sök {agent}-sessioner…",
   "history.loading": "Läser in sessioner…",

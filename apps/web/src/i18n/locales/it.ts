@@ -466,6 +466,7 @@ export default {
   "gitdiff.renamedFrom": "rinominato da {path}",
   "gitdiff.overflow": "Troppi file modificati per elencarli tutti.",
   "gitdiff.mainWorktree": "Checkout principale",
+  "gitdiff.workingDir": "Directory di lavoro",
 
   "history.placeholder": "Cerca sessioni di {agent}…",
   "history.loading": "Caricamento delle sessioni…",

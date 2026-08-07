@@ -467,6 +467,7 @@ export default {
   "gitdiff.renamedFrom": "přejmenováno z {path}",
   "gitdiff.overflow": "Změněných souborů je příliš mnoho, než aby šly vypsat všechny.",
   "gitdiff.mainWorktree": "Hlavní kopie",
+  "gitdiff.workingDir": "Pracovní adresář",
 
   "history.placeholder": "Hledat relace {agent}…",
   "history.loading": "Načítání relací…",
