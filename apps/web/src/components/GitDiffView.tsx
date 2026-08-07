@@ -264,16 +264,6 @@ export function GitDiffView({
   // came back identical — the whole point of a refresh is that the CONTENTS
   // moved, which nothing in the row identity would reflect.
   const [revision, setRevision] = useState(0);
-  /**
-   * The last overview that actually described a repo. The toolbar's options
-   * are built from the overview, so a failed load would otherwise unmount the
-   * very controls — worktree/base pickers, refresh — that get the panel OUT of
-   * the failed state (e.g. a selected worktree whose git calls now error). The
-   * file list still shows the error; only the chrome falls back to this.
-   */
-  const lastGoodRef = useRef<Extract<Overview, { repo: true }> | null>(
-    cached?.overview && cached.overview.repo ? cached.overview : null,
-  );
 
   const load = useCallback(async () => {
     try {
@@ -301,14 +291,8 @@ export function GitDiffView({
   }, [load]);
 
   useEffect(() => {
-    if (overview?.repo) lastGoodRef.current = overview;
-    // A failed load (null) must not evict the good overview from the cache —
-    // it is what remounts rebuild the toolbar from while the error is up.
-    remember(viewId, { ...(overview != null ? { overview } : {}), base, worktree, collapsed, diffs });
+    remember(viewId, { overview, base, worktree, collapsed, diffs });
   }, [viewId, overview, base, worktree, collapsed, diffs]);
-
-  /** What the toolbar reads from: the live overview, else the last good one. */
-  const chrome = overview?.repo === true ? overview : lastGoodRef.current;
 
   /**
    * The compare actually in force: the user's pick, else whatever the server
@@ -316,7 +300,7 @@ export function GitDiffView({
    * diff request, the section label — reads this rather than `base`, so an
    * auto-picked fork behaves exactly like one the user selected.
    */
-  const shownBase = base ?? (chrome ? chrome.base ?? WORKING_TREE : WORKING_TREE);
+  const shownBase = base ?? (overview?.repo ? overview.base ?? WORKING_TREE : WORKING_TREE);
 
   /**
    * Point the panel at another worktree. The compare goes back to automatic
@@ -431,38 +415,38 @@ export function GitDiffView({
   );
 
   const refOptions = useMemo(() => {
-    const refs = chrome?.refs ?? [];
+    const refs = overview && overview.repo ? overview.refs : [];
     return [
       { value: WORKING_TREE, label: t("gitdiff.workingTree") },
       ...refs.map((r) => ({ value: r, label: r })),
     ];
-  }, [chrome, t]);
+  }, [overview, t]);
 
   // The directory name is the identity here, not the branch: an agent's
   // worktree is announced by its directory ("wobbly-shimmying-rose"), and the
   // toolbar already names the selected one's branch. The count marks where an
   // agent has actually been working.
   const worktreeOptions = useMemo(() => {
-    const list = chrome?.worktrees ?? [];
+    const list = overview?.repo === true ? overview.worktrees ?? [] : [];
     return list.map((w) => ({
       value: w.path,
       label:
         (w.main ? t("gitdiff.mainWorktree") : w.name) + (w.files > 0 ? ` · ${w.files}` : ""),
     }));
-  }, [chrome, t]);
+  }, [overview, t]);
 
   return (
     <div className={`gd-root gd-${variant}`}>
       <div className="gd-toolbar">
         <span className="gd-branch">
           <GitBranchIcon />
-          <span>{chrome ? chrome.branch : t("gitdiff.title")}</span>
+          <span>{overview && overview.repo ? overview.branch : t("gitdiff.title")}</span>
         </span>
-        {chrome && (
+        {overview && overview.repo && (
           <>
             {worktreeOptions.length > 1 && (
               <UsageSelect
-                value={chrome.root}
+                value={overview.root}
                 options={worktreeOptions}
                 onChange={selectWorktree}
                 width={170}
