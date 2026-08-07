@@ -121,7 +121,9 @@ function fetchNodeArchive(ext) {
 if (IS_WIN) {
   const zip = fetchNodeArchive("zip");
   // bsdtar (shipped with Windows 10+) extracts .zip and honours --strip-components.
-  run(`tar -xf "${zip}" --strip-components=1 -C "${out}" "${NODE_DIST}/node.exe"`);
+  // Use the full path: when Git's bin is on PATH, a bare `tar` resolves to GNU
+  // tar, which reads the colon in E:\... as a remote host and can't read zip.
+  run(`C:\\Windows\\System32\\tar.exe -xf "${zip}" --strip-components=1 -C "${out}" "${NODE_DIST}/node.exe"`);
 } else {
   const tgz = fetchNodeArchive("tar.gz");
   run(`tar xzf "${tgz}" --strip-components=2 -C "${out}" "${NODE_DIST}/bin/node"`);
