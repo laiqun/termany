@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
+import { useNativeOccluder } from "../nativeViewOcclusion";
 import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
@@ -232,6 +233,176 @@ function FileCard({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Close on Escape, the way the app's other small dialogs do. Capture phase +
+ * stopPropagation so the ⌘⌥G modal's own Escape handler (bubble) doesn't
+ * close the whole panel along with the dialog; an open select menu inside the
+ * dialog gets the key first instead.
+ */
+function useEscapeToClose(
+  ref: RefObject<HTMLDivElement | null>,
+  onClose: () => void,
+) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (ref.current?.querySelector(".usage-select-menu")) return;
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [ref, onClose]);
+}
+
+/**
+ * "New worktree…" from the worktree switcher. Two fields only: the new branch
+ * name, and the ref to cut it from. The directory is the server's choice (a
+ * sibling of the main checkout), and no terminal is opened — the new worktree
+ * simply shows up in the switcher.
+ */
+function NewWorktreeDialog({
+  refs,
+  defaultBase,
+  onCreate,
+  onClose,
+}: {
+  refs: string[];
+  defaultBase: string;
+  onCreate: (branch: string, base: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const ime = useImeGuard();
+  const [branch, setBranch] = useState("");
+  const [base, setBase] = useState(defaultBase);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const backdropRef = useNativeOccluder<HTMLDivElement>("gd-new-worktree");
+  useEscapeToClose(backdropRef, onClose);
+
+  const submit = async () => {
+    const name = branch.trim();
+    if (!name || busy) return;
+    setBusy(true);
+    try {
+      await onCreate(name, base);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
+      <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="gd-field">
+          <label>{t("gitdiff.branchName")}</label>
+          <input
+            {...ime.props}
+            className="ws-dialog-input"
+            autoFocus
+            value={branch}
+            spellCheck={false}
+            onChange={(e) => setBranch(e.target.value)}
+            onKeyDown={(e) => {
+              if (ime.handled(e)) return;
+              if (e.key === "Enter") void submit();
+              else if (e.key === "Escape") onClose();
+            }}
+          />
+        </div>
+        <div className="gd-field">
+          <label>{t("gitdiff.baseBranch")}</label>
+          <UsageSelect
+            value={base}
+            options={refs.map((r) => ({ value: r, label: r }))}
+            onChange={setBase}
+            width={260}
+          />
+        </div>
+        {error && <p className="gd-dialog-error">{error}</p>}
+        <div className="ws-dialog-actions">
+          <button className="ws-dialog-btn" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button className="ws-dialog-btn primary" disabled={!branch.trim() || busy} onClick={() => void submit()}>
+            {t("gitdiff.createWorktree")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Confirms removing a linked worktree. A dirty worktree (its changed-files
+ * badge is shown right in the switcher) needs the explicit "delete anyway"
+ * check, which maps to `git worktree remove --force` — the default path
+ * refuses, so a stray click can't take uncommitted work with it. The branch
+ * stays; only the directory goes.
+ */
+function RemoveWorktreeDialog({
+  worktree,
+  onRemove,
+  onClose,
+}: {
+  worktree: GitWorktree;
+  onRemove: (worktree: GitWorktree, force: boolean) => Promise<void>;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [force, setForce] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const backdropRef = useNativeOccluder<HTMLDivElement>("gd-remove-worktree");
+  useEscapeToClose(backdropRef, onClose);
+  const dirty = worktree.files > 0;
+
+  const submit = async () => {
+    if (busy || (dirty && !force)) return;
+    setBusy(true);
+    try {
+      await onRemove(worktree, force);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
+      <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
+        <p className="quit-confirm-text">{t("gitdiff.removeWorktreeConfirm", { name: worktree.name })}</p>
+        {dirty && (
+          <>
+            <p className="gd-dialog-warn">{t("gitdiff.removeWorktreeDirty", { files: worktree.files })}</p>
+            <label className="gd-dialog-check">
+              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+              {t("gitdiff.forceRemove")}
+            </label>
+          </>
+        )}
+        {error && <p className="gd-dialog-error">{error}</p>}
+        <div className="ws-dialog-actions">
+          <button className="ws-dialog-btn" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button
+            className="ws-dialog-btn danger"
+            disabled={busy || (dirty && !force)}
+            onClick={() => void submit()}
+          >
+            {t("gitdiff.removeWorktree")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -468,15 +639,61 @@ export function GitDiffView({
   // The directory name is the identity here, not the branch: an agent's
   // worktree is announced by its directory ("wobbly-shimmying-rose"), and the
   // toolbar already names the selected one's branch. The count marks where an
-  // agent has actually been working.
-  const worktreeOptions = useMemo(() => {
-    const list = overview?.repo === true ? overview.worktrees ?? [] : [];
-    return list.map((w) => ({
-      value: w.path,
-      label:
-        (w.main ? t("gitdiff.mainWorktree") : w.name) + (w.files > 0 ? ` · ${w.files}` : ""),
-    }));
-  }, [overview, t]);
+  // agent has actually been working. The server omits the list for a plain
+  // single-checkout repo, so that case synthesizes the lone main entry — the
+  // switcher stays visible for its "New worktree…" action.
+  const worktreeList = useMemo<GitWorktree[]>(() => {
+    if (overview?.repo !== true) return [];
+    return (
+      overview.worktrees ?? [{ path: overview.root, name: "", branch: overview.branch, main: true, files: 0 }]
+    );
+  }, [overview]);
+
+  const worktreeOptions = useMemo(
+    () =>
+      worktreeList.map((w) => ({
+        value: w.path,
+        label: (w.main ? t("gitdiff.mainWorktree") : w.name) + (w.files > 0 ? ` · ${w.files}` : ""),
+        removable: !w.main,
+      })),
+    [worktreeList, t],
+  );
+
+  const [newOpen, setNewOpen] = useState(false);
+  const [removing, setRemoving] = useState<GitWorktree | null>(null);
+
+  const createWorktree = useCallback(
+    async (branch: string, baseRef: string) => {
+      const r = await fetch(apiPath("/api/git/worktrees"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session, cwd: cwd ?? undefined, branch, base: baseRef || undefined }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error ?? String(r.status));
+      await load();
+    },
+    [session, cwd, load],
+  );
+
+  const removeWorktreeByPath = useCallback(
+    async (wt: GitWorktree, force: boolean) => {
+      const params = new URLSearchParams({ session, worktree: wt.path });
+      if (cwd) params.set("cwd", cwd);
+      if (force) params.set("force", "1");
+      const r = await fetch(apiPath(`/api/git/worktrees?${params}`), { method: "DELETE" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error ?? String(r.status));
+      // Removing the worktree the panel is pointed at sends it back to the
+      // main checkout; removing another one just refreshes the list.
+      if (overview?.repo === true && overview.root === wt.path) {
+        const main = worktreeList.find((w) => w.main);
+        if (main) selectWorktree(main.path);
+      }
+      await load();
+    },
+    [session, cwd, overview, worktreeList, selectWorktree, load],
+  );
 
   return (
     <div className={`gd-root gd-${variant}`}>
@@ -516,12 +733,17 @@ export function GitDiffView({
         />
         {overview && overview.repo && (
           <>
-            {worktreeOptions.length > 1 && (
+            {worktreeOptions.length > 0 && (
               <UsageSelect
                 value={overview.root}
                 options={worktreeOptions}
                 onChange={selectWorktree}
                 width={170}
+                actions={[{ label: t("gitdiff.newWorktree"), onSelect: () => setNewOpen(true) }]}
+                onRemove={(path) => {
+                  const wt = worktreeList.find((w) => w.path === path);
+                  if (wt) setRemoving(wt);
+                }}
               />
             )}
             {/* A fixed marker rather than a per-option "Compare with X" prefix:
@@ -583,6 +805,22 @@ export function GitDiffView({
           ))}
           {overview.overflow && <div className="gd-note">{t("gitdiff.overflow")}</div>}
         </div>
+      )}
+
+      {newOpen && overview?.repo === true && (
+        <NewWorktreeDialog
+          refs={overview.refs}
+          defaultBase={worktreeList.find((w) => w.main)?.branch ?? overview.branch}
+          onCreate={createWorktree}
+          onClose={() => setNewOpen(false)}
+        />
+      )}
+      {removing && (
+        <RemoveWorktreeDialog
+          worktree={removing}
+          onRemove={removeWorktreeByPath}
+          onClose={() => setRemoving(null)}
+        />
       )}
     </div>
   );

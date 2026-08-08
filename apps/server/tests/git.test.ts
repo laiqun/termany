@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { gitOverview } from "../src/git.ts";
+import { addWorktree, gitOverview, removeWorktree } from "../src/git.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
@@ -55,6 +55,63 @@ test("selecting a stale worktree falls back to the terminal's repo instead of 50
     assert.equal(overview.repo, true);
     if (!overview.repo) return;
     assert.equal(overview.root, path.resolve(main));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("addWorktree creates a linked worktree on a new branch", async () => {
+  const { dir, main } = makeRepo();
+  try {
+    const created = await addWorktree(main, "topic", undefined);
+    assert.ok(fs.existsSync(created.path));
+    const overview = await gitOverview(main);
+    assert.equal(overview.repo, true);
+    if (!overview.repo) return;
+    const entry = (overview.worktrees ?? []).find((w) => w.path === created.path);
+    assert.ok(entry, "the new worktree should appear in the switcher");
+    assert.equal(entry.branch, "topic");
+    assert.equal(entry.main, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("addWorktree refuses a branch name that already exists", async () => {
+  const { dir, main } = makeRepo();
+  try {
+    await assert.rejects(() => addWorktree(main, "feat", undefined), /already exists/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeWorktree refuses the main checkout", async () => {
+  const { dir, main } = makeRepo();
+  try {
+    await assert.rejects(() => removeWorktree(main, main, true), /main checkout/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a clean worktree removes without force, a dirty one needs it", async () => {
+  const { dir, main, linked } = makeRepo();
+  try {
+    fs.writeFileSync(path.join(linked, "dirty.txt"), "x");
+    await assert.rejects(() => removeWorktree(main, linked, false));
+    assert.ok(fs.existsSync(linked));
+    await removeWorktree(main, linked, true);
+    assert.equal(fs.existsSync(linked), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeWorktree rejects a path that is not one of the repo's worktrees", async () => {
+  const { dir, main } = makeRepo();
+  try {
+    await assert.rejects(() => removeWorktree(main, path.join(dir, "elsewhere"), true), /Not a worktree/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

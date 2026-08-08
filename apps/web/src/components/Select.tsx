@@ -1,22 +1,39 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronIcon } from "./icons";
+import { ChevronIcon, TrashIcon } from "./icons";
+
+export interface UsageSelectOption {
+  value: string;
+  label: string;
+  /** Shows the remove button on this row — only when `onRemove` is given. */
+  removable?: boolean;
+}
 
 /**
  * Themed replacement for a native <select>. A real select renders its popup
  * through the OS, which ignores the control's width (long project paths blow
  * it up) and can't be dark-themed — so the popup is drawn here instead, at the
  * control's own width with per-item ellipsis.
+ *
+ * Two extensions beyond a plain option list: `actions` are extra rows pinned
+ * below the options (a "New…" entry that isn't a selectable value), and
+ * options flagged `removable` carry a small always-visible remove button —
+ * always visible rather than hover-revealed, because there is no hover on
+ * touch screens.
  */
 export function UsageSelect({
   value,
   options,
   onChange,
   width,
+  actions,
+  onRemove,
 }: {
   value: string;
-  options: Array<{ value: string; label: string }>;
+  options: UsageSelectOption[];
   onChange: (value: string) => void;
   width: number;
+  actions?: Array<{ label: string; onSelect: () => void }>;
+  onRemove?: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -60,19 +77,56 @@ export function UsageSelect({
       </button>
       {open && (
         <div className="usage-select-menu">
-          {options.map((o) => (
-            <button
-              key={o.value}
-              className={`usage-select-item ${o.value === value ? "active" : ""}`}
-              title={o.label}
-              onClick={() => {
-                onChange(o.value);
-                setOpen(false);
-              }}
-            >
-              {o.label}
-            </button>
-          ))}
+          {options.map((o) => {
+            const cls = `usage-select-item ${o.value === value ? "active" : ""}`;
+            const pick = () => {
+              onChange(o.value);
+              setOpen(false);
+            };
+            // A removable row is two buttons (nested <button>s are invalid):
+            // the pick, then the remove affordance at the row's right edge.
+            if (onRemove && o.removable) {
+              return (
+                <div key={o.value} className={cls} title={o.label}>
+                  <button className="usage-select-pick" onClick={pick}>
+                    {o.label}
+                  </button>
+                  <button
+                    className="usage-select-remove"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpen(false);
+                      onRemove(o.value);
+                    }}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              );
+            }
+            return (
+              <button key={o.value} className={cls} title={o.label} onClick={pick}>
+                {o.label}
+              </button>
+            );
+          })}
+          {actions?.length ? (
+            <>
+              <div className="usage-select-sep" />
+              {actions.map((a) => (
+                <button
+                  key={a.label}
+                  className="usage-select-item usage-select-action"
+                  onClick={() => {
+                    setOpen(false);
+                    a.onSelect();
+                  }}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </>
+          ) : null}
         </div>
       )}
     </div>

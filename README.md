@@ -53,7 +53,8 @@ Any pane can switch from a shell to another view. ⌘E cycles the views:
   ⌘S to save), or to read it. Markdown, HTML, images, video, audio, PDF, DOCX, XLSX, and
   PPTX preview inline.
 - **Git diff** — staged, unstaged, and untracked changes. Compare the working tree against
-  another base. Switch to another worktree of the same repository from the same panel.
+  another base. Switch to another worktree of the same repository from the same panel, and
+  create or remove worktrees from that switcher.
 - **Conversation** — a chat pane over ACP, with its own model picker.
 - **Browser** — a webview. When a pane starts to serve a port, Termany offers to open it.
 

@@ -45,7 +45,7 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { gitDiffs, gitOverview, worktreeOverview } from "./git.js";
+import { addWorktree, gitDiffs, gitOverview, removeWorktree, worktreeOverview } from "./git.js";
 import { pickFolder } from "./folderPicker.js";
 import { testProvider } from "./providerTest.js";
 import { ptyEnvironment } from "./ptyEnvironment.js";
@@ -586,7 +586,7 @@ setInterval(flushScroll, 10_000).unref();
 // JSON API (POST /api/theme — AI theme generation, key stays server-side).
 const http = createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Image-Type");
 
   if (req.method === "OPTIONS") {
@@ -1431,6 +1431,50 @@ const http = createServer((req, res) => {
     (async () => {
       const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
       json(200, await worktreeOverview(cwd));
+    })().catch(fail);
+    return;
+  }
+
+  // Create a linked worktree on a new branch, from the diff panel's "New
+  // worktree…" action. The branch name and base are the user's; the directory
+  // is derived server-side (a sibling of the main checkout).
+  if (req.method === "POST" && reqUrl.pathname === "/api/git/worktrees") {
+    readJson(req)
+      .then(async (body) => {
+        const branch = String(body?.branch ?? "").trim();
+        if (!branch) return json(400, { error: "branch is required" });
+        const cwd = await gitPanelCwd(
+          body?.cwd ? String(body.cwd) : null,
+          String(body?.session ?? ""),
+        );
+        try {
+          json(200, await addWorktree(cwd, branch, body?.base ? String(body.base) : undefined));
+        } catch (error) {
+          json(400, { error: error instanceof Error ? error.message : String(error) });
+        }
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Remove a linked worktree, from the diff panel's per-worktree button.
+  // Git's own checks (must be a linked worktree, must be clean unless
+  // `force`) are the guard rails — a refusal comes back as a 400 the
+  // confirmation dialog can show.
+  if (req.method === "DELETE" && reqUrl.pathname === "/api/git/worktrees") {
+    (async () => {
+      const worktree = reqUrl.searchParams.get("worktree") ?? "";
+      if (!worktree) return json(400, { error: "worktree is required" });
+      const cwd = await gitPanelCwd(
+        reqUrl.searchParams.get("cwd"),
+        reqUrl.searchParams.get("session") ?? "",
+      );
+      try {
+        await removeWorktree(cwd, worktree, reqUrl.searchParams.get("force") === "1");
+        json(200, { ok: true });
+      } catch (error) {
+        json(400, { error: error instanceof Error ? error.message : String(error) });
+      }
     })().catch(fail);
     return;
   }

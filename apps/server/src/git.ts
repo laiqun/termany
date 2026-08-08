@@ -398,6 +398,49 @@ export async function worktreeOverview(cwd: string): Promise<
   return { repo: true, root, branch, worktrees };
 }
 
+/**
+ * Create a linked worktree on a NEW branch cut from `base` (the repo's HEAD
+ * when omitted). The directory is a sibling of the main checkout named after
+ * the branch, numbered when that name is taken — the client never picks a
+ * path, so one can't be aimed outside the repo's neighborhood.
+ */
+export async function addWorktree(
+  cwd: string,
+  branch: string,
+  base: string | undefined,
+): Promise<{ path: string }> {
+  const root = await repoRoot(cwd);
+  if (!root) throw new Error("Not inside a git repository.");
+  if (!validRef(branch)) throw new Error(`Invalid branch name: ${branch}`);
+  const refs = await listRefs(root);
+  if (refs.includes(branch)) throw new Error(`Branch already exists: ${branch}`);
+  if (base && (!validRef(base) || !refs.includes(base))) throw new Error(`Unknown base: ${base}`);
+
+  const stem = `${path.basename(root)}-${branch.replace(/[^\w.-]+/g, "-")}`;
+  let dir = path.join(path.dirname(root), stem);
+  for (let n = 2; fs.existsSync(dir); n++) dir = path.join(path.dirname(root), `${stem}-${n}`);
+
+  await git(["worktree", "add", dir, "-b", branch, ...(base ? [base] : [])], root);
+  return { path: dir };
+}
+
+/**
+ * Remove a linked worktree. The target must come from git's own list (the
+ * same guard resolveScope applies to reads) and must not be the main
+ * checkout. Dirty worktrees need `force`, matching `git worktree remove`.
+ * The branch the worktree was on is left alone.
+ */
+export async function removeWorktree(cwd: string, worktree: string, force: boolean): Promise<void> {
+  const resolved = await resolveScope(cwd, worktree);
+  if (!resolved) throw new Error("Not inside a git repository.");
+  if (!resolved.selected) throw new Error("Not a worktree of this repository.");
+  if (resolved.selected.main) throw new Error("The main checkout cannot be removed.");
+  await git(
+    ["worktree", "remove", ...(force ? ["--force"] : []), resolved.selected.path],
+    resolved.worktrees[0].path,
+  );
+}
+
 export async function gitOverview(cwd: string, scope: GitScope = {}): Promise<GitOverview> {
   const resolved = await resolveScope(cwd, scope.worktree);
   if (!resolved) return { repo: false, cwd };

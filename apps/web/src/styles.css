@@ -5313,6 +5313,52 @@ html.tauri #root {
 .usage-select-item.active {
   background: var(--accent-soft);
 }
+/* A removable row (the worktree switcher): the row div carries the item look,
+   and inside it the pick and the always-visible remove affordance are two
+   separate buttons — nested <button>s are invalid HTML. */
+div.usage-select-item {
+  display: flex;
+  align-items: center;
+  padding: 2px 4px 2px 8px;
+  cursor: default;
+}
+.usage-select-pick {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.usage-select-remove {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 3px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.usage-select-remove:hover {
+  color: #e5484d;
+  background: var(--bg-2);
+}
+/* Pinned below the options: entries that DO something ("New worktree…")
+   rather than select a value. */
+.usage-select-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
 
 /* Activity monitor pane: toolbar + scrolling process table over a fixed
    footer. Sized in container units so the same component works in a half-width
@@ -6070,6 +6116,38 @@ html.tauri #root {
 .gd-refresh:hover {
   background: var(--bg-3);
   color: var(--fg);
+}
+/* The worktree dialogs (new / remove) share the ws-dialog shell; these are
+   their form rows and messages. */
+.gd-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.gd-field label {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.gd-dialog-warn {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: #e5484d;
+}
+.gd-dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.gd-dialog-error {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: #e5484d;
+  word-break: break-word;
 }
 .gd-empty {
   flex: 1;
