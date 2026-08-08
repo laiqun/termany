@@ -624,8 +624,15 @@ struct PageClaims(Mutex<HashMap<String, String>>);
 /// falling back to the original window and then to any window at all. Every
 /// place that used to hardcode `"main"` resolves through this — with several
 /// windows open, "the app" means the one the user is looking at.
-fn target_window(app_handle: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
-    let windows = app_handle.webview_windows();
+///
+/// This must go through `windows()`, not `webview_windows()`: the latter
+/// silently drops any window that hosts a child webview (a browser pane),
+/// because `is_webview_window()` requires every webview in the window to
+/// share the window's label. With a browser pane open, app-level actions
+/// (hotkey toggle, tray restore, quit dialog, page claims) would act on a
+/// window map that is simply empty.
+fn target_window(app_handle: &tauri::AppHandle) -> Option<tauri::Window> {
+    let windows = app_handle.windows();
     windows
         .values()
         .find(|window| window.is_focused().unwrap_or(false))
@@ -656,7 +663,7 @@ fn create_window(app_handle: &tauri::AppHandle) -> Result<String, String> {
         loop {
             let n = counter.0.fetch_add(1, Ordering::SeqCst);
             let candidate = format!("{MAIN_WINDOW_LABEL}-{n}");
-            if app_handle.get_webview_window(&candidate).is_none() {
+            if app_handle.get_window(&candidate).is_none() {
                 break candidate;
             }
         }
@@ -750,7 +757,8 @@ fn claims_excluding(app_handle: &tauri::AppHandle, label: &str) -> Vec<String> {
 }
 
 fn broadcast_page_claims(app_handle: &tauri::AppHandle) {
-    for label in app_handle.webview_windows().keys() {
+    // windows(), not webview_windows(): see target_window.
+    for label in app_handle.windows().keys() {
         let claims = claims_excluding(app_handle, label);
         let _ = app_handle.emit_to(label.as_str(), "page-claims", claims);
     }
@@ -787,7 +795,7 @@ fn claim_page(app: tauri::AppHandle, window: tauri::Window, page_id: String) -> 
     match owner {
         // Raising happens outside the lock — set_focus can pump the event loop.
         Some(owner) => {
-            if let Some(window) = app.get_webview_window(&owner) {
+            if let Some(window) = app.get_window(&owner) {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -821,21 +829,58 @@ fn focus_app_window(app_handle: &tauri::AppHandle) {
     }
 }
 
+/// Whether `window` is the foreground window, asked from the OS directly.
+/// `Window::is_focused()` is unusable for this on Windows: keyboard focus
+/// lives on the WebView2 child window, so WM_SETFOCUS never reaches the tao
+/// window and its internal flag stays false even while the user is typing in
+/// the app — which made every hotkey press take the show branch below.
+#[cfg(target_os = "windows")]
+fn window_is_foreground(window: &tauri::Window) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    let ours = hwnd.0;
+    let foreground = unsafe { GetForegroundWindow() };
+    let result = !foreground.is_null()
+        && (foreground == ours || unsafe { GetAncestor(foreground, GA_ROOT) } == ours);
+    log::info!(
+        "[termany]   window_is_foreground {}: ours={:?} fg={:?} -> {result}",
+        window.label(),
+        ours,
+        foreground
+    );
+    result
+}
+
 /// Quake-style summon: hide when the app has focus, otherwise bring it up.
 /// The focus check (not just visibility) matters — when the window is merely
 /// behind another app, the hotkey should raise it, not hide it. With several
 /// windows open the hotkey acts on all of them, so the app comes back exactly
 /// as the user left it rather than one window at a time.
 fn toggle_app_windows(app_handle: &tauri::AppHandle) {
-    let windows = app_handle.webview_windows();
+    // windows(), not webview_windows(): a window hosting a browser pane (a
+    // native child webview) is missing from the latter — see target_window —
+    // which made the hotkey a no-op whenever a browser pane was open.
+    let windows = app_handle.windows();
+    log::info!("[termany] toggle hotkey fired, {} window(s)", windows.len());
     if windows.is_empty() {
         return;
     }
     let showing = windows.values().any(|window| {
-        window.is_focused().unwrap_or(false)
-            && window.is_visible().unwrap_or(false)
-            && !window.is_minimized().unwrap_or(false)
+        #[cfg(target_os = "windows")]
+        let focused = window_is_foreground(window);
+        #[cfg(not(target_os = "windows"))]
+        let focused = window.is_focused().unwrap_or(false);
+        let visible = window.is_visible().unwrap_or(false);
+        let minimized = window.is_minimized().unwrap_or(false);
+        log::info!(
+            "[termany]   window {}: focused={focused} visible={visible} minimized={minimized}",
+            window.label()
+        );
+        focused && visible && !minimized
     });
+    log::info!("[termany] toggle decision: showing={showing}");
     if showing {
         // Hide the whole app on macOS, not just the windows: focus then falls
         // back to the previously active app, so the user can keep typing where
@@ -917,6 +962,7 @@ fn apply_toggle_shortcut(app: &tauri::AppHandle, shortcut: Option<String>) -> Re
     let parsed: Shortcut = next.parse().map_err(|e| format!("{next}: {e}"))?;
     app.global_shortcut()
         .on_shortcut(parsed, |app_handle, _shortcut, event| {
+            log::info!("[termany] toggle hotkey event: {:?}", event.state);
             // The plugin reports press and release separately; only act on
             // press, or every tap would toggle twice.
             if event.state == ShortcutState::Pressed {
@@ -1117,7 +1163,11 @@ pub fn run() {
                 // every shell in the other windows) running, so it needs no
                 // confirmation. Only closing the last one means "quit", which
                 // is the decision the dialog guards against doing by accident.
-                if app_handle.webview_windows().len() > 1 {
+                // windows(), not webview_windows(): a window with a browser
+                // pane open is absent from the latter (see target_window),
+                // so the count here would come out low and closing an extra
+                // window would wrongly trigger the quit confirmation.
+                if app_handle.windows().len() > 1 {
                     return;
                 }
                 let Some(quitting) = app_handle.try_state::<QuitState>() else {
