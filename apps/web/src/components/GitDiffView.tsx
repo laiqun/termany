@@ -408,6 +408,80 @@ function RemoveWorktreeDialog({
 }
 
 /**
+ * Confirms deleting a branch from the compare picker. The safe delete
+ * (`git branch -d`) refuses a branch that isn't fully merged; that refusal
+ * comes back flagged, and only then is the "delete anyway" check shown — it
+ * maps to `-D`, so a stray click can't take unmerged commits with it.
+ */
+function DeleteBranchDialog({
+  branch,
+  onDelete,
+  onClose,
+}: {
+  branch: string;
+  onDelete: (branch: string, force: boolean) => Promise<void>;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [force, setForce] = useState(false);
+  const [unmerged, setUnmerged] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const backdropRef = useNativeOccluder<HTMLDivElement>("gd-delete-branch");
+  useEscapeToClose(backdropRef, onClose);
+
+  const submit = async () => {
+    if (busy || (unmerged && !force)) return;
+    setBusy(true);
+    try {
+      await onDelete(branch, force);
+      onClose();
+    } catch (e) {
+      // The not-merged refusal swaps the raw git error for a localized warning
+      // plus the force check; anything else (checked out somewhere, say) is
+      // shown as it came.
+      if ((e as { notMerged?: boolean }).notMerged) {
+        setUnmerged(true);
+        setError("");
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
+      <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
+        <p className="quit-confirm-text">{t("gitdiff.deleteBranchConfirm", { name: branch })}</p>
+        {unmerged && (
+          <>
+            <p className="gd-dialog-warn">{t("gitdiff.deleteBranchUnmerged")}</p>
+            <label className="gd-dialog-check">
+              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+              {t("gitdiff.forceRemove")}
+            </label>
+          </>
+        )}
+        {error && <p className="gd-dialog-error">{error}</p>}
+        <div className="ws-dialog-actions">
+          <button className="ws-dialog-btn" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button
+            className="ws-dialog-btn danger"
+            disabled={busy || (unmerged && !force)}
+            onClick={() => void submit()}
+          >
+            {t("gitdiff.deleteBranch")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Git diff viewer for the repo containing `session`'s cwd. `session` is a
  * comma-separated candidate chain (the pane, then its anchors — see
  * cwdCandidates), which the server walks to the first resolvable directory.
@@ -632,7 +706,10 @@ export function GitDiffView({
     const refs = overview && overview.repo ? overview.refs : [];
     return [
       { value: WORKING_TREE, label: t("gitdiff.workingTree") },
-      ...refs.map((r) => ({ value: r, label: r })),
+      // Every branch is offered as deletable; the server refuses the ones git
+      // won't let go (checked out, remote-tracking) with a reason the dialog
+      // shows.
+      ...refs.map((r) => ({ value: r, label: r, removable: true })),
     ];
   }, [overview, t]);
 
@@ -661,6 +738,7 @@ export function GitDiffView({
 
   const [newOpen, setNewOpen] = useState(false);
   const [removing, setRemoving] = useState<GitWorktree | null>(null);
+  const [deletingBranch, setDeletingBranch] = useState<string | null>(null);
 
   const createWorktree = useCallback(
     async (branch: string, baseRef: string) => {
@@ -693,6 +771,26 @@ export function GitDiffView({
       await load();
     },
     [session, cwd, overview, worktreeList, selectWorktree, load],
+  );
+
+  const deleteBranchByName = useCallback(
+    async (name: string, force: boolean) => {
+      const params = new URLSearchParams({ session, branch: name });
+      if (cwd) params.set("cwd", cwd);
+      if (force) params.set("force", "1");
+      const r = await fetch(apiPath(`/api/git/branches?${params}`), { method: "DELETE" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const error = new Error(data.error ?? String(r.status)) as Error & { notMerged?: boolean };
+        error.notMerged = data.notMerged === true;
+        throw error;
+      }
+      // Deleting the branch the compare is measured against hands the pick
+      // back to the server's choice; anything else just refreshes the list.
+      if (name === shownBase) setBase(null);
+      await load();
+    },
+    [session, cwd, shownBase, load],
   );
 
   return (
@@ -752,7 +850,13 @@ export function GitDiffView({
             <span className="gd-vs" title={t("gitdiff.compareWith")}>
               <GitCompareIcon />
             </span>
-            <UsageSelect value={shownBase} options={refOptions} onChange={setBase} width={180} />
+            <UsageSelect
+              value={shownBase}
+              options={refOptions}
+              onChange={setBase}
+              width={180}
+              onRemove={setDeletingBranch}
+            />
             {rows.length > 0 && (
               <span className="gd-summary">
                 {t("gitdiff.summary", { files: rows.length })}
@@ -820,6 +924,13 @@ export function GitDiffView({
           worktree={removing}
           onRemove={removeWorktreeByPath}
           onClose={() => setRemoving(null)}
+        />
+      )}
+      {deletingBranch && (
+        <DeleteBranchDialog
+          branch={deletingBranch}
+          onDelete={deleteBranchByName}
+          onClose={() => setDeletingBranch(null)}
         />
       )}
     </div>

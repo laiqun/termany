@@ -441,6 +441,41 @@ export async function removeWorktree(cwd: string, worktree: string, force: boole
   );
 }
 
+/**
+ * A plain branch delete refused because the branch has unmerged commits —
+ * separated out so the endpoint can flag it and the dialog can offer the
+ * force retry (`-D`) instead of just showing git's stderr.
+ */
+export class BranchNotMergedError extends Error {}
+
+/**
+ * Delete a local branch, from the compare picker's per-branch button — the
+ * counterpart to removeWorktree, which deliberately leaves the branch behind.
+ * The name must come from the repo's own refs and be a LOCAL branch (the refs
+ * list also carries remote-tracking entries, which stay out of reach); beyond
+ * that git's own checks are the guard rails — a branch checked out in any
+ * worktree is refused, and an unmerged one needs `force` (`-d` vs `-D`).
+ */
+export async function deleteBranch(cwd: string, branch: string, force: boolean): Promise<void> {
+  const root = await repoRoot(cwd);
+  if (!root) throw new Error("Not inside a git repository.");
+  if (!validRef(branch)) throw new Error(`Invalid branch name: ${branch}`);
+  const refs = await listRefs(root);
+  if (!refs.includes(branch)) throw new Error(`Unknown branch: ${branch}`);
+  try {
+    await git(["show-ref", "--verify", `refs/heads/${branch}`], root);
+  } catch {
+    throw new Error(`Not a local branch: ${branch}`);
+  }
+  try {
+    await git(["branch", force ? "-D" : "-d", branch], root);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/not fully merged/.test(message)) throw new BranchNotMergedError(message);
+    throw error;
+  }
+}
+
 export async function gitOverview(cwd: string, scope: GitScope = {}): Promise<GitOverview> {
   const resolved = await resolveScope(cwd, scope.worktree);
   if (!resolved) return { repo: false, cwd };

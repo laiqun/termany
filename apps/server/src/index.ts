@@ -45,7 +45,15 @@ import {
   setScrollBatch,
   setSessionCwd,
 } from "./db.js";
-import { addWorktree, gitDiffs, gitOverview, removeWorktree, worktreeOverview } from "./git.js";
+import {
+  addWorktree,
+  BranchNotMergedError,
+  deleteBranch,
+  gitDiffs,
+  gitOverview,
+  removeWorktree,
+  worktreeOverview,
+} from "./git.js";
 import { pickFolder } from "./folderPicker.js";
 import { testProvider } from "./providerTest.js";
 import { ptyEnvironment } from "./ptyEnvironment.js";
@@ -1474,6 +1482,33 @@ const http = createServer((req, res) => {
         json(200, { ok: true });
       } catch (error) {
         json(400, { error: error instanceof Error ? error.message : String(error) });
+      }
+    })().catch(fail);
+    return;
+  }
+
+  // Delete a local branch, from the compare picker's per-branch button — the
+  // follow-up to removing a worktree, which keeps the branch. Git's own checks
+  // (a checked-out branch is refused, an unmerged one needs `force`) are the
+  // guard rails; the unmerged refusal is flagged so the dialog can offer the
+  // force retry rather than just echoing git's stderr.
+  if (req.method === "DELETE" && reqUrl.pathname === "/api/git/branches") {
+    (async () => {
+      const branch = reqUrl.searchParams.get("branch") ?? "";
+      if (!branch) return json(400, { error: "branch is required" });
+      const cwd = await gitPanelCwd(
+        reqUrl.searchParams.get("cwd"),
+        reqUrl.searchParams.get("session") ?? "",
+      );
+      try {
+        await deleteBranch(cwd, branch, reqUrl.searchParams.get("force") === "1");
+        json(200, { ok: true });
+      } catch (error) {
+        if (error instanceof BranchNotMergedError) {
+          json(400, { error: error.message, notMerged: true });
+        } else {
+          json(400, { error: error instanceof Error ? error.message : String(error) });
+        }
       }
     })().catch(fail);
     return;

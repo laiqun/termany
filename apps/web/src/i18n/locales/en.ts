@@ -479,6 +479,9 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Remove worktree {name}? Its directory will be deleted; the branch is kept.",
   "gitdiff.removeWorktreeDirty": "{files} uncommitted files in it will be lost.",
   "gitdiff.forceRemove": "Delete anyway",
+  "gitdiff.deleteBranch": "Delete",
+  "gitdiff.deleteBranchConfirm": "Delete branch {name}? This cannot be undone.",
+  "gitdiff.deleteBranchUnmerged": "It isn't fully merged — its commits may be lost.",
 
   "history.placeholder": "Search {agent} sessions…",
   "history.loading": "Loading sessions…",
