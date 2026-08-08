@@ -9,14 +9,14 @@ import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
 import {
   activeHtab,
-  cwdCandidates,
+  tabCwdForLeaf,
   useStore,
   type AgentMessage,
   type AgentPart,
   type Pane,
 } from "../state/store";
 import { queueCommand } from "../terminal/manager";
-import { CheckIcon, ChevronIcon, CopyIcon, FolderIcon, SendIcon, SpinnerIcon, StopIcon, TerminalIcon } from "./icons";
+import { CheckIcon, ChevronIcon, CopyIcon, SendIcon, SpinnerIcon, StopIcon, TerminalIcon } from "./icons";
 import { Markdown } from "./Markdown";
 import { PopMenu } from "./PopMenu";
 
@@ -171,8 +171,10 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
   const setAgentModel = useStore((s) => s.setAgentModel);
   const setAgentConfigOption = useStore((s) => s.setAgentConfigOption);
   const setAgentRuntime = useStore((s) => s.setAgentRuntime);
-  const setAgentCwd = useStore((s) => s.setAgentCwd);
   const addPane = useStore((s) => s.addPane);
+  // The agent works in its tab's fixed working directory (undefined = home,
+  // resolved server-side).
+  const tabCwd = useStore((s) => tabCwdForLeaf(s, leaf.id));
   const agents = useAgentConfigs();
   const [messages, setMessages] = useState<AgentMessage[]>(leaf.agentMessages ?? []);
   const [models, setModels] = useState<ModelsResponse | null>(null);
@@ -180,8 +182,6 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
   const [streaming, setStreaming] = useState(false);
   const [permission, setPermission] = useState<PendingPermission | null>(null);
   const [copied, setCopied] = useState("");
-  const [cwdInfo, setCwdInfo] = useState<{ cwd: string; home: string } | null>(null);
-  const [picking, setPicking] = useState(false);
   /** null until the selector menu is first opened — see loadAcpConfig. */
   const [acpConfig, setAcpConfig] = useState<AcpConfigOption[] | null>(null);
   const [acpConfigBusy, setAcpConfigBusy] = useState(false);
@@ -241,32 +241,6 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
         ? leaf.agentRuntime
         : "";
 
-  // Keep the working-folder chip in sync with what the chat endpoint would
-  // actually use. An explicit pick that has vanished on disk is dropped so the
-  // display never promises a folder the agent can't get. The pane's own id
-  // doubles as the cwd source: a terminal switched to agent view resolves to
-  // that terminal's live directory.
-  useEffect(() => {
-    if (!selectedRuntime) return;
-    let live = true;
-    const params = new URLSearchParams({ paneId: leaf.id });
-    if (leaf.agentCwd) params.set("cwd", leaf.agentCwd);
-    params.set("cwdFrom", cwdCandidates(useStore.getState(), leaf.id).join(","));
-    fetch(apiPath(`/api/agent/acp/cwd?${params}`))
-      .then((response) => (response.ok ? response.json() : Promise.reject(new Error(String(response.status)))))
-      .then((data: { cwd: string; home: string; explicit: boolean }) => {
-        if (!live) return;
-        setCwdInfo({ cwd: data.cwd, home: data.home });
-        if (leaf.agentCwd && !data.explicit) setAgentCwd(leaf.id, "");
-      })
-      .catch(() => {
-        if (live) setCwdInfo(null);
-      });
-    return () => {
-      live = false;
-    };
-  }, [selectedRuntime, leaf.id, leaf.agentCwd, leaf.cwdFrom, setAgentCwd]);
-
   const options = useMemo(
     () =>
       (models?.providers ?? []).flatMap((provider) =>
@@ -299,7 +273,7 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
   // selectors are the new agent's, so drop what the old one reported.
   useEffect(() => {
     setAcpConfig(null);
-  }, [selectedRuntime, leaf.agentCwd]);
+  }, [selectedRuntime, tabCwd]);
 
   /**
    * Ask the pane's session what it offers, optionally setting one selector on
@@ -316,8 +290,7 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
         body: JSON.stringify({
           paneId: leaf.id,
           agentId: selectedRuntime,
-          cwd: leaf.agentCwd || undefined,
-          cwdFrom: cwdCandidates(useStore.getState(), leaf.id).join(","),
+          cwd: tabCwd,
           config: acpPicks,
           ...change,
         }),
@@ -383,8 +356,7 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
             ? {
                 paneId: leaf.id,
                 agentId: selectedRuntime,
-                cwd: leaf.agentCwd || undefined,
-                cwdFrom: cwdCandidates(useStore.getState(), leaf.id).join(","),
+                cwd: tabCwd,
                 config: acpPicks,
                 prompt: content,
               }
@@ -498,32 +470,12 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
       // Clipboard denied (insecure origin / no permission) — leave the icon as is.
     }
   };
-  /** Run a code block from a reply in a fresh terminal pane, in the same
-   *  folder the agent works in (explicit pick first, else the inherited cwd). */
+  /** Run a code block from a reply in a fresh terminal pane — it spawns in
+   *  the tab's cwd, the same folder the agent works in. */
   const runSnippet = (code: string) => {
-    const paneId = addPane("terminal", undefined, leaf.id);
+    const paneId = addPane("terminal");
     if (!paneId) return;
-    if (leaf.agentCwd) queueCommand(paneId, `cd '${leaf.agentCwd.replace(/'/g, "'\\''")}'`);
     queueCommand(paneId, code);
-  };
-  const pickCwd = async () => {
-    if (picking) return;
-    setPicking(true);
-    try {
-      const response = await fetch(apiPath("/api/agent/acp/pick-cwd"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: t("agentChat.cwdPick"), defaultPath: cwdInfo?.cwd }),
-      });
-      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-      const data = (await response.json()) as { path?: string; cancelled?: boolean };
-      if (data.path) setAgentCwd(leaf.id, data.path);
-    } catch {
-      // Dialog unavailable (headless/unsupported OS) — the chip keeps showing
-      // the inherited folder, which stays correct.
-    } finally {
-      setPicking(false);
-    }
   };
   const answerPermission = async (optionId: string) => {
     if (!permission) return;
@@ -535,20 +487,6 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
     if (response.ok) setPermission(null);
   };
   const empty = messages.length === 0;
-  // "~" for home itself, otherwise the folder's name; the tooltip carries the
-  // full ~-shortened path.
-  const cwdTitle = cwdInfo
-    ? cwdInfo.cwd === cwdInfo.home
-      ? "~"
-      : cwdInfo.cwd.startsWith(`${cwdInfo.home}/`)
-        ? `~${cwdInfo.cwd.slice(cwdInfo.home.length)}`
-        : cwdInfo.cwd
-    : "";
-  const cwdLabel = cwdInfo
-    ? cwdInfo.cwd === cwdInfo.home
-      ? "~"
-      : (cwdInfo.cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwdInfo.cwd)
-    : "";
 
   return (
     <div className={`agent-pane ${empty ? "agent-pane-empty" : ""}`}>
@@ -654,19 +592,6 @@ export function AgentPane({ leaf, focused = false }: { leaf: Leaf; focused?: boo
               footer={{ label: t("agentChat.manageAgents"), onSelect: () => openSettings("agents") }}
               onSelect={(id) => setAgentRuntime(leaf.id, id)}
             />
-            {selectedRuntime && (
-              <button
-                type="button"
-                className="pop-trigger agent-cwd"
-                title={cwdTitle ? `${t("agentChat.cwd")}: ${cwdTitle}` : t("agentChat.cwdPick")}
-                aria-label={t("agentChat.cwdPick")}
-                disabled={streaming || picking}
-                onClick={() => void pickCwd()}
-              >
-                {picking ? <SpinnerIcon /> : <FolderIcon />}
-                <span className="pop-trigger-label">{cwdLabel || t("agentChat.cwd")}</span>
-              </button>
-            )}
             <PopMenu
               side="left"
               ariaLabel={t("agentChat.model")}

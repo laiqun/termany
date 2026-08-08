@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { ACTIONS, formatChord } from "../keybindings";
-import { useStore, type Pane, type TreeNode, type Workspace } from "../state/store";
+import { useStore, htabLabel, type Pane, type TreeNode, type Workspace } from "../state/store";
 import { CommandIcon, PageIcon, SearchIcon, TerminalIcon } from "./icons";
 
 function leavesOf(pane: Pane): Array<{ id: string; title: string }> {
@@ -63,17 +63,19 @@ function buildPages(ws: Workspace, nodes: TreeNode[], q: string): PageNode[] {
 
     const tabs: TabNode[] = [];
     for (const h of n.htabs) {
-      const tabScore = titleScore(h.title, q);
+      // Tabs have no custom names — their label is the cwd basename.
+      const label = htabLabel(h);
+      const tabScore = titleScore(label, q);
       const panes: PaneNode[] = [];
       for (const leaf of leavesOf(h.layout)) {
         const paneScore = titleScore(leaf.title, q);
         if (paneScore >= 0) {
-          panes.push({ paneId: leaf.id, tabId: h.id, label: leaf.title, tabTitle: h.title, score: paneScore });
+          panes.push({ paneId: leaf.id, tabId: h.id, label: leaf.title, tabTitle: label, score: paneScore });
         }
       }
       panes.sort((a, b) => b.score - a.score);
       const tabBest = Math.max(tabScore, ...panes.map((p) => p.score));
-      if (tabBest >= 0) tabs.push({ tabId: h.id, label: h.title, score: tabScore, panes, best: tabBest });
+      if (tabBest >= 0) tabs.push({ tabId: h.id, label, score: tabScore, panes, best: tabBest });
     }
     tabs.sort((a, b) => b.best - a.best);
 

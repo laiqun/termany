@@ -1331,7 +1331,7 @@ export function applyFontSize(size: number) {
   for (const s of sessions.values()) s.term.options.fontSize = size;
 }
 
-function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId = id): Session {
+function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
 
@@ -1451,7 +1451,7 @@ function getSession(id: string, cwdFrom?: string[], sshTarget?: string, paneId =
       ? new DemoBackend(id)
       : new WebSocketBackend(WS_URL, {
           session: id,
-          cwdFrom: cwdFrom?.length ? cwdFrom.join(",") : undefined,
+          cwd,
           ssh: sshTarget,
         });
 
@@ -1802,7 +1802,7 @@ function fixAbandonedImeFinalize(term: Terminal) {
 export function attachSession(
   id: string,
   host: HTMLElement,
-  cwdFrom?: string[],
+  cwd?: string,
   sshTarget?: string,
   paneId = id,
 ) {
@@ -1813,7 +1813,7 @@ export function attachSession(
     sessionIdsByPane.set(paneId, owned);
   }
   owned.add(id);
-  const s = getSession(id, cwdFrom, sshTarget, paneId);
+  const s = getSession(id, cwd, sshTarget, paneId);
   if (sshTarget && s.ended) s.restart?.();
   host.appendChild(s.el);
   if (!s.opened) {

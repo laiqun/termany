@@ -1732,11 +1732,11 @@ async function dirIfValid(dir: string | undefined): Promise<string | undefined> 
 
 /**
  * The directory a pane is "in" right now. `sessionIds` is a comma-separated
- * candidate chain — the pane itself first, then its anchors (see cwdCandidates
- * in the web app) — because a shell-less pane (git diff, files, web) has no
- * directory of its own and only its anchor chain does. For each candidate a
- * live shell's cwd wins, then an ACP agent's bound folder (agent panes have no
- * PTY for cwdForPid to read), then the last directory the sweep persisted.
+ * list of session ids tried in order — the client sends the pane a panel is
+ * attached to (a shell-less pane like agent history has no directory of its
+ * own). For each candidate a live shell's cwd wins, then an ACP agent's bound
+ * folder (agent panes have no PTY for cwdForPid to read), then the last
+ * directory the sweep persisted.
  * Anchors the endpoints that act on whatever the focused pane is looking at.
  */
 async function sessionCwd(sessionIds: string): Promise<string> {
@@ -1766,11 +1766,12 @@ async function gitPanelCwd(requested: string | null, sessionIds: string): Promis
 }
 
 /**
- * Where to start a new shell. `cwdFrom` is a comma-separated list of session
- * ids in priority order — the pane itself first, then the anchor chain it was
- * created from (see cwdCandidates in the web app). For each candidate a live
- * PTY's cwd wins, then its swept directory; the chain exists because an
- * anchor may never have opened a shell of its own. Failing all of that, a
+ * Where to start a new shell when the client didn't name a valid directory
+ * outright. `cwdFrom` is a comma-separated list of session ids in priority
+ * order (the AgentHistory resume flow still resolves a historical session's
+ * folder this way). For each candidate a live
+ * PTY's cwd wins, then its swept directory; the list exists because a
+ * candidate may never have opened a shell of its own. Failing all of that, a
  * restored pane lands in its own last-known directory; failing that, home.
  *
  * `followForeground` lets a live candidate's allowlisted foreground process
@@ -2002,7 +2003,12 @@ wss.on("connection", async (ws: WebSocket, req) => {
     return;
   }
 
-  const cwd = await resolveSpawnCwd(url.searchParams.get("cwdFrom"), sessionId, true);
+  // The tab's fixed working directory wins when it's still a real directory;
+  // anything else (no cwd, a since-deleted folder) falls through to the
+  // session-chain resolution — which also covers the AgentHistory resume flow.
+  const cwd =
+    (await dirIfValid(url.searchParams.get("cwd") ?? undefined)) ??
+    (await resolveSpawnCwd(url.searchParams.get("cwdFrom"), sessionId, true));
   if (closed) return;
 
   let pty: ReturnType<typeof spawn>;

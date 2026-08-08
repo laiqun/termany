@@ -1582,8 +1582,8 @@ html.tauri #root {
 .htab .agent-dot {
   margin-left: 1px;
 }
-.htab-rename {
-  width: 96px;
+.htab-cwd {
+  width: 160px;
   height: 18px;
   padding: 0 4px;
   background: var(--bg);
@@ -1593,6 +1593,9 @@ html.tauri #root {
   font: inherit;
   font-size: 12px;
   outline: none;
+}
+.htab-cwd.invalid {
+  border-color: var(--danger, #dc5b5b);
 }
 .htab-add,
 .mini {

@@ -76,12 +76,6 @@ export type Pane =
       id: string;
       title: string;
       view?: PaneView;
-      /** Directory anchor: the pane whose directory this leaf resolves its
-       *  own from while it has no shell of its own — the file tree's root,
-       *  an agent's working folder and a terminal's first-spawn cwd all
-       *  follow it. Set at creation to the pane the user was coming from;
-       *  anchors form a chain that is walked at spawn (see cwdCandidates). */
-      cwdFrom?: string;
       /** Explicit directory root requested by an external action, such as
        *  dropping a folder/file from Finder onto this pane. */
       filesRoot?: string;
@@ -114,9 +108,6 @@ export type Pane =
        *  runtime); "" is an explicit Chat-mode choice (Termany's lightweight
        *  BYOK chat endpoint). */
       agentRuntime?: string;
-      /** Working folder the user picked explicitly for the ACP agent. Unset
-       *  inherits the source terminal's live cwd (via cwdFrom). */
-      agentCwd?: string;
     }
   | {
       kind: "split";
@@ -142,8 +133,18 @@ export const HTAB_DRAG_MIME = "application/x-termany-htab";
 
 export interface HTab {
   id: string;
+  /** Legacy display name, no longer shown — the tab's label is derived from
+   *  its cwd (see htabLabel). Kept because persisted layouts carry it. */
   title: string;
   layout: Pane;
+  /**
+   * The tab's fixed working directory: where NEW panes in this tab spawn
+   * (terminal, files view, git diff, agent panes). Already-running shells are
+   * never affected. Undefined means "home", resolved server-side. Edited
+   * inline by double-clicking the tab and persisted with the layout; old
+   * layouts without it simply behave as home.
+   */
+  cwd?: string;
   /**
    * The canonical focused leaf (session id). The ring, keyboard target and all
    * pane actions derive from this same id; imperative DOM focus is never stored
@@ -279,7 +280,8 @@ interface State {
   addHTab: () => void;
   setActiveHTab: (id: string) => void;
   closeHTab: (id: string) => void;
-  renameHTab: (id: string, title: string) => void;
+  /** Set the tab's working directory; undefined resets it to home. */
+  setHTabCwd: (id: string, cwd?: string) => void;
   /**
    * Move a whole tab from one page to another (drag tab → tree page). The
    * terminal sessions live outside React keyed by id, so this just relocates the
@@ -311,7 +313,6 @@ interface State {
   setAgentModel: (leafId: string, model: string) => void;
   setAgentConfigOption: (leafId: string, agentId: string, configId: string, value: string) => void;
   setAgentRuntime: (leafId: string, runtimeId: string) => void;
-  setAgentCwd: (leafId: string, cwd: string) => void;
   /** Toggle a pane's body between its terminal and a file-tree browser. */
   togglePaneView: (leafId: string) => void;
   /** Set a pane's body explicitly. */
@@ -323,7 +324,7 @@ interface State {
   /** Forget a one-shot dropped file/tree target after it no longer applies. */
   clearPathInPane: (leafId: string) => void;
   /** Split the focused pane, creating a new leaf that opens directly in `view`. */
-  addPane: (view: PaneView, title?: string, cwdFrom?: string) => string | null;
+  addPane: (view: PaneView, title?: string) => string | null;
   /** Show the pane's cached local shell or an OpenSSH destination. */
   setPaneSshTarget: (leafId: string, target?: string, label?: string) => void;
   /** Close a specific pane; closes the whole tab if it was the last pane. */
@@ -364,8 +365,8 @@ const id = () => crypto.randomUUID();
 // Rearranging (movePane) doesn't change the count, so it isn't gated by this.
 const MAX_PANES_PER_TAB = 6;
 
-function makeLeaf(title = "pane 1", cwdFrom?: string): Pane & { kind: "leaf" } {
-  return { kind: "leaf", id: id(), title, cwdFrom };
+function makeLeaf(title = "pane 1"): Pane & { kind: "leaf" } {
+  return { kind: "leaf", id: id(), title };
 }
 
 /** Default pane labels are scoped to a tab and keep increasing even if an
@@ -379,9 +380,9 @@ function nextPaneTitle(layout: Pane): string {
   return `pane ${highest + 1}`;
 }
 
-function makeHTab(n: number, cwdFrom?: string): HTab {
-  const leaf = makeLeaf(undefined, cwdFrom);
-  return { id: id(), title: `tab ${n}`, layout: leaf, focused: leaf.id };
+function makeHTab(n: number, cwd?: string): HTab {
+  const leaf = makeLeaf(undefined);
+  return { id: id(), title: `tab ${n}`, layout: leaf, focused: leaf.id, cwd };
 }
 
 // --- pane layout helpers ---------------------------------------------------
@@ -621,26 +622,28 @@ function setSizesAt(pane: Pane, path: number[], sizes: number[]): Pane {
   };
 }
 
-function makeNode(title: string, cwdFrom?: string): TreeNode {
-  const h = makeHTab(1, cwdFrom);
+function makeNode(title: string, cwd?: string): TreeNode {
+  const h = makeHTab(1, cwd);
   return { id: id(), title, expanded: true, children: [], htabs: [h], activeHTab: h.id };
 }
 
 /**
- * Which pane's directory a tab "is in" — the focused leaf's own shell, or,
- * for any shell-less view, the pane that leaf anchors to.
- * A tab has no cwd of its own; only its leaves' shells do.
+ * Which pane's directory a tab "is in" for session-following panels (agent
+ * history scoping): the focused leaf's own session id — only a leaf's live
+ * shell has a directory; a shell-less pane simply has none.
  */
 function tabCwdSource(h: HTab): string {
   const leaf = findLeaf(h.layout, h.focused);
-  if (!leaf) return firstLeaf(h.layout);
-  return leaf.view && leaf.view !== "terminal" ? (leaf.cwdFrom ?? leaf.id) : leaf.id;
+  return leaf?.id ?? firstLeaf(h.layout);
 }
 
-/** Same idea one level up: a page's directory is its active tab's directory. */
-function nodeCwdSource(n: TreeNode): string | undefined {
+/**
+ * The working directory new tabs on a page inherit: the page's active tab's
+ * cwd. A tab's cwd is fixed on the tab itself, so this is a plain read.
+ */
+function nodeTabCwd(n: TreeNode): string | undefined {
   const h = n.htabs.find((t) => t.id === n.activeHTab) ?? n.htabs[0];
-  return h ? tabCwdSource(h) : undefined;
+  return h?.cwd;
 }
 
 function initialWorkspace(title: string): Workspace {
@@ -663,6 +666,15 @@ function updateNode(
     }
     return n;
   });
+}
+
+/** Return a new tree with the matching tab's cwd set, wherever the tab lives. */
+function setTabCwdInNodes(nodes: TreeNode[], tabId: string, cwd?: string): TreeNode[] {
+  return nodes.map((n) => ({
+    ...n,
+    htabs: n.htabs.map((h) => (h.id === tabId ? { ...h, cwd } : h)),
+    children: n.children.length ? setTabCwdInNodes(n.children, tabId, cwd) : n.children,
+  }));
 }
 
 function insertChild(nodes: TreeNode[], parentId: string, child: TreeNode): TreeNode[] {
@@ -1087,7 +1099,7 @@ export const useStore = create<State>((set, get) => ({
       const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
       if (!ws) return s;
       // Lands after the last root, so that's the page it opens next to.
-      const source = ws.roots.length ? nodeCwdSource(ws.roots[ws.roots.length - 1]) : undefined;
+      const source = ws.roots.length ? nodeTabCwd(ws.roots[ws.roots.length - 1]) : undefined;
       const node = makeNode(`page ${ws.roots.length + 1}`, source);
       return {
         workspaces: inActiveWs(s, (w) => ({ ...w, roots: [...w.roots, node] })),
@@ -1101,7 +1113,7 @@ export const useStore = create<State>((set, get) => ({
       if (!ws) return s;
       // A child page opens where its parent page is.
       const parent = findNode(ws.roots, parentId);
-      const child = makeNode("untitled", parent && nodeCwdSource(parent));
+      const child = makeNode("untitled", parent && nodeTabCwd(parent));
       return {
         workspaces: inActiveWs(s, (w) => ({
           ...w,
@@ -1252,9 +1264,9 @@ export const useStore = create<State>((set, get) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
         roots: updateNode(ws.roots, activeNodeId(s), (n) => {
-          // Follow the tab the user is coming from — which is also what the
+          // Inherit the tab the user is coming from — which is also what the
           // page's directory means, so the no-tabs case needs no separate path.
-          const h = makeHTab(n.htabs.length + 1, nodeCwdSource(n));
+          const h = makeHTab(n.htabs.length + 1, nodeTabCwd(n));
           return { ...n, htabs: [...n.htabs, h], activeHTab: h.id };
         }),
       })),
@@ -1268,15 +1280,11 @@ export const useStore = create<State>((set, get) => ({
       })),
     })),
 
-  renameHTab: (hId, title) =>
+  setHTabCwd: (hId, cwd) =>
     set((s) => ({
-      workspaces: inActiveWs(s, (ws) => ({
-        ...ws,
-        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
-          ...n,
-          htabs: n.htabs.map((h) => (h.id === hId ? { ...h, title } : h)),
-        })),
-      })),
+      // Global rather than active-page-scoped: the user may have switched
+      // pages (or workspaces) while editing the path inline.
+      workspaces: s.workspaces.map((ws) => ({ ...ws, roots: setTabCwdInNodes(ws.roots, hId, cwd) })),
     })),
 
   closeHTab: (hId) =>
@@ -1353,7 +1361,7 @@ export const useStore = create<State>((set, get) => ({
       });
       const created: TreeNode = {
         id: id(),
-        title: moving.title,
+        title: htabLabel(moving),
         expanded: true,
         children: [],
         htabs: [moving],
@@ -1373,7 +1381,7 @@ export const useStore = create<State>((set, get) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
-            const leaf = makeLeaf(nextPaneTitle(h.layout), h.focused);
+            const leaf = makeLeaf(nextPaneTitle(h.layout));
             const next = {
               ...h,
               layout: splitPane(h.layout, h.focused, dir, leaf),
@@ -1546,14 +1554,6 @@ export const useStore = create<State>((set, get) => ({
       })),
     })),
 
-  setAgentCwd: (leafId, cwd) =>
-    set((s) => ({
-      workspaces: updateLeafEverywhere(s.workspaces, leafId, (leaf) => ({
-        ...leaf,
-        agentCwd: cwd || undefined,
-      })),
-    })),
-
   togglePaneView: (leafId) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -1646,7 +1646,7 @@ export const useStore = create<State>((set, get) => ({
       })),
     })),
 
-  addPane: (view, title, cwdFrom) => {
+  addPane: (view, title) => {
     let created: string | null = null;
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
@@ -1655,11 +1655,9 @@ export const useStore = create<State>((set, get) => ({
           ...n,
           htabs: n.htabs.map((h) => {
             if (h.id !== n.activeHTab || paneCount(h.layout) >= MAX_PANES_PER_TAB) return h;
-            // Anchor to the pane that was focused at creation (or an explicit
-            // source the caller names), so a directory view knows what to show
-            // and a terminal knows where to spawn.
+            // The new pane spawns in its tab's cwd — see HTab.cwd.
             const leaf = {
-              ...makeLeaf(title ?? nextPaneTitle(h.layout), cwdFrom ?? h.focused),
+              ...makeLeaf(title ?? nextPaneTitle(h.layout)),
               view,
             };
             created = leaf.id;
@@ -1960,55 +1958,35 @@ export function activeNode(s: State): TreeNode | undefined {
 }
 
 /**
- * The session chain a repo-scoped panel (the git diff viewer) should follow,
- * comma-separated for the server's sessionCwd: the focused leaf first — or,
- * for a shell-less files/git/web leaf, its anchor pane, the same rule
- * tabCwdSource applies everywhere else — then the rest of the anchor chain,
- * so an anchor that is itself shell-less still resolves to a directory.
+ * The session a repo-scoped panel (the agent history view) should follow:
+ * the focused leaf's own id. The server resolves it to the leaf's live
+ * directory; a shell-less pane simply has none and the server falls back to
+ * home.
  */
 export function focusedCwdSession(s: State): string | undefined {
   const h = activeHtab(s);
-  const source = h ? tabCwdSource(h) : undefined;
-  return source ? cwdCandidates(s, source).join(",") : undefined;
-}
-
-/** Find a leaf by id anywhere — anchors can point across pages and workspaces. */
-function findLeafGlobal(s: State, leafId: string): (Pane & { kind: "leaf" }) | undefined {
-  const inNodes = (nodes: TreeNode[]): (Pane & { kind: "leaf" }) | undefined => {
-    for (const n of nodes) {
-      for (const h of n.htabs) {
-        const hit = findLeaf(h.layout, leafId);
-        if (hit) return hit;
-      }
-      const hit = inNodes(n.children);
-      if (hit) return hit;
-    }
-    return undefined;
-  };
-  for (const ws of s.workspaces) {
-    const hit = inNodes(ws.roots);
-    if (hit) return hit;
-  }
-  return undefined;
+  return h ? tabCwdSource(h) : undefined;
 }
 
 /**
- * Ordered cwd candidates for spawning a shell (or resolving an agent's
- * folder): the pane itself first — its live shell or last-known directory
- * always beats inheritance — then its anchor chain. The chain exists because
- * an anchor may itself never have opened a shell; the server tries each
- * candidate in turn and uses the first that resolves to a directory.
+ * The working directory of the tab a leaf lives in — where NEW panes in that
+ * tab spawn (terminal, files view, git diff, agent). Undefined means "home",
+ * resolved server-side.
  */
-export function cwdCandidates(s: State, leafId: string): string[] {
-  const out = [leafId];
-  const seen = new Set(out);
-  let cur = findLeafGlobal(s, leafId)?.cwdFrom;
-  while (cur && !seen.has(cur) && out.length < 8) {
-    out.push(cur);
-    seen.add(cur);
-    cur = findLeafGlobal(s, cur)?.cwdFrom;
-  }
-  return out;
+export function tabCwdForLeaf(s: State, leafId: string): string | undefined {
+  return findLeafHome(s.workspaces, leafId)?.htab.cwd;
+}
+
+/**
+ * A tab's display label: the last path segment of its working directory
+ * (both `/` and `\` separators, trailing ones ignored), or "~" when the tab
+ * has no cwd of its own — home. Tabs are no longer renamed; the directory
+ * is the name.
+ */
+export function htabLabel(htab: HTab): string {
+  if (!htab.cwd) return "~";
+  const segments = htab.cwd.split(/[\\/]+/).filter(Boolean);
+  return segments[segments.length - 1] ?? htab.cwd;
 }
 
 export function activeHtab(s: State): HTab | undefined {

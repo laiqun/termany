@@ -14,7 +14,7 @@ import {
 } from "../terminal/manager";
 import { subscribeDesktopFileDrops } from "../terminal/desktopFileDrop";
 import { reconcileAttachedTerminalFocus } from "../terminal/focusHandoff";
-import { activeHtab, cwdCandidates, useStore } from "../state/store";
+import { activeHtab, tabCwdForLeaf, useStore } from "../state/store";
 import { openLocalPathsInSession } from "../terminal/openLocalPath";
 import { ChevronIcon } from "./icons";
 
@@ -80,10 +80,12 @@ export function TerminalPane({ id, sshTarget }: { id: string; sshTarget?: string
     const host = hostRef.current;
     if (!host) return;
     const state = useStore.getState();
+    // A new shell spawns in its tab's fixed working directory (undefined =
+    // home, resolved server-side); already-running shells are never moved.
     attachSession(
       sessionId,
       host,
-      cwdCandidates(state, id),
+      tabCwdForLeaf(state, id),
       sshTarget,
       id,
     );

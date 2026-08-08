@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { apiPath } from "../api";
 import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
 import { isTauri } from "../env";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { withShortcut } from "../keybindings";
-import { useStore, activeNode, type Pane } from "../state/store";
+import { useStore, activeNode, htabLabel, type Pane } from "../state/store";
 import { titleBarBackground, useTitleBarGesture } from "../titleBar";
 import {
   acknowledgeAgentActivities,
@@ -19,7 +20,8 @@ import { ChevronIcon, CloseIcon, PanelIcon, PanelRightIcon, PlusIcon } from "./i
 /**
  * Top tab strip. Notion-style, the workspace controls sit at the very left,
  * before the first tab: collapse the sidebar, then step prev/next workspace.
- * Tabs are double-click-to-rename.
+ * A tab's label is its working directory's name; double-clicking the tab
+ * edits that directory inline.
  */
 function leafIds(pane: Pane): string[] {
   return pane.kind === "leaf" ? [pane.id] : pane.children.flatMap(leafIds);
@@ -34,7 +36,7 @@ export function HTabBar() {
   const setActiveHTab = useStore((s) => s.setActiveHTab);
   const addHTab = useStore((s) => s.addHTab);
   const closeHTab = useStore((s) => s.closeHTab);
-  const renameHTab = useStore((s) => s.renameHTab);
+  const setHTabCwd = useStore((s) => s.setHTabCwd);
   const moveHTab = useStore((s) => s.moveHTab);
   const moveHTabToNewNode = useStore((s) => s.moveHTabToNewNode);
   const collapsed = useStore((s) => s.sidebarCollapsed);
@@ -46,6 +48,7 @@ export function HTabBar() {
   const solo = useStore((s) => s.workspaces.length < 2);
 
   const [editing, setEditing] = useState<string | null>(null);
+  const [cwdInvalid, setCwdInvalid] = useState(false);
   const suppressClickRef = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const titleBar = useTitleBarGesture();
@@ -86,14 +89,43 @@ export function HTabBar() {
     </div>
   );
 
+  // Double-click edits the tab's working directory inline. The typed path is
+  // validated via the file-tree listing endpoint, which also expands a
+  // leading "~" and returns the normalized absolute path; an invalid path
+  // flags the input red (Enter keeps it open) and is dropped on blur. An
+  // empty input resets the tab to the home directory.
+  const commitTabCwd = async (tabId: string, raw: string): Promise<boolean> => {
+    const value = raw.trim();
+    if (!value) {
+      setHTabCwd(tabId, undefined);
+      return true;
+    }
+    try {
+      const res = await fetch(apiPath(`/api/fs/list?path=${encodeURIComponent(value)}`));
+      if (!res.ok) return false;
+      const data = (await res.json()) as { path?: string };
+      if (!data.path) return false;
+      setHTabCwd(tabId, data.path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const stopEditing = () => {
+    setEditing(null);
+    setCwdInvalid(false);
+  };
+
   const startTabDrag = (tabId: string, e: React.PointerEvent<HTMLDivElement>) => {
-    if (!node || e.button !== 0 || editing === tabId) return;
+    if (!node || e.button !== 0) return;
     if ((e.target as HTMLElement).closest("button,input")) return;
     const fromNodeId = node.id;
     const pointerId = e.pointerId;
     const startX = e.clientX;
     const startY = e.clientY;
-    const title = node.htabs.find((h) => h.id === tabId)?.title ?? "tab";
+    const tab = node.htabs.find((h) => h.id === tabId);
+    const title = tab ? htabLabel(tab) : "tab";
     let active = false;
     let targetNodeId: string | null = null;
     // Dropped inside the tree but not on a page → the tab becomes its own page.
@@ -214,24 +246,32 @@ export function HTabBar() {
               })}
               {editing === h.id ? (
                 <input
-                  className="htab-rename"
+                  className={`htab-cwd${cwdInvalid ? " invalid" : ""}`}
                   autoFocus
-                  defaultValue={h.title}
+                  defaultValue={h.cwd ?? ""}
+                  placeholder="~"
+                  spellCheck={false}
                   {...ime.props}
                   onClick={(e) => e.stopPropagation()}
+                  onDoubleClick={(e) => e.stopPropagation()}
                   onBlur={(e) => {
-                    renameHTab(h.id, e.target.value.trim() || h.title);
-                    setEditing(null);
+                    // Blur commits a valid path, cancels an invalid one.
+                    void commitTabCwd(h.id, e.target.value);
+                    stopEditing();
                   }}
                   onKeyDown={(e) => {
                     if (ime.handled(e)) return; // the IME is still using this key
-                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                    else if (e.key === "Escape") setEditing(null);
+                    if (e.key === "Enter") {
+                      void commitTabCwd(h.id, (e.target as HTMLInputElement).value).then((ok) => {
+                        if (ok) stopEditing();
+                        else setCwdInvalid(true);
+                      });
+                    } else if (e.key === "Escape") stopEditing();
                   }}
                 />
               ) : (
                 <>
-                  <span className="htab-title">{h.title}</span>
+                  <span className="htab-title" title={h.cwd}>{htabLabel(h)}</span>
                   <button
                     className="htab-close"
                     title={withShortcut(t("common.close"), "closePane")}

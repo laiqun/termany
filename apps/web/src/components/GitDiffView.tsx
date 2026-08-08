@@ -482,11 +482,10 @@ function DeleteBranchDialog({
 }
 
 /**
- * Git diff viewer for the repo containing `session`'s cwd. `session` is a
- * comma-separated candidate chain (the pane, then its anchors — see
- * cwdCandidates), which the server walks to the first resolvable directory.
- * The toolbar's address bar shows where the panel landed and accepts a typed
- * path to override it (empty reverts to following the session).
+ * Git diff viewer for the repo containing the tab's working directory
+ * (`tabCwd`; unset resolves server-side to home). The toolbar's address bar
+ * shows where the panel landed and accepts a typed path to override it
+ * (empty reverts to the tab's directory).
  * Renders as a pane view (the SideRail branch button) or inside the ⌘⌥G
  * modal — same body, the variant only changes the frame. Files are listed
  * GitHub-style: one expandable card each, with its unified diff and old/new
@@ -497,11 +496,13 @@ function DeleteBranchDialog({
  * from the merge base — see /api/git/overview.
  */
 export function GitDiffView({
-  session,
+  tabCwd,
   variant,
   viewId,
 }: {
-  session: string;
+  /** The tab's fixed working directory — the explicit dir every request
+   *  names, which the server gives priority over any session resolution. */
+  tabCwd?: string;
   variant: "pane" | "modal";
   /** Stable identity for the cached view state — the leaf id for a pane. */
   viewId: string;
@@ -512,7 +513,7 @@ export function GitDiffView({
   const [overview, setOverview] = useState<Overview | null | undefined>(cached?.overview);
   const [base, setBase] = useState<string | Auto>(cached?.base ?? null);
   const [worktree, setWorktree] = useState<string | Auto>(cached?.worktree ?? null);
-  // Directory the user typed into the address bar; null follows the session.
+  // Directory the user typed into the address bar; null follows the tab's cwd.
   const [cwd, setCwd] = useState<string | Auto>(cached?.cwd ?? null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(cached?.collapsed ?? {});
   const [diffs, setDiffs] = useState<Record<string, DiffPayload>>(cached?.diffs ?? {});
@@ -524,10 +525,11 @@ export function GitDiffView({
 
   const load = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ session });
+      const params = new URLSearchParams();
+      const dir = cwd ?? tabCwd; // the address bar's pick wins over the tab's cwd
+      if (dir) params.set("cwd", dir);
       if (base !== null) params.set("base", base);
       if (worktree !== null) params.set("worktree", worktree);
-      if (cwd !== null) params.set("cwd", cwd);
       const r = await fetch(apiPath(`/api/git/overview?${params}`));
       if (!r.ok) throw new Error(String(r.status));
       setOverview((await r.json()) as Overview);
@@ -535,7 +537,7 @@ export function GitDiffView({
     } catch {
       setOverview(null);
     }
-  }, [session, base, worktree, cwd]);
+  }, [tabCwd, base, worktree, cwd]);
 
   useEffect(() => {
     load();
@@ -576,7 +578,7 @@ export function GitDiffView({
   /**
    * Point the panel at a typed directory (the address bar). Everything scoped
    * to the old directory goes back to automatic for the same reason as a
-   * worktree switch; null hands the panel back to following the session.
+   * worktree switch; null hands the panel back to the tab's cwd.
    */
   const selectCwd = useCallback((next: string | Auto) => {
     setCwd(next);
@@ -588,7 +590,7 @@ export function GitDiffView({
 
   /**
    * What the address bar shows: the user's pick while one stands, else the
-   * repo root in a repo (the panel's real scope — the session's cwd may be a
+   * repo root in a repo (the panel's real scope — the tab's cwd may be a
    * subdirectory of it), else the directory the server resolved and found
    * repo-less.
    */
@@ -654,9 +656,8 @@ export function GitDiffView({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            session,
             base: shownBase || undefined,
-            cwd: cwd ?? undefined,
+            cwd: cwd ?? tabCwd ?? undefined,
             worktree: overview?.repo ? overview.root : undefined,
             files: expandedRows.map((row) => ({
               path: row.path,
@@ -678,7 +679,7 @@ export function GitDiffView({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revision, expandedKeys, session, shownBase, cwd]);
+  }, [revision, expandedKeys, tabCwd, shownBase, cwd]);
 
   const groups = useMemo(() => {
     const order: Section[] = ["changed", "staged", "unstaged", "untracked"];
@@ -745,19 +746,20 @@ export function GitDiffView({
       const r = await fetch(apiPath("/api/git/worktrees"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session, cwd: cwd ?? undefined, branch, base: baseRef || undefined }),
+        body: JSON.stringify({ cwd: cwd ?? tabCwd ?? undefined, branch, base: baseRef || undefined }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error ?? String(r.status));
       await load();
     },
-    [session, cwd, load],
+    [tabCwd, cwd, load],
   );
 
   const removeWorktreeByPath = useCallback(
     async (wt: GitWorktree, force: boolean) => {
-      const params = new URLSearchParams({ session, worktree: wt.path });
-      if (cwd) params.set("cwd", cwd);
+      const params = new URLSearchParams({ worktree: wt.path });
+      const dir = cwd ?? tabCwd;
+      if (dir) params.set("cwd", dir);
       if (force) params.set("force", "1");
       const r = await fetch(apiPath(`/api/git/worktrees?${params}`), { method: "DELETE" });
       const data = await r.json().catch(() => ({}));
@@ -770,13 +772,14 @@ export function GitDiffView({
       }
       await load();
     },
-    [session, cwd, overview, worktreeList, selectWorktree, load],
+    [tabCwd, cwd, overview, worktreeList, selectWorktree, load],
   );
 
   const deleteBranchByName = useCallback(
     async (name: string, force: boolean) => {
-      const params = new URLSearchParams({ session, branch: name });
-      if (cwd) params.set("cwd", cwd);
+      const params = new URLSearchParams({ branch: name });
+      const dir = cwd ?? tabCwd;
+      if (dir) params.set("cwd", dir);
       if (force) params.set("force", "1");
       const r = await fetch(apiPath(`/api/git/branches?${params}`), { method: "DELETE" });
       const data = await r.json().catch(() => ({}));
@@ -790,7 +793,7 @@ export function GitDiffView({
       if (name === shownBase) setBase(null);
       await load();
     },
-    [session, cwd, shownBase, load],
+    [tabCwd, cwd, shownBase, load],
   );
 
   return (
@@ -801,8 +804,8 @@ export function GitDiffView({
           <span>{overview && overview.repo ? overview.branch : t("gitdiff.title")}</span>
         </span>
         {/* The directory the panel reads from, editable so a wrong guess (the
-            session-followed default) can be corrected in place. Empty + Enter
-            hands it back to following the session. */}
+            tab's cwd by default) can be corrected in place. Empty + Enter
+            hands it back to the tab's cwd. */}
         <input
           className="gd-dir"
           {...ime.props}

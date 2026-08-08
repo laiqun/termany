@@ -12,7 +12,7 @@ import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
 import { ACTIONS, matchChord } from "./keybindings";
-import { activeHtab, activeNode, focusedCwdSession, leafIds, useStore } from "./state/store";
+import { activeHtab, activeNode, leafIds, useStore } from "./state/store";
 import { openNewWindow } from "./state/windows";
 import {
   adjustTerminalFontSize,
@@ -98,7 +98,7 @@ export function App() {
   const [findOpen, setFindOpen] = useState(false);
   const settingsOpen = settingsSection !== null;
   const focusedPane = htab?.focused;
-  const gitSession = useStore(focusedCwdSession);
+  const gitTabCwd = htab?.cwd;
 
   // The find bar targets one pane; if focus moves elsewhere, it would be
   // searching a terminal the user is no longer looking at — close it instead.
@@ -392,7 +392,7 @@ export function App() {
       {searchOpen && (
         <SearchPalette onClose={() => setSearchOpen(false)} onRunAction={runAction} />
       )}
-      {gitDiffOpen && <GitDiff session={gitSession} onClose={() => setGitDiffOpen(false)} />}
+      {gitDiffOpen && <GitDiff tabCwd={gitTabCwd} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>
   );

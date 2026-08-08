@@ -792,8 +792,9 @@ function emptyFileTreeState(): FileTreeState {
 const stateCache = new Map<string, FileTreeState>();
 
 /**
- * A pane's alternative body: browse the filesystem rooted at `sessionId`'s
- * live shell cwd (resolved server-side — see /api/fs/list). By default it's
+ * A pane's alternative body: browse the filesystem rooted at the tab's
+ * working directory (or the pane's own session cwd when the tab has none —
+ * resolved server-side, see /api/fs/list). By default it's
  * just the tree, full width. Clicking a file opens a preview alongside the
  * tree (two columns) right here in the pane — it does NOT take over the tab,
  * so the terminals around it stay usable; the preview's close button returns
@@ -803,19 +804,15 @@ const stateCache = new Map<string, FileTreeState>();
  */
 export function FileTree({
   sessionId,
-  initialCwdFrom,
+  initialCwd,
   explicitRoot,
   explicitSelected,
 }: {
   sessionId: string;
-  /** A files-view pane has no PTY session of its own to resolve a live cwd
-   *  from, so the root directory is instead resolved from a comma-separated
-   *  candidate chain: this pane first, then the anchor chain it was created
-   *  from (see cwdCandidates in state/store.ts). The chain leads with
-   *  `sessionId` itself, so toggling an EXISTING terminal pane to its
-   *  file-tree view (which does have a live session) still opens rooted at
-   *  that same pane's own cwd, as before. */
-  initialCwdFrom?: string;
+  /** The tab's fixed working directory acts as the explicit initial root.
+   *  When unset, the root is resolved from the pane's own session instead —
+   *  a live terminal's cwd, else the server's home fallback. */
+  initialCwd?: string;
   explicitRoot?: string;
   explicitSelected?: string;
 }) {
@@ -940,14 +937,15 @@ export function FileTree({
       .catch((e) => setRootError(e instanceof Error ? e.message : String(e)));
   }, [sessionId]);
 
-  // Resolve root from the pane's LIVE session cwd — how a FRESH entry into
-  // files view picks where to start (a remount re-opens its cached root
-  // instead; see the mount effect). Same path as the tree already shows ->
-  // just refresh its listing in place; anywhere else -> start the tree over
-  // there.
+  // Resolve the root — the tab's cwd when set, else the pane's own session —
+  // how a FRESH entry into files view picks where to start (a remount
+  // re-opens its cached root instead; see the mount effect). Same path as
+  // the tree already shows -> just refresh its listing in place; anywhere
+  // else -> start the tree over there.
   const resolveRootFromSession = useCallback(() => {
     setRootError(null);
-    fetch(`${apiUrl()}/api/fs/list?${new URLSearchParams({ session: initialCwdFrom ?? sessionId })}`)
+    const params: Record<string, string> = initialCwd ? { path: initialCwd } : { session: sessionId };
+    fetch(`${apiUrl()}/api/fs/list?${new URLSearchParams(params)}`)
       .then(async (res) => {
         const body = await res.json();
         if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
@@ -963,7 +961,7 @@ export function FileTree({
         }
       })
       .catch((e) => setRootError(e instanceof Error ? e.message : String(e)));
-  }, [sessionId, initialCwdFrom]);
+  }, [sessionId, initialCwd]);
 
   // Mirror every render's state into the cache, keyed by this pane's session —
   // NOT scoped to a dependency list, since ANY of the pieces changing should

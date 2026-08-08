@@ -6,7 +6,7 @@ import { GitDiffView } from "./GitDiffView";
  * quick look without giving up a pane. The pane view is the primary one — see
  * GitDiffView, which both share.
  */
-export function GitDiff({ session, onClose }: { session?: string; onClose: () => void }) {
+export function GitDiff({ tabCwd, onClose }: { tabCwd?: string; onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -18,7 +18,7 @@ export function GitDiff({ session, onClose }: { session?: string; onClose: () =>
   return (
     <div className="search-backdrop" onClick={onClose}>
       <div className="usage-modal" onClick={(e) => e.stopPropagation()}>
-        <GitDiffView session={session ?? ""} variant="modal" viewId="modal" />
+        <GitDiffView tabCwd={tabCwd} variant="modal" viewId="modal" />
       </div>
     </div>
   );
