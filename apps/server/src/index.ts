@@ -1214,6 +1214,43 @@ const http = createServer((req, res) => {
     return;
   }
 
+  if (req.method === "POST" && reqUrl.pathname === "/api/fs/mkdir") {
+    readJson(req)
+      .then(async (body) => {
+        const requested = String(body?.path ?? "");
+        if (!requested) throw new Error("path is required");
+        await fs.promises.mkdir(path.resolve(requested));
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/fs/rename") {
+    readJson(req)
+      .then(async (body) => {
+        const from = String(body?.path ?? "");
+        const to = String(body?.newPath ?? "");
+        if (!from || !to) throw new Error("path and newPath are required");
+        await fs.promises.rename(path.resolve(from), path.resolve(to));
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/fs/delete") {
+    readJson(req)
+      .then(async (body) => {
+        const requested = String(body?.path ?? "");
+        if (!requested) throw new Error("path is required");
+        await fs.promises.rm(path.resolve(requested), { recursive: true });
+        json(200, { ok: true });
+      })
+      .catch(fail);
+    return;
+  }
+
   // Locally installed CodexThemes packages (~/.codexthemes/themes): list each
   // package's manifest plus artwork/preview file paths, so Appearance can show
   // a one-click gallery. Images are served through the existing /api/fs/media.

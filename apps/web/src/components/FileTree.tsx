@@ -3,6 +3,7 @@ import { CodeEditor } from "./CodeEditor";
 import { DocxPreview, PptxPreview, XlsxPreview } from "./OfficePreview";
 import { apiUrl } from "../api";
 import { useImeGuard } from "../imeGuard";
+import { useNativeOccluder } from "../nativeViewOcclusion";
 import { revealPath } from "../openExternal";
 import { activeHtab, findLeaf, useStore } from "../state/store";
 import { sendCommand } from "../terminal/manager";
@@ -365,7 +366,7 @@ function FileTreeRow({
   selectedPath: string | null;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
-  onContextMenu: (e: React.MouseEvent, path: string) => void;
+  onContextMenu: (e: React.MouseEvent, path: string, isDir: boolean) => void;
 }) {
   const isOpen = entry.isDir && expanded.has(path);
   const state = dirs[path];
@@ -376,7 +377,7 @@ function FileTreeRow({
         className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""}`}
         style={{ paddingLeft: 4 + depth * 9 }}
         onClick={() => (entry.isDir ? onToggleDir(path) : onSelectFile(path))}
-        onContextMenu={(e) => onContextMenu(e, path)}
+        onContextMenu={(e) => onContextMenu(e, path, entry.isDir)}
       >
         <span className="file-tree-twisty">
           {entry.isDir && <ChevronIcon dir={isOpen ? "down" : "right"} />}
@@ -413,6 +414,163 @@ function FileTreeRow({
           />
         ))}
     </>
+  );
+}
+
+/**
+ * Naming prompt for the tree's "New File..." / "New Folder..." / "Rename..."
+ * context-menu items. Reuses the ws-dialog styles — the same shape as the
+ * workspace dialog, minus the emoji picker. `onConfirm` performs the operation
+ * and resolves with an error message to show (keeping the dialog open) or
+ * null on success.
+ */
+function NewEntryDialog({
+  kind,
+  parent,
+  initial = "",
+  onConfirm,
+  onClose,
+}: {
+  kind: "file" | "folder" | "rename";
+  parent: string;
+  initial?: string;
+  onConfirm: (name: string) => Promise<string | null>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const ime = useImeGuard();
+  const backdropRef = useNativeOccluder<HTMLDivElement>("file-tree-new-entry");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Rename starts with the current name filled in and its stem selected (the
+  // extension left out), the way Finder/Explorer do it.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el || !initial) return;
+    el.focus();
+    const dot = initial.lastIndexOf(".");
+    el.setSelectionRange(0, dot > 0 ? dot : initial.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed || busy) return;
+    if (/[\\/]/.test(trimmed)) {
+      setError("Name cannot contain slashes.");
+      return;
+    }
+    if (trimmed === initial) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    void onConfirm(trimmed).then((err) => {
+      setBusy(false);
+      if (err) setError(err);
+    });
+  };
+
+  const labels =
+    kind === "rename"
+      ? { placeholder: "New name", confirm: "Rename" }
+      : kind === "file"
+        ? { placeholder: "File name", confirm: "Create File" }
+        : { placeholder: "Folder name", confirm: "Create Folder" };
+
+  return (
+    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
+      <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="ws-dialog-row">
+          <input
+            {...ime.props}
+            ref={inputRef}
+            className="ws-dialog-input"
+            autoFocus
+            value={name}
+            placeholder={labels.placeholder}
+            spellCheck={false}
+            onChange={(e) => {
+              setName(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={(e) => {
+              if (ime.handled(e)) return;
+              if (e.key === "Enter") submit();
+              else if (e.key === "Escape") onClose();
+            }}
+          />
+        </div>
+        <div className="file-tree-new-entry-parent" title={parent}>
+          in {parent}
+        </div>
+        {error && <div className="file-tree-message file-preview-error">{error}</div>}
+        <div className="ws-dialog-actions">
+          <button className="ws-dialog-btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="ws-dialog-btn primary" onClick={submit} disabled={!name.trim() || busy}>
+            {labels.confirm}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Confirmation for the tree's "Delete..." context-menu item. Deleting is
+ * permanent (no trash round-trip — the server's fs.rm), so folders spell out
+ * that their contents go too. `onConfirm` resolves with an error message to
+ * show (keeping the dialog open) or null on success.
+ */
+function DeleteConfirmDialog({
+  path,
+  isDir,
+  onConfirm,
+  onClose,
+}: {
+  path: string;
+  isDir: boolean;
+  onConfirm: () => Promise<string | null>;
+  onClose: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const backdropRef = useNativeOccluder<HTMLDivElement>("file-tree-delete");
+
+  const submit = () => {
+    if (busy) return;
+    setBusy(true);
+    void onConfirm().then((err) => {
+      setBusy(false);
+      if (err) setError(err);
+    });
+  };
+
+  return (
+    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
+      <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="file-tree-delete-message">
+          Delete {isDir ? "folder" : "file"} <strong>{basename(path)}</strong>?
+          {isDir && " Everything in it will be permanently deleted."}
+        </div>
+        <div className="file-tree-new-entry-parent" title={path}>
+          {path}
+        </div>
+        {error && <div className="file-tree-message file-preview-error">{error}</div>}
+        <div className="ws-dialog-actions">
+          <button className="ws-dialog-btn" onClick={onClose} autoFocus>
+            Cancel
+          </button>
+          <button className="ws-dialog-btn primary" onClick={submit} disabled={busy}>
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -685,9 +843,16 @@ export function FileTree({
   // usable, and can always be dragged wider.
   const [treeWidth, setTreeWidth] = useState(180);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
-  // Right-click context menu on a tree row (file or folder): the only item
-  // today is "Copy Relative Path" — relative to the tree's current root.
-  const [menu, setMenu] = useState<{ x: number; y: number; path: string } | null>(null);
+  // Right-click context menu on a tree row (file or folder) or the blank
+  // tail strip at the bottom of the list. Rows get "New File..." /
+  // "New Folder..." (folders only), "Rename...", "Delete...", and the copy
+  // items; the tail targets the root and shows ONLY the two "New" items.
+  // "New"/"Rename" open the NewEntryDialog, "Delete" the DeleteConfirmDialog.
+  const [menu, setMenu] = useState<{ x: number; y: number; path: string; isDir: boolean; tail: boolean } | null>(null);
+  const [newEntry, setNewEntry] = useState<
+    { parent: string; kind: "file" | "folder" } | { parent: string; kind: "rename"; target: string }
+  | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ path: string; isDir: boolean } | null>(null);
   const splitRef = useRef<HTMLDivElement>(null);
 
   // Too narrow for two useful columns -> drop to one: the preview alone,
@@ -960,10 +1125,127 @@ export function FileTree({
 
   const rootState = root ? dirs[root] : undefined;
 
-  const openRowMenu = (e: React.MouseEvent, path: string) => {
+  const openRowMenu = (e: React.MouseEvent, path: string, isDir: boolean) => {
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, path });
+    setMenu({ x: e.clientX, y: e.clientY, path, isDir, tail: false });
   };
+
+  // The blank strip at the end of the scroll list: right-clicking it means
+  // "create something here", i.e. at the tree's root.
+  const openTailMenu = (e: React.MouseEvent) => {
+    if (!root) return;
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, path: root, isDir: true, tail: true });
+  };
+
+  // Create an empty file (via the existing fs/write) or a folder (fs/mkdir)
+  // under `parent`, then expand + re-list the parent so the new entry shows.
+  // Resolves with an error message for the dialog, or null on success.
+  const createEntry = async (kind: "file" | "folder", parent: string, name: string): Promise<string | null> => {
+    const path = `${parent}/${name}`;
+    try {
+      const res = await fetch(
+        kind === "file" ? `${apiUrl()}/api/fs/write` : `${apiUrl()}/api/fs/mkdir`,
+        {
+          method: kind === "file" ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(kind === "file" ? { path, content: "" } : { path }),
+        },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      // The root isn't in `expanded` (its rows render unconditionally), so
+      // adding it is a harmless no-op; for a collapsed folder row this makes
+      // the new child visible.
+      setExpanded((prev) => new Set(prev).add(parent));
+      loadDir(parent);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+
+  // Rename a file or folder in place, then fix up everything keyed by the old
+  // path: the expanded set and dir cache follow the folder's whole subtree,
+  // and an open preview of a file under it re-loads from the new path.
+  const renameEntry = async (from: string, name: string): Promise<string | null> => {
+    const parent = dirname(from);
+    const to = `${parent}/${name}`;
+    try {
+      const res = await fetch(`${apiUrl()}/api/fs/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: from, newPath: to }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      const remap = (p: string) => (p === from ? to : p.startsWith(`${from}/`) ? to + p.slice(from.length) : p);
+      setExpanded((prev) => new Set([...prev].map(remap)));
+      setDirs((d) => {
+        const next = { ...d };
+        for (const k of Object.keys(next)) if (k === from || k.startsWith(`${from}/`)) delete next[k];
+        return next;
+      });
+      loadDir(parent);
+      // Re-fetch any expanded directory under the renamed subtree — its cache
+      // entry was just dropped above.
+      expanded.forEach((p) => {
+        if (p === from || p.startsWith(`${from}/`)) loadDir(remap(p));
+      });
+      if (selected && (selected.path === from || selected.path.startsWith(`${from}/`))) {
+        selectFile(remap(selected.path));
+      }
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+
+  // Permanently delete a file or folder, then drop everything keyed by its
+  // path: expanded/dirs entries under it go away, an open preview of anything
+  // inside it closes, and the parent re-lists.
+  const deleteEntry = async (path: string): Promise<string | null> => {
+    try {
+      const res = await fetch(`${apiUrl()}/api/fs/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      const under = (p: string) => p === path || p.startsWith(`${path}/`);
+      setExpanded((prev) => new Set([...prev].filter((p) => !under(p))));
+      setDirs((d) => {
+        const next = { ...d };
+        for (const k of Object.keys(next)) if (under(k)) delete next[k];
+        return next;
+      });
+      if (selected && under(selected.path)) closePreview();
+      loadDir(dirname(path));
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  };
+
+  // Keep the context menu inside the viewport: near the window's bottom/right
+  // edge the click point alone would put most of the menu off-screen. Measured
+  // after first render (menu size depends on which items apply), then nudged.
+  const menuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!menu || !el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const x = Math.max(4, Math.min(menu.x, window.innerWidth - width - 4));
+    const y = Math.max(4, Math.min(menu.y, window.innerHeight - height - 4));
+    if (x !== menu.x || y !== menu.y) setMenu({ ...menu, x, y });
+  }, [menu]);
 
   // Escape closes the menu; plain clicks are caught by the backdrop below.
   useEffect(() => {
@@ -1004,15 +1286,91 @@ export function FileTree({
           setMenu(null);
         }}
       />
-      <div className="file-tree-menu" style={{ left: menu.x, top: menu.y }}>
-        <button className="file-tree-menu-item" onClick={copyRelativePath}>
-          Copy Relative Path
-        </button>
-        <button className="file-tree-menu-item" onClick={copyAbsolutePath}>
-          Copy Path
-        </button>
+      <div className="file-tree-menu" ref={menuRef} style={{ left: menu.x, top: menu.y }}>
+        {menu.isDir && (
+          <>
+            <button
+              className="file-tree-menu-item"
+              onClick={() => {
+                setNewEntry({ parent: menu.path, kind: "file" });
+                setMenu(null);
+              }}
+            >
+              New File...
+            </button>
+            <button
+              className="file-tree-menu-item"
+              onClick={() => {
+                setNewEntry({ parent: menu.path, kind: "folder" });
+                setMenu(null);
+              }}
+            >
+              New Folder...
+            </button>
+            <div className="file-tree-menu-sep" />
+          </>
+        )}
+        {!menu.tail && (
+          <>
+            <button
+              className="file-tree-menu-item"
+              onClick={() => {
+                setNewEntry({ parent: dirname(menu.path), kind: "rename", target: menu.path });
+                setMenu(null);
+              }}
+            >
+              Rename...
+            </button>
+            <button
+              className="file-tree-menu-item"
+              onClick={() => {
+                setPendingDelete({ path: menu.path, isDir: menu.isDir });
+                setMenu(null);
+              }}
+            >
+              Delete...
+            </button>
+            <div className="file-tree-menu-sep" />
+            <button className="file-tree-menu-item" onClick={copyRelativePath}>
+              Copy Relative Path
+            </button>
+            <button className="file-tree-menu-item" onClick={copyAbsolutePath}>
+              Copy Path
+            </button>
+          </>
+        )}
       </div>
     </>
+  );
+
+  const deleteUi = pendingDelete && (
+    <DeleteConfirmDialog
+      path={pendingDelete.path}
+      isDir={pendingDelete.isDir}
+      onClose={() => setPendingDelete(null)}
+      onConfirm={async () => {
+        const err = await deleteEntry(pendingDelete.path);
+        if (!err) setPendingDelete(null);
+        return err;
+      }}
+    />
+  );
+
+  const newEntryUi = newEntry && (
+    <NewEntryDialog
+      kind={newEntry.kind}
+      parent={newEntry.parent}
+      initial={newEntry.kind === "rename" ? basename(newEntry.target) : ""}
+      onClose={() => setNewEntry(null)}
+      onConfirm={async (name) => {
+        const err =
+          newEntry.kind === "rename"
+            ? await renameEntry(newEntry.target, name)
+            : await createEntry(newEntry.kind, newEntry.parent, name);
+        if (!err) setNewEntry(null);
+        return err;
+      }}
+    />
   );
 
   const treeUi = (
@@ -1083,6 +1441,9 @@ export function FileTree({
               onContextMenu={openRowMenu}
             />
           ))}
+        {/* Blank strip at the very bottom of the scroll list — its right-click
+            menu targets the root ("New File..." / "New Folder..."). */}
+        <div className="file-tree-list-tail" onContextMenu={openTailMenu} />
       </div>
     </>
   );
@@ -1093,6 +1454,8 @@ export function FileTree({
       <div className="file-tree">
         {treeUi}
         {menuUi}
+        {newEntryUi}
+        {deleteUi}
       </div>
     );
 
@@ -1138,6 +1501,8 @@ export function FileTree({
         onClose={closePreview}
       />
       {menuUi}
+      {newEntryUi}
+      {deleteUi}
     </div>
   );
 }

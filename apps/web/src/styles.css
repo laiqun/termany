@@ -3338,6 +3338,33 @@ html.tauri #root {
 .file-tree-menu-item:hover {
   background: var(--bg);
 }
+.file-tree-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+/* Blank strip at the bottom of the scroll list — right-click target for the
+   root's "New File..." / "New Folder..." menu. 1.5x the row font size. */
+.file-tree-list-tail {
+  height: 1.5em;
+}
+/* Parent-dir hint inside the "New File/Folder" naming dialog. */
+.file-tree-new-entry-parent {
+  padding: 0 2px 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+/* Body text of the "Delete..." confirmation dialog. */
+.file-tree-delete-message {
+  padding: 2px 2px 8px;
+  font-size: 13px;
+  overflow-wrap: break-word;
+}
 .file-tree-twisty {
   display: flex;
   align-items: center;
