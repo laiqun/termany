@@ -355,6 +355,7 @@ function FileTreeRow({
   selectedPath,
   onToggleDir,
   onSelectFile,
+  onContextMenu,
 }: {
   path: string;
   entry: FsEntry;
@@ -364,6 +365,7 @@ function FileTreeRow({
   selectedPath: string | null;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
+  onContextMenu: (e: React.MouseEvent, path: string) => void;
 }) {
   const isOpen = entry.isDir && expanded.has(path);
   const state = dirs[path];
@@ -374,6 +376,7 @@ function FileTreeRow({
         className={`file-tree-row ${!entry.isDir && path === selectedPath ? "selected" : ""}`}
         style={{ paddingLeft: 4 + depth * 9 }}
         onClick={() => (entry.isDir ? onToggleDir(path) : onSelectFile(path))}
+        onContextMenu={(e) => onContextMenu(e, path)}
       >
         <span className="file-tree-twisty">
           {entry.isDir && <ChevronIcon dir={isOpen ? "down" : "right"} />}
@@ -406,6 +409,7 @@ function FileTreeRow({
             selectedPath={selectedPath}
             onToggleDir={onToggleDir}
             onSelectFile={onSelectFile}
+            onContextMenu={onContextMenu}
           />
         ))}
     </>
@@ -681,6 +685,9 @@ export function FileTree({
   // usable, and can always be dragged wider.
   const [treeWidth, setTreeWidth] = useState(180);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
+  // Right-click context menu on a tree row (file or folder): the only item
+  // today is "Copy Relative Path" — relative to the tree's current root.
+  const [menu, setMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   const splitRef = useRef<HTMLDivElement>(null);
 
   // Too narrow for two useful columns -> drop to one: the preview alone,
@@ -953,6 +960,61 @@ export function FileTree({
 
   const rootState = root ? dirs[root] : undefined;
 
+  const openRowMenu = (e: React.MouseEvent, path: string) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, path });
+  };
+
+  // Escape closes the menu; plain clicks are caught by the backdrop below.
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menu]);
+
+  const copyRelativePath = () => {
+    if (!menu) return;
+    // Rows build their paths as `${root}/${name}`, so stripping the root
+    // prefix gives the relative path; the leading-slash strip covers a tree
+    // rooted at the filesystem root itself ("//name" -> "name").
+    const base = (root ?? "").replace(/[\\/]+$/, "");
+    const rel = menu.path.startsWith(`${base}/`)
+      ? menu.path.slice(base.length + 1).replace(/^\/+/, "")
+      : menu.path;
+    navigator.clipboard?.writeText(rel).catch(() => {});
+    setMenu(null);
+  };
+
+  const copyAbsolutePath = () => {
+    if (!menu) return;
+    navigator.clipboard?.writeText(menu.path).catch(() => {});
+    setMenu(null);
+  };
+
+  const menuUi = menu && (
+    <>
+      <div
+        className="file-tree-menu-backdrop"
+        onClick={() => setMenu(null)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setMenu(null);
+        }}
+      />
+      <div className="file-tree-menu" style={{ left: menu.x, top: menu.y }}>
+        <button className="file-tree-menu-item" onClick={copyRelativePath}>
+          Copy Relative Path
+        </button>
+        <button className="file-tree-menu-item" onClick={copyAbsolutePath}>
+          Copy Path
+        </button>
+      </div>
+    </>
+  );
+
   const treeUi = (
     <>
       <div className="file-tree-head">
@@ -1018,6 +1080,7 @@ export function FileTree({
               selectedPath={selected?.path ?? null}
               onToggleDir={toggleDir}
               onSelectFile={selectFile}
+              onContextMenu={openRowMenu}
             />
           ))}
       </div>
@@ -1025,7 +1088,13 @@ export function FileTree({
   );
 
   // Nothing selected: just the tree, full width.
-  if (!selected) return <div className="file-tree">{treeUi}</div>;
+  if (!selected)
+    return (
+      <div className="file-tree">
+        {treeUi}
+        {menuUi}
+      </div>
+    );
 
   const startTreeResize = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -1068,6 +1137,7 @@ export function FileTree({
         onToggleTree={() => (narrow ? closePreview() : setTreeCollapsed((v) => !v))}
         onClose={closePreview}
       />
+      {menuUi}
     </div>
   );
 }

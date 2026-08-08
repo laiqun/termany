@@ -3307,6 +3307,37 @@ html.tauri #root {
   background: var(--active-row);
   color: var(--fg);
 }
+/* Right-click context menu on a tree row ("Copy Relative Path"). */
+.file-tree-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+}
+.file-tree-menu {
+  position: fixed;
+  z-index: 61;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 4px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.file-tree-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.file-tree-menu-item:hover {
+  background: var(--bg);
+}
 .file-tree-twisty {
   display: flex;
   align-items: center;
