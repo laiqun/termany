@@ -392,11 +392,6 @@ function FileTreeRow({
           {state.error}
         </div>
       )}
-      {isOpen && state?.status === "loaded" && state.entries!.length === 0 && (
-        <div className="file-tree-message" style={{ paddingLeft: 4 + (depth + 1) * 9 }}>
-          Empty directory
-        </div>
-      )}
       {isOpen &&
         state?.status === "loaded" &&
         state.entries!.map((child) => (
@@ -1422,9 +1417,6 @@ export function FileTree({
       </div>
       <div className="file-tree-list">
         {rootError && <div className="file-tree-message">{rootError}</div>}
-        {!rootError && rootState?.status === "loaded" && rootState.entries!.length === 0 && (
-          <div className="file-tree-message">Empty directory</div>
-        )}
         {!rootError &&
           root &&
           rootState?.entries?.map((entry) => (
