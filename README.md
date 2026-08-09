@@ -203,6 +203,18 @@ The desktop app can also show and hide its window from any app with a system-wid
 It ships off by default, because most usable chords are already taken (Spotlight, launchers,
 IMEs, media keys), so pick your own in Settings → Keyboard → System-wide.
 
+## Known issues
+
+- **App chords go dead while a browser pane has keyboard focus.** A browser pane is a
+  native child webview (a separate WebView2 HWND on Windows), so once focus moves into
+  it — e.g. via ⌥⌘←→↑↓ — keydown events no longer reach the main webview, which owns the
+  app's shortcut dispatch. Every app chord, including the pane-move chord that got you in,
+  stops working until you click back into a terminal pane. Workaround: click. A proper fix
+  needs the child webview to forward matching chords to the main webview (injected script
+  + remote-origin IPC + an app ACL manifest); an attempt at this (commit `410af0b`) fixed
+  the chords but regressed window dragging and button clicks, and was reverted. Revisit
+  with care if this bothers you.
+
 ## How it's built
 
 Local-first, cloud-ready. The same UI runs as a web app and as a desktop client today, and
