@@ -471,6 +471,7 @@ export default {
   "gitdiff.overflow": "Too many changed files to list them all.",
   "gitdiff.mainWorktree": "Main checkout",
   "gitdiff.workingDir": "Working directory",
+  "gitdiff.openWorktreeTab": "Go to the tab working in {dir}, or open one",
   "gitdiff.newWorktree": "New worktree…",
   "gitdiff.branchName": "Branch name",
   "gitdiff.baseBranch": "Based on",

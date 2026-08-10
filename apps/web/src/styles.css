@@ -6048,6 +6048,21 @@ div.usage-select-item {
   flex-shrink: 0;
   color: var(--fg-dim);
 }
+/* The clickable (pane) form of the branch chip: jumps to the tab working in
+   the shown worktree's directory. */
+button.gd-branch {
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  padding: 3px 4px;
+  cursor: pointer;
+}
+button.gd-branch:hover {
+  background: var(--bg-3);
+}
+button.gd-branch:hover svg {
+  color: var(--fg);
+}
 /* The directory the panel reads from — editable, like the file tree's path
    bar: quiet until hovered, a real input while focused. */
 .gd-dir {

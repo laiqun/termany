@@ -467,6 +467,7 @@ export default {
   "gitdiff.overflow": "變更的檔案太多，無法全部列出。",
   "gitdiff.mainWorktree": "主要工作目錄",
   "gitdiff.workingDir": "工作目錄",
+  "gitdiff.openWorktreeTab": "跳到在 {dir} 工作的分頁，沒有則新增",
   "gitdiff.newWorktree": "新增 worktree…",
   "gitdiff.branchName": "分支名稱",
   "gitdiff.baseBranch": "基於",

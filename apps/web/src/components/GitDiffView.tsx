@@ -3,6 +3,7 @@ import { apiPath } from "../api";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
+import { activeNode, useStore } from "../state/store";
 import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
@@ -125,6 +126,27 @@ export function parseDiff(diff: string): DiffLine[] {
 }
 
 const rowKey = (r: GitRow) => `${r.section}:${r.path}`;
+
+/**
+ * Directory spelling never carries meaning: `\` vs `/`, a trailing slash, and
+ * — when a drive letter says Windows — case.
+ */
+function normDir(p: string): string {
+  const n = p.replace(/\\/g, "/").replace(/\/+$/, "");
+  return /^[A-Za-z]:\//.test(n) ? n.toLowerCase() : n;
+}
+
+/** Directory comparison for matching a worktree's root against a tab's cwd. */
+function sameDir(a: string, b: string): boolean {
+  return normDir(a) === normDir(b);
+}
+
+/** True when `dir` is `root` itself or somewhere beneath it. */
+function inDir(root: string, dir: string): boolean {
+  const r = normDir(root);
+  const d = normDir(dir);
+  return d === r || d.startsWith(r + "/");
+}
 
 interface CachedView {
   base: string | Auto;
@@ -598,6 +620,39 @@ export function GitDiffView({
     setDiffs({});
   }, []);
 
+  const setActiveHTab = useStore((s) => s.setActiveHTab);
+  const addHTab = useStore((s) => s.addHTab);
+  const setHTabCwd = useStore((s) => s.setHTabCwd);
+  const closeHTabsWhere = useStore((s) => s.closeHTabsWhere);
+
+  /**
+   * The branch chip doubles as a "go to this worktree" button: activate the
+   * tab already working in the shown worktree's directory when there is one,
+   * else open a new tab there. The path goes through the fs endpoint first so
+   * it takes the same normalized form a tab's cwd carries (the tab bar's
+   * inline editor resolves paths the same way).
+   */
+  const openWorktreeTab = useCallback(async () => {
+    if (overview?.repo !== true) return;
+    let dir = overview.root;
+    try {
+      const r = await fetch(apiPath(`/api/fs/list?path=${encodeURIComponent(dir)}`));
+      const data = r.ok ? ((await r.json()) as { path?: string }) : {};
+      if (data.path) dir = data.path;
+    } catch {
+      /* keep git's spelling of the path */
+    }
+    const hit = activeNode(useStore.getState())?.htabs.find((h) => h.cwd && sameDir(h.cwd, dir));
+    if (hit) {
+      setActiveHTab(hit.id);
+      return;
+    }
+    // addHTab activates the tab it makes; claim it for the worktree.
+    addHTab();
+    const created = activeNode(useStore.getState())?.activeHTab;
+    if (created) setHTabCwd(created, dir);
+  }, [overview, setActiveHTab, addHTab, setHTabCwd]);
+
   /**
    * What the address bar shows: the user's pick while one stands, else the
    * repo root in a repo (the panel's real scope — the tab's cwd may be a
@@ -767,6 +822,11 @@ export function GitDiffView({
 
   const removeWorktreeByPath = useCallback(
     async (wt: GitWorktree, force: boolean, withBranch: boolean) => {
+      // Tabs pointed at the doomed directory (or anywhere under it) close
+      // first: their shells would hold the directory open — Windows refuses
+      // the final rmdir while one does — and they'd be left on a path that
+      // no longer exists.
+      closeHTabsWhere((tabDir) => inDir(wt.path, tabDir));
       const params = new URLSearchParams({ worktree: wt.path });
       const dir = cwd ?? tabCwd;
       if (dir) params.set("cwd", dir);
@@ -783,7 +843,7 @@ export function GitDiffView({
       }
       await load();
     },
-    [tabCwd, cwd, overview, worktreeList, selectWorktree, load],
+    [tabCwd, cwd, overview, worktreeList, selectWorktree, load, closeHTabsWhere],
   );
 
   const deleteBranchByName = useCallback(
@@ -810,10 +870,23 @@ export function GitDiffView({
   return (
     <div className={`gd-root gd-${variant}`}>
       <div className="gd-toolbar">
-        <span className="gd-branch">
-          <GitBranchIcon />
-          <span>{overview && overview.repo ? overview.branch : t("gitdiff.title")}</span>
-        </span>
+        {overview?.repo === true && variant === "pane" ? (
+          // In a pane the chip is also a jump button; in the modal it stays a
+          // plain label — the overlay would hide the tab switch it triggers.
+          <button
+            className="gd-branch gd-branch-jump"
+            title={t("gitdiff.openWorktreeTab", { dir: overview.root })}
+            onClick={() => void openWorktreeTab()}
+          >
+            <GitBranchIcon />
+            <span>{overview.branch}</span>
+          </button>
+        ) : (
+          <span className="gd-branch">
+            <GitBranchIcon />
+            <span>{overview && overview.repo ? overview.branch : t("gitdiff.title")}</span>
+          </span>
+        )}
         {/* The directory the panel reads from, editable so a wrong guess (the
             tab's cwd by default) can be corrected in place. Empty + Enter
             hands it back to the tab's cwd. */}

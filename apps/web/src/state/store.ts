@@ -16,6 +16,7 @@ import {
 import { claimPage, readWindowPref, writeWindowPref } from "./windows";
 import { stepWorkspace } from "./layoutMerge";
 import { focusPane, focusPaneAfterRemoval, selectHTab } from "./paneFocus";
+import { closeMatchingHTabs } from "./htabs";
 import { nextCyclablePaneView } from "./paneViewCycle";
 
 /**
@@ -280,6 +281,13 @@ interface State {
   addHTab: () => void;
   setActiveHTab: (id: string) => void;
   closeHTab: (id: string) => void;
+  /**
+   * Close every tab whose cwd satisfies `match`, wherever it lives (every
+   * workspace, every page) — e.g. the tabs pointed at a worktree that is
+   * about to be deleted. Their sessions are disposed; a page emptied this
+   * way gets a fresh blank tab, like closeHTab's refill.
+   */
+  closeHTabsWhere: (match: (cwd: string) => boolean) => void;
   /** Set the tab's working directory; undefined resets it to home. */
   setHTabCwd: (id: string, cwd?: string) => void;
   /**
@@ -1304,6 +1312,18 @@ export const useStore = create<State>((set, get) => ({
         }),
       })),
     })),
+
+  closeHTabsWhere: (match) =>
+    set((s) => {
+      const results = s.workspaces.map((ws) => ({
+        ws,
+        r: closeMatchingHTabs(ws.roots, match, () => makeHTab(1)),
+      }));
+      for (const { r } of results) {
+        for (const h of r.closed) leafIds(h.layout).forEach(disposePaneSessions);
+      }
+      return { workspaces: results.map(({ ws, r }) => ({ ...ws, roots: r.nodes })) };
+    }),
 
   moveHTab: (tabId, fromNodeId, toNodeId) =>
     set((s) => {
