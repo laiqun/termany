@@ -3347,9 +3347,12 @@ html.tauri #root {
   background: var(--border);
 }
 /* Blank strip at the bottom of the scroll list — right-click target for the
-   root's "New File..." / "New Folder..." menu. 1.5x the row font size. */
+   root's "New File..." / "New Folder..." menu. Stretches to fill whatever
+   space the rows don't (flex: 1), so a right-click on ANY blank area below
+   the rows opens the menu, not just a fixed-height sliver. */
 .file-tree-list-tail {
-  height: 1.5em;
+  flex: 1;
+  min-height: 1.5em;
 }
 /* Parent-dir hint inside the "New File/Folder" naming dialog. */
 .file-tree-new-entry-parent {

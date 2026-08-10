@@ -835,10 +835,11 @@ export function FileTree({
   // usable, and can always be dragged wider.
   const [treeWidth, setTreeWidth] = useState(180);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
-  // Right-click context menu on a tree row (file or folder) or the blank
-  // tail strip at the bottom of the list. Rows get "New File..." /
-  // "New Folder..." (folders only), "Rename...", "Delete...", and the copy
-  // items; the tail targets the root and shows ONLY the two "New" items.
+  // Right-click context menu on a tree row (file or folder) or any blank
+  // space in the list (below the rows, the list's own padding). Rows get
+  // "New File..." / "New Folder..." (folders only), "Rename...", "Delete...",
+  // and the copy items; blank space targets the root and shows ONLY the two
+  // "New" items.
   // "New"/"Rename" open the NewEntryDialog, "Delete" the DeleteConfirmDialog.
   const [menu, setMenu] = useState<{ x: number; y: number; path: string; isDir: boolean; tail: boolean } | null>(null);
   const [newEntry, setNewEntry] = useState<
@@ -1120,11 +1121,15 @@ export function FileTree({
 
   const openRowMenu = (e: React.MouseEvent, path: string, isDir: boolean) => {
     e.preventDefault();
+    // Keep this from bubbling to the list's own contextmenu handler, which
+    // would overwrite the row menu with the root-targeting tail menu.
+    e.stopPropagation();
     setMenu({ x: e.clientX, y: e.clientY, path, isDir, tail: false });
   };
 
-  // The blank strip at the end of the scroll list: right-clicking it means
-  // "create something here", i.e. at the tree's root.
+  // Any blank space in the scroll list (below the rows, or the list's own
+  // padding): right-clicking it means "create something here", i.e. at the
+  // tree's root. Row menus stopPropagation so they don't end up here.
   const openTailMenu = (e: React.MouseEvent) => {
     if (!root) return;
     e.preventDefault();
@@ -1413,7 +1418,7 @@ export function FileTree({
           <RefreshIcon />
         </button>
       </div>
-      <div className="file-tree-list">
+      <div className="file-tree-list" onContextMenu={openTailMenu}>
         {rootError && <div className="file-tree-message">{rootError}</div>}
         {!rootError &&
           root &&
@@ -1431,9 +1436,10 @@ export function FileTree({
               onContextMenu={openRowMenu}
             />
           ))}
-        {/* Blank strip at the very bottom of the scroll list — its right-click
-            menu targets the root ("New File..." / "New Folder..."). */}
-        <div className="file-tree-list-tail" onContextMenu={openTailMenu} />
+        {/* Blank strip filling whatever space the rows don't — with the
+            contextmenu handler on the list itself, right-clicking any blank
+            area targets the root ("New File..." / "New Folder..."). */}
+        <div className="file-tree-list-tail" />
       </div>
     </>
   );
