@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -142,5 +142,23 @@ test("removeWorktree rejects a path that is not one of the repo's worktrees", as
     await assert.rejects(() => removeWorktree(main, path.join(dir, "elsewhere"), true), /Not a worktree/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a worktree whose directory is held open still counts as removed once emptied", async () => {
+  const { dir, main, linked } = makeRepo();
+  // A process with its cwd inside the worktree holds the directory open the
+  // way a shell or editor does. On Windows git's final rmdir then fails —
+  // after it has already emptied the directory and dropped the registration,
+  // which removeWorktree treats as success. Elsewhere the removal simply
+  // succeeds, so the assertion holds on every platform.
+  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { cwd: linked });
+  try {
+    await removeWorktree(main, linked, false, true);
+    assert.equal(git(["branch", "--list", "feat", "--format", "%(refname:short)"], main).trim(), "");
+  } finally {
+    holder.kill();
+    await new Promise((resolve) => holder.once("exit", resolve));
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

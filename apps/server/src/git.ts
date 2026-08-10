@@ -436,6 +436,12 @@ export async function addWorktree(
  * no merged check — opting in accepts losing unmerged commits), which is
  * the common case for the throwaway worktrees this app creates; a detached
  * worktree has no branch and skips that step.
+ *
+ * On Windows a shell or editor holding the directory open makes the final
+ * rmdir fail — but git fails only AFTER it has emptied the directory and
+ * dropped the registration. An empty (or already gone) directory therefore
+ * means the removal effectively happened: report success and leave the
+ * husk for the user to delete once it is released.
  */
 export async function removeWorktree(
   cwd: string,
@@ -448,10 +454,20 @@ export async function removeWorktree(
   if (!resolved.selected) throw new Error("Not a worktree of this repository.");
   if (resolved.selected.main) throw new Error("The main checkout cannot be removed.");
   const target = resolved.selected;
-  await git(
-    ["worktree", "remove", ...(force ? ["--force"] : []), target.path],
-    resolved.worktrees[0].path,
-  );
+  try {
+    await git(
+      ["worktree", "remove", ...(force ? ["--force"] : []), target.path],
+      resolved.worktrees[0].path,
+    );
+  } catch (error) {
+    let entries: string[] = [];
+    try {
+      entries = await fs.promises.readdir(target.path);
+    } catch {
+      /* the directory is gone — nothing left to check */
+    }
+    if (entries.length > 0) throw error;
+  }
   if (!withBranch || target.detached) return;
   // Best-effort: the branch is only deleted when it is really a local
   // branch (a detached worktree's short sha is no ref), and a failure here
