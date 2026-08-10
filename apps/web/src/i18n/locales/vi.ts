@@ -485,7 +485,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Xóa worktree {name}? Thư mục của nó sẽ bị xóa.",
   "gitdiff.removeWorktreeBranch": "Xóa cả nhánh {name}",
   "gitdiff.removeWorktreeDirty": "{files} tệp chưa commit trong đó sẽ bị mất.",
-  "gitdiff.forceRemove": "Vẫn xóa",
 
   "history.placeholder": "Tìm phiên của {agent}…",
   "history.loading": "Đang tải các phiên…",

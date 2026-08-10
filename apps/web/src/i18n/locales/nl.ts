@@ -485,7 +485,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Worktree {name} verwijderen? De map wordt gewist.",
   "gitdiff.removeWorktreeBranch": "Ook branch {name} verwijderen",
   "gitdiff.removeWorktreeDirty": "{files} niet-gecommitte bestanden gaan verloren.",
-  "gitdiff.forceRemove": "Toch verwijderen",
 
   "history.placeholder": "Zoek in {agent}-sessies…",
   "history.loading": "Sessies laden…",

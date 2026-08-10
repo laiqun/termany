@@ -485,7 +485,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Rimuovere il worktree {name}? La sua directory sarà eliminata.",
   "gitdiff.removeWorktreeBranch": "Elimina anche il branch {name}",
   "gitdiff.removeWorktreeDirty": "{files} file non committati al suo interno andranno persi.",
-  "gitdiff.forceRemove": "Elimina comunque",
 
   "history.placeholder": "Cerca sessioni di {agent}…",
   "history.loading": "Caricamento delle sessioni…",

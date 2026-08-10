@@ -485,7 +485,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Ta bort worktree {name}? Katalogen raderas.",
   "gitdiff.removeWorktreeBranch": "Ta även bort grenen {name}",
   "gitdiff.removeWorktreeDirty": "{files} icke committade filer i den försvinner.",
-  "gitdiff.forceRemove": "Ta bort ändå",
 
   "history.placeholder": "Sök {agent}-sessioner…",
   "history.loading": "Läser in sessioner…",

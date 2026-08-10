@@ -485,7 +485,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "{name} worktree'i kaldırılsın mı? Dizini silinir.",
   "gitdiff.removeWorktreeBranch": "{name} dalını da sil",
   "gitdiff.removeWorktreeDirty": "İçindeki {files} commit edilmemiş dosya kaybolacak.",
-  "gitdiff.forceRemove": "Yine de sil",
 
   "history.placeholder": "{agent} oturumlarında ara…",
   "history.loading": "Oturumlar yükleniyor…",

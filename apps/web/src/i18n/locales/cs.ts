@@ -486,7 +486,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Odebrat worktree {name}? Jeho adresář bude smazán.",
   "gitdiff.removeWorktreeBranch": "Také smazat větev {name}",
   "gitdiff.removeWorktreeDirty": "{files} necommitnutých souborů v něm bude ztraceno.",
-  "gitdiff.forceRemove": "Přesto smazat",
 
   "history.placeholder": "Hledat relace {agent}…",
   "history.loading": "Načítání relací…",

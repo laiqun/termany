@@ -469,12 +469,11 @@ function NewWorktreeDialog({
 
 /**
  * Confirms removing a linked worktree. A dirty worktree (its changed-files
- * badge is shown right in the switcher) needs the explicit "delete anyway"
- * check, which maps to `git worktree remove --force` — the default path
- * refuses, so a stray click can't take uncommitted work with it. The
- * "also delete branch" check (pre-checked: these worktrees are throwaway)
- * takes the branch with the directory; a detached worktree has no branch,
- * so the check is hidden there.
+ * badge is shown right in the switcher) gets a warning line, since removal
+ * discards those changes along with the directory. The "also delete branch"
+ * check (pre-checked: these worktrees are throwaway) takes the branch with
+ * the directory; a detached worktree has no branch, so the check is hidden
+ * there.
  */
 function RemoveWorktreeDialog({
   worktree,
@@ -482,11 +481,10 @@ function RemoveWorktreeDialog({
   onClose,
 }: {
   worktree: GitWorktree;
-  onRemove: (worktree: GitWorktree, force: boolean, withBranch: boolean) => Promise<void>;
+  onRemove: (worktree: GitWorktree, withBranch: boolean) => Promise<void>;
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const [force, setForce] = useState(false);
   const [withBranch, setWithBranch] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -495,10 +493,10 @@ function RemoveWorktreeDialog({
   const dirty = worktree.files > 0;
 
   const submit = async () => {
-    if (busy || (dirty && !force)) return;
+    if (busy) return;
     setBusy(true);
     try {
-      await onRemove(worktree, force, withBranch && !worktree.detached);
+      await onRemove(worktree, withBranch && !worktree.detached);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -510,15 +508,7 @@ function RemoveWorktreeDialog({
     <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
       <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
         <p className="quit-confirm-text">{t("gitdiff.removeWorktreeConfirm", { name: worktree.name })}</p>
-        {dirty && (
-          <>
-            <p className="gd-dialog-warn">{t("gitdiff.removeWorktreeDirty", { files: worktree.files })}</p>
-            <label className="gd-dialog-check">
-              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-              {t("gitdiff.forceRemove")}
-            </label>
-          </>
-        )}
+        {dirty && <p className="gd-dialog-warn">{t("gitdiff.removeWorktreeDirty", { files: worktree.files })}</p>}
         {!worktree.detached && (
           <label className="gd-dialog-check">
             <input type="checkbox" checked={withBranch} onChange={(e) => setWithBranch(e.target.checked)} />
@@ -530,11 +520,7 @@ function RemoveWorktreeDialog({
           <button className="ws-dialog-btn" onClick={onClose}>
             {t("common.cancel")}
           </button>
-          <button
-            className="ws-dialog-btn danger"
-            disabled={busy || (dirty && !force)}
-            onClick={() => void submit()}
-          >
+          <button className="ws-dialog-btn danger" disabled={busy} onClick={() => void submit()}>
             {t("gitdiff.removeWorktree")}
           </button>
         </div>
@@ -960,16 +946,15 @@ export function GitDiffView({
   }, [openTabForDir]);
 
   const removeWorktreeByPath = useCallback(
-    async (wt: GitWorktree, force: boolean, withBranch: boolean) => {
+    async (wt: GitWorktree, withBranch: boolean) => {
       // Tabs pointed at the doomed directory (or anywhere under it) close
       // first: their shells would hold the directory open — Windows refuses
-      // the final rmdir while one does — and they'd be left on a path that
+      // the move-aside while one does — and they'd be left on a path that
       // no longer exists.
       closeHTabsWhere((tabDir) => inDir(wt.path, tabDir));
       const params = new URLSearchParams({ worktree: wt.path });
       const dir = cwd ?? tabCwd;
       if (dir) params.set("cwd", dir);
-      if (force) params.set("force", "1");
       if (withBranch) params.set("branch", "1");
       const r = await fetch(apiPath(`/api/git/worktrees?${params}`), { method: "DELETE" });
       const data = await r.json().catch(() => ({}));

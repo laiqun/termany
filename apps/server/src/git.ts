@@ -491,49 +491,48 @@ export async function addWorktree(
 /**
  * Remove a linked worktree. The target must come from git's own list (the
  * same guard resolveScope applies to reads) and must not be the main
- * checkout. Dirty worktrees need `force`, matching `git worktree remove`.
+ * checkout. The removal does NOT go through git: the directory is moved
+ * aside (a rename is instant on the same volume, no matter how many files
+ * node_modules has), `worktree prune` drops the now-dangling registration,
+ * and the directory is deleted in the background. That sidesteps everything
+ * git's own removal is finicky about — fresh untracked files, a missing
+ * `.git` pointer (scaffolding emptied the directory), slow recursive
+ * deletes. Uncommitted changes go with it: the confirmation dialog warns
+ * about those, so there is no separate force gate. The one case that still
+ * blocks removal is a process holding the directory open (a shell's cwd, a
+ * dev server): the rename fails and the user is told.
+ *
  * With `withBranch` the branch the worktree sat on is deleted too (`-D`,
  * no merged check — opting in accepts losing unmerged commits), which is
  * the common case for the throwaway worktrees this app creates; a detached
  * worktree has no branch and skips that step.
- *
- * On Windows a shell or editor holding the directory open makes the final
- * rmdir fail — but git fails only AFTER it has emptied the directory and
- * dropped the registration. An empty (or already gone) directory therefore
- * means the removal effectively happened: report success and leave the
- * husk for the user to delete once it is released.
  */
-export async function removeWorktree(
-  cwd: string,
-  worktree: string,
-  force: boolean,
-  withBranch = false,
-): Promise<void> {
+export async function removeWorktree(cwd: string, worktree: string, withBranch = false): Promise<void> {
   const resolved = await resolveScope(cwd, worktree);
   if (!resolved) throw new Error("Not inside a git repository.");
   if (!resolved.selected) throw new Error("Not a worktree of this repository.");
   if (resolved.selected.main) throw new Error("The main checkout cannot be removed.");
   const target = resolved.selected;
+  const root = resolved.worktrees[0].path;
+  const trash = path.join(
+    path.dirname(target.path),
+    `.termany-trash-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
   try {
-    await git(
-      ["worktree", "remove", ...(force ? ["--force"] : []), target.path],
-      resolved.worktrees[0].path,
-    );
-  } catch (error) {
-    let entries: string[] = [];
-    try {
-      entries = await fs.promises.readdir(target.path);
-    } catch {
-      /* the directory is gone — nothing left to check */
-    }
-    if (entries.length > 0) throw error;
+    await fs.promises.rename(target.path, trash);
+  } catch {
+    throw new Error("The directory is in use by another process; close it and try again.");
   }
+  // Slow part — tens of thousands of tiny files, worst on Windows — happens
+  // after the request has already succeeded. A leftover trash dir on failure
+  // is harmless.
+  void fs.promises.rm(trash, { recursive: true, force: true }).catch(() => {});
+  await git(["worktree", "prune"], root);
   if (!withBranch || target.detached) return;
   // Best-effort: the branch is only deleted when it is really a local
   // branch (a detached worktree's short sha is no ref), and a failure here
   // must not dress up an already-removed worktree as an error — the branch
   // can still be deleted from the compare picker.
-  const root = resolved.worktrees[0].path;
   try {
     await git(["show-ref", "--verify", `refs/heads/${target.branch}`], root);
     await git(["branch", "-D", target.branch], root);

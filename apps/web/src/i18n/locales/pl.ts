@@ -486,7 +486,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Usunąć worktree {name}? Jego katalog zostanie skasowany.",
   "gitdiff.removeWorktreeBranch": "Usuń także gałąź {name}",
   "gitdiff.removeWorktreeDirty": "{files} niezatwierdzonych plików zostanie utraconych.",
-  "gitdiff.forceRemove": "Usuń mimo to",
 
   "history.placeholder": "Szukaj sesji {agent}…",
   "history.loading": "Wczytywanie sesji…",

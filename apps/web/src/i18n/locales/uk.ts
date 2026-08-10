@@ -486,7 +486,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Видалити worktree {name}? Його каталог буде стерто.",
   "gitdiff.removeWorktreeBranch": "Також видалити гілку {name}",
   "gitdiff.removeWorktreeDirty": "{files} незафіксованих файлів у ньому буде втрачено.",
-  "gitdiff.forceRemove": "Все одно видалити",
 
   "history.placeholder": "Пошук сеансів {agent}…",
   "history.loading": "Завантаження сеансів…",

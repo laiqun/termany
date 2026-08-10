@@ -485,7 +485,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "ワークツリー {name} を削除しますか？ディレクトリは削除されます。",
   "gitdiff.removeWorktreeBranch": "ブランチ {name} も削除する",
   "gitdiff.removeWorktreeDirty": "コミットされていない {files} 個のファイルは失われます。",
-  "gitdiff.forceRemove": "それでも削除",
 
   "history.placeholder": "{agent} のセッションを検索…",
   "history.loading": "セッションを読み込み中…",

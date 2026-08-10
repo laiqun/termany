@@ -5,7 +5,7 @@ import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 setGlobalDispatcher(new EnvHttpProxyAgent());
 
 import { spawn } from "node-pty";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import os from "node:os";
@@ -543,6 +543,17 @@ function killSession(id: string): void {
       setScrollBatch({ [id]: session.ring.chunks.join("") });
     } catch {
       /* best-effort */
+    }
+  }
+  // On Windows pty.kill() ends only the shell itself — processes it spawned
+  // (a dev server, esbuild, file watchers) survive as orphans and keep their
+  // handles on the working directory, which blocks `git worktree remove`.
+  // Kill the whole tree first, while the parent/child links are still intact.
+  if (process.platform === "win32") {
+    try {
+      execFileSync("taskkill", ["/pid", String(session.pty.pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      /* already gone */
     }
   }
   try {
@@ -1472,10 +1483,10 @@ const http = createServer((req, res) => {
   }
 
   // Remove a linked worktree, from the diff panel's per-worktree button.
-  // Git's own checks (must be a linked worktree, must be clean unless
-  // `force`) are the guard rails — a refusal comes back as a 400 the
-  // confirmation dialog can show. `branch=1` takes the worktree's branch
-  // with it (the dialog's "also delete branch" check).
+  // The guards (a registered linked worktree, never the main checkout) are
+  // in removeWorktree; a refusal comes back as a 400 the confirmation dialog
+  // can show. `branch=1` takes the worktree's branch with it (the dialog's
+  // "also delete branch" check).
   if (req.method === "DELETE" && reqUrl.pathname === "/api/git/worktrees") {
     (async () => {
       const worktree = reqUrl.searchParams.get("worktree") ?? "";
@@ -1485,12 +1496,7 @@ const http = createServer((req, res) => {
         reqUrl.searchParams.get("session") ?? "",
       );
       try {
-        await removeWorktree(
-          cwd,
-          worktree,
-          reqUrl.searchParams.get("force") === "1",
-          reqUrl.searchParams.get("branch") === "1",
-        );
+        await removeWorktree(cwd, worktree, reqUrl.searchParams.get("branch") === "1");
         json(200, { ok: true });
       } catch (error) {
         json(400, { error: error instanceof Error ? error.message : String(error) });

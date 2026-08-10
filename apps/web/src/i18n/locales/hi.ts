@@ -486,7 +486,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Worktree {name} हटाएँ? इसकी डायरेक्टरी मिटा दी जाएगी।",
   "gitdiff.removeWorktreeBranch": "ब्रांच {name} भी हटाएँ",
   "gitdiff.removeWorktreeDirty": "इसमें मौजूद {files} अनकमिटेड फ़ाइलें खो जाएँगी।",
-  "gitdiff.forceRemove": "फिर भी हटाएँ",
 
   "history.placeholder": "{agent} के सत्र खोजें…",
   "history.loading": "सत्र लोड हो रहे हैं…",

@@ -122,19 +122,17 @@ test("addWorktree runs the setup command in the new worktree and only warns on f
 test("removeWorktree refuses the main checkout", async () => {
   const { dir, main } = makeRepo();
   try {
-    await assert.rejects(() => removeWorktree(main, main, true), /main checkout/);
+    await assert.rejects(() => removeWorktree(main, main), /main checkout/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a clean worktree removes without force, a dirty one needs it", async () => {
+test("removal discards a dirty worktree and keeps the branch", async () => {
   const { dir, main, linked } = makeRepo();
   try {
     fs.writeFileSync(path.join(linked, "dirty.txt"), "x");
-    await assert.rejects(() => removeWorktree(main, linked, false));
-    assert.ok(fs.existsSync(linked));
-    await removeWorktree(main, linked, true);
+    await removeWorktree(main, linked);
     assert.equal(fs.existsSync(linked), false);
     // The branch is kept unless the caller asks to take it along.
     assert.equal(git(["branch", "--list", "feat"], main).trim(), "feat");
@@ -143,10 +141,60 @@ test("a clean worktree removes without force, a dirty one needs it", async () =>
   }
 });
 
+test("removal takes modified, untracked, and ignored files with it", async () => {
+  const { dir, main, linked } = makeRepo();
+  try {
+    // Every flavour of "unclean": a tracked change, a fresh untracked file,
+    // and an ignored one (build output, node_modules).
+    fs.writeFileSync(path.join(linked, "tracked.txt"), "base");
+    git(["add", "tracked.txt"], linked);
+    git(["-c", "user.email=test@test", "-c", "user.name=test", "commit", "-q", "-m", "tracked"], linked);
+    fs.writeFileSync(path.join(linked, "tracked.txt"), "edited");
+    fs.writeFileSync(path.join(linked, ".gitignore"), "ignored.txt\n");
+    fs.writeFileSync(path.join(linked, "ignored.txt"), "x");
+    await removeWorktree(main, linked);
+    assert.equal(fs.existsSync(linked), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a worktree whose .git pointer went missing still removes", async () => {
+  const { dir, main, linked } = makeRepo();
+  try {
+    // A scaffolding tool emptying the directory (or a dotfile cleanup) loses
+    // the `.git` file. The move-aside + prune removal doesn't care about
+    // the pointer at all — git's own `worktree remove` would refuse.
+    fs.rmSync(path.join(linked, ".git"));
+    await removeWorktree(main, linked);
+    assert.equal(fs.existsSync(linked), false);
+    assert.equal(git(["worktree", "list"], main).includes("linked"), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the moved-aside directory is deleted in the background", async () => {
+  const { dir, main, linked } = makeRepo();
+  try {
+    fs.mkdirSync(path.join(linked, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(linked, "node_modules", "pkg", "index.js"), "x");
+    await removeWorktree(main, linked);
+    assert.equal(fs.existsSync(linked), false);
+    for (let i = 0; i < 20; i++) {
+      if (!fs.readdirSync(dir).some((e) => e.startsWith(".termany-trash-"))) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.fail("the moved-aside directory was never cleaned up");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("removeWorktree takes the worktree's branch with it when asked", async () => {
   const { dir, main, linked } = makeRepo();
   try {
-    await removeWorktree(main, linked, false, true);
+    await removeWorktree(main, linked, true);
     assert.equal(fs.existsSync(linked), false);
     assert.equal(git(["branch", "--list", "feat"], main).trim(), "");
   } finally {
@@ -159,7 +207,7 @@ test("removeWorktree withBranch on a detached worktree just skips the branch ste
   try {
     const ghost = path.join(dir, "ghost");
     git(["worktree", "add", "-q", "--detach", ghost], main);
-    await removeWorktree(main, ghost, false, true);
+    await removeWorktree(main, ghost, true);
     assert.equal(fs.existsSync(ghost), false);
     // Nothing was deleted but the worktree — the repo's branches are intact.
     // (--format keeps the "checked out elsewhere" "+" marker out of the output.)
@@ -172,26 +220,28 @@ test("removeWorktree withBranch on a detached worktree just skips the branch ste
 test("removeWorktree rejects a path that is not one of the repo's worktrees", async () => {
   const { dir, main } = makeRepo();
   try {
-    await assert.rejects(() => removeWorktree(main, path.join(dir, "elsewhere"), true), /Not a worktree/);
+    await assert.rejects(() => removeWorktree(main, path.join(dir, "elsewhere")), /Not a worktree/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a worktree whose directory is held open still counts as removed once emptied", async () => {
+test("a worktree whose directory is held open is reported busy, then removes once released", async () => {
   const { dir, main, linked } = makeRepo();
   // A process with its cwd inside the worktree holds the directory open the
-  // way a shell or editor does. On Windows git's final rmdir then fails —
-  // after it has already emptied the directory and dropped the registration,
-  // which removeWorktree treats as success. Elsewhere the removal simply
-  // succeeds, so the assertion holds on every platform.
+  // way a shell or editor does. The move-aside rename then fails — on every
+  // platform the caller gets a "busy" error rather than a half-removed
+  // worktree — and once the process is gone the removal succeeds.
   const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { cwd: linked });
   try {
-    await removeWorktree(main, linked, false, true);
+    await assert.rejects(() => removeWorktree(main, linked, true), /in use/);
+    assert.ok(fs.existsSync(linked));
+    holder.kill();
+    await new Promise((resolve) => holder.once("exit", resolve));
+    await removeWorktree(main, linked, true);
     assert.equal(git(["branch", "--list", "feat", "--format", "%(refname:short)"], main).trim(), "");
   } finally {
     holder.kill();
-    await new Promise((resolve) => holder.once("exit", resolve));
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

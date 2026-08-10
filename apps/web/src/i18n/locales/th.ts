@@ -486,7 +486,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "ลบ worktree {name}? ไดเรกทอรีจะถูกลบ",
   "gitdiff.removeWorktreeBranch": "ลบ branch {name} ด้วย",
   "gitdiff.removeWorktreeDirty": "ไฟล์ที่ยังไม่ได้ commit จำนวน {files} ไฟล์จะหายไป",
-  "gitdiff.forceRemove": "ลบอยู่ดี",
 
   "history.placeholder": "ค้นหาเซสชันของ {agent}…",
   "history.loading": "กำลังโหลดเซสชัน…",

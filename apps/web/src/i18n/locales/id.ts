@@ -485,7 +485,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Hapus worktree {name}? Direktorinya akan dihapus.",
   "gitdiff.removeWorktreeBranch": "Hapus juga branch {name}",
   "gitdiff.removeWorktreeDirty": "{files} file yang belum dicommit akan hilang.",
-  "gitdiff.forceRemove": "Tetap hapus",
 
   "history.placeholder": "Cari sesi {agent}…",
   "history.loading": "Memuat sesi…",

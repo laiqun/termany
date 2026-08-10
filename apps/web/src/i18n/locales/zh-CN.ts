@@ -482,7 +482,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "删除 worktree {name}？其目录将被删除。",
   "gitdiff.removeWorktreeBranch": "同时删除分支 {name}",
   "gitdiff.removeWorktreeDirty": "其中 {files} 个未提交的文件将丢失。",
-  "gitdiff.forceRemove": "仍然删除",
   "gitdiff.deleteBranch": "删除",
   "gitdiff.deleteBranchConfirm": "删除分支 {name}？此操作无法撤销。",
   "gitdiff.deleteBranchUnmerged": "该分支尚未完全合并——其中的提交可能会丢失。",

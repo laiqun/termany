@@ -487,7 +487,6 @@ export default {
   "gitdiff.removeWorktreeConfirm": "Worktree {name} entfernen? Das Verzeichnis wird gelöscht.",
   "gitdiff.removeWorktreeBranch": "Branch {name} ebenfalls löschen",
   "gitdiff.removeWorktreeDirty": "{files} nicht committete Dateien darin gehen verloren.",
-  "gitdiff.forceRemove": "Trotzdem löschen",
 
   "history.placeholder": "{agent}-Sitzungen durchsuchen…",
   "history.loading": "Sitzungen werden geladen…",
