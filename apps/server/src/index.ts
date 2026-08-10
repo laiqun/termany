@@ -1468,7 +1468,8 @@ const http = createServer((req, res) => {
   // Remove a linked worktree, from the diff panel's per-worktree button.
   // Git's own checks (must be a linked worktree, must be clean unless
   // `force`) are the guard rails — a refusal comes back as a 400 the
-  // confirmation dialog can show.
+  // confirmation dialog can show. `branch=1` takes the worktree's branch
+  // with it (the dialog's "also delete branch" check).
   if (req.method === "DELETE" && reqUrl.pathname === "/api/git/worktrees") {
     (async () => {
       const worktree = reqUrl.searchParams.get("worktree") ?? "";
@@ -1478,7 +1479,12 @@ const http = createServer((req, res) => {
         reqUrl.searchParams.get("session") ?? "",
       );
       try {
-        await removeWorktree(cwd, worktree, reqUrl.searchParams.get("force") === "1");
+        await removeWorktree(
+          cwd,
+          worktree,
+          reqUrl.searchParams.get("force") === "1",
+          reqUrl.searchParams.get("branch") === "1",
+        );
         json(200, { ok: true });
       } catch (error) {
         json(400, { error: error instanceof Error ? error.message : String(error) });

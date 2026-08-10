@@ -473,7 +473,8 @@ export default {
   "gitdiff.baseBranch": "Na podstawie",
   "gitdiff.createWorktree": "Utwórz",
   "gitdiff.removeWorktree": "Usuń",
-  "gitdiff.removeWorktreeConfirm": "Usunąć worktree {name}? Jego katalog zostanie skasowany; gałąź pozostanie.",
+  "gitdiff.removeWorktreeConfirm": "Usunąć worktree {name}? Jego katalog zostanie skasowany.",
+  "gitdiff.removeWorktreeBranch": "Usuń także gałąź {name}",
   "gitdiff.removeWorktreeDirty": "{files} niezatwierdzonych plików zostanie utraconych.",
   "gitdiff.forceRemove": "Usuń mimo to",
 

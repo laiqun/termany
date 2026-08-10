@@ -47,6 +47,9 @@ export type GitWorktree = {
   /** Directory name, which is what an agent-created worktree is recognized by. */
   name: string;
   branch: string;
+  /** No branch is checked out here (detached HEAD) — there is nothing to
+   * offer for deletion alongside the directory. */
+  detached?: boolean;
   /** The repository's own checkout, as opposed to a linked worktree. */
   main: boolean;
   /** Files differing from this worktree's own default compare base. */
@@ -172,6 +175,7 @@ async function listWorktrees(root: string): Promise<Omit<GitWorktree, "files">[]
         name: path.basename(dir),
         // A detached worktree has no branch line; its short sha names it.
         branch: branch.replace(/^refs\/heads\//, "") || head.slice(0, 7) || "HEAD",
+        detached: !branch,
         main: list.length === 0,
       });
       if (list.length >= MAX_WORKTREES) break;
@@ -428,17 +432,38 @@ export async function addWorktree(
  * Remove a linked worktree. The target must come from git's own list (the
  * same guard resolveScope applies to reads) and must not be the main
  * checkout. Dirty worktrees need `force`, matching `git worktree remove`.
- * The branch the worktree was on is left alone.
+ * With `withBranch` the branch the worktree sat on is deleted too (`-D`,
+ * no merged check — opting in accepts losing unmerged commits), which is
+ * the common case for the throwaway worktrees this app creates; a detached
+ * worktree has no branch and skips that step.
  */
-export async function removeWorktree(cwd: string, worktree: string, force: boolean): Promise<void> {
+export async function removeWorktree(
+  cwd: string,
+  worktree: string,
+  force: boolean,
+  withBranch = false,
+): Promise<void> {
   const resolved = await resolveScope(cwd, worktree);
   if (!resolved) throw new Error("Not inside a git repository.");
   if (!resolved.selected) throw new Error("Not a worktree of this repository.");
   if (resolved.selected.main) throw new Error("The main checkout cannot be removed.");
+  const target = resolved.selected;
   await git(
-    ["worktree", "remove", ...(force ? ["--force"] : []), resolved.selected.path],
+    ["worktree", "remove", ...(force ? ["--force"] : []), target.path],
     resolved.worktrees[0].path,
   );
+  if (!withBranch || target.detached) return;
+  // Best-effort: the branch is only deleted when it is really a local
+  // branch (a detached worktree's short sha is no ref), and a failure here
+  // must not dress up an already-removed worktree as an error — the branch
+  // can still be deleted from the compare picker.
+  const root = resolved.worktrees[0].path;
+  try {
+    await git(["show-ref", "--verify", `refs/heads/${target.branch}`], root);
+    await git(["branch", "-D", target.branch], root);
+  } catch {
+    /* not a local branch, or already gone — nothing to delete */
+  }
 }
 
 /**

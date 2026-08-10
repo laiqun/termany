@@ -472,7 +472,8 @@ export default {
   "gitdiff.baseBranch": "기준",
   "gitdiff.createWorktree": "생성",
   "gitdiff.removeWorktree": "삭제",
-  "gitdiff.removeWorktreeConfirm": "워크트리 {name}을(를) 삭제할까요? 디렉터리는 삭제되고 브랜치는 유지됩니다.",
+  "gitdiff.removeWorktreeConfirm": "워크트리 {name}을(를) 삭제할까요? 디렉터리가 삭제됩니다.",
+  "gitdiff.removeWorktreeBranch": "브랜치 {name}도 삭제",
   "gitdiff.removeWorktreeDirty": "커밋되지 않은 파일 {files}개가 사라집니다.",
   "gitdiff.forceRemove": "그래도 삭제",
 

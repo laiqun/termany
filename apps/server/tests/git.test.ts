@@ -103,6 +103,34 @@ test("a clean worktree removes without force, a dirty one needs it", async () =>
     assert.ok(fs.existsSync(linked));
     await removeWorktree(main, linked, true);
     assert.equal(fs.existsSync(linked), false);
+    // The branch is kept unless the caller asks to take it along.
+    assert.equal(git(["branch", "--list", "feat"], main).trim(), "feat");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeWorktree takes the worktree's branch with it when asked", async () => {
+  const { dir, main, linked } = makeRepo();
+  try {
+    await removeWorktree(main, linked, false, true);
+    assert.equal(fs.existsSync(linked), false);
+    assert.equal(git(["branch", "--list", "feat"], main).trim(), "");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeWorktree withBranch on a detached worktree just skips the branch step", async () => {
+  const { dir, main } = makeRepo();
+  try {
+    const ghost = path.join(dir, "ghost");
+    git(["worktree", "add", "-q", "--detach", ghost], main);
+    await removeWorktree(main, ghost, false, true);
+    assert.equal(fs.existsSync(ghost), false);
+    // Nothing was deleted but the worktree — the repo's branches are intact.
+    // (--format keeps the "checked out elsewhere" "+" marker out of the output.)
+    assert.equal(git(["branch", "--list", "feat", "--format", "%(refname:short)"], main).trim(), "feat");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

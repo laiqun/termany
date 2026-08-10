@@ -472,7 +472,8 @@ export default {
   "gitdiff.baseBranch": "Berdasarkan",
   "gitdiff.createWorktree": "Buat",
   "gitdiff.removeWorktree": "Hapus",
-  "gitdiff.removeWorktreeConfirm": "Hapus worktree {name}? Direktorinya akan dihapus; branch tetap ada.",
+  "gitdiff.removeWorktreeConfirm": "Hapus worktree {name}? Direktorinya akan dihapus.",
+  "gitdiff.removeWorktreeBranch": "Hapus juga branch {name}",
   "gitdiff.removeWorktreeDirty": "{files} file yang belum dicommit akan hilang.",
   "gitdiff.forceRemove": "Tetap hapus",
 

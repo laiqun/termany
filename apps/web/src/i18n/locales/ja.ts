@@ -472,7 +472,8 @@ export default {
   "gitdiff.baseBranch": "作成元",
   "gitdiff.createWorktree": "作成",
   "gitdiff.removeWorktree": "削除",
-  "gitdiff.removeWorktreeConfirm": "ワークツリー {name} を削除しますか？ディレクトリは削除され、ブランチは残ります。",
+  "gitdiff.removeWorktreeConfirm": "ワークツリー {name} を削除しますか？ディレクトリは削除されます。",
+  "gitdiff.removeWorktreeBranch": "ブランチ {name} も削除する",
   "gitdiff.removeWorktreeDirty": "コミットされていない {files} 個のファイルは失われます。",
   "gitdiff.forceRemove": "それでも削除",
 

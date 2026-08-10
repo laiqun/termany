@@ -23,6 +23,7 @@ interface GitWorktree {
   path: string;
   name: string;
   branch: string;
+  detached?: boolean;
   main: boolean;
   files: number;
 }
@@ -344,8 +345,10 @@ function NewWorktreeDialog({
  * Confirms removing a linked worktree. A dirty worktree (its changed-files
  * badge is shown right in the switcher) needs the explicit "delete anyway"
  * check, which maps to `git worktree remove --force` — the default path
- * refuses, so a stray click can't take uncommitted work with it. The branch
- * stays; only the directory goes.
+ * refuses, so a stray click can't take uncommitted work with it. The
+ * "also delete branch" check (pre-checked: these worktrees are throwaway)
+ * takes the branch with the directory; a detached worktree has no branch,
+ * so the check is hidden there.
  */
 function RemoveWorktreeDialog({
   worktree,
@@ -353,11 +356,12 @@ function RemoveWorktreeDialog({
   onClose,
 }: {
   worktree: GitWorktree;
-  onRemove: (worktree: GitWorktree, force: boolean) => Promise<void>;
+  onRemove: (worktree: GitWorktree, force: boolean, withBranch: boolean) => Promise<void>;
   onClose: () => void;
 }) {
   const { t } = useI18n();
   const [force, setForce] = useState(false);
+  const [withBranch, setWithBranch] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const backdropRef = useNativeOccluder<HTMLDivElement>("gd-remove-worktree");
@@ -368,7 +372,7 @@ function RemoveWorktreeDialog({
     if (busy || (dirty && !force)) return;
     setBusy(true);
     try {
-      await onRemove(worktree, force);
+      await onRemove(worktree, force, withBranch && !worktree.detached);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -388,6 +392,12 @@ function RemoveWorktreeDialog({
               {t("gitdiff.forceRemove")}
             </label>
           </>
+        )}
+        {!worktree.detached && (
+          <label className="gd-dialog-check">
+            <input type="checkbox" checked={withBranch} onChange={(e) => setWithBranch(e.target.checked)} />
+            {t("gitdiff.removeWorktreeBranch", { name: worktree.branch })}
+          </label>
         )}
         {error && <p className="gd-dialog-error">{error}</p>}
         <div className="ws-dialog-actions">
@@ -756,11 +766,12 @@ export function GitDiffView({
   );
 
   const removeWorktreeByPath = useCallback(
-    async (wt: GitWorktree, force: boolean) => {
+    async (wt: GitWorktree, force: boolean, withBranch: boolean) => {
       const params = new URLSearchParams({ worktree: wt.path });
       const dir = cwd ?? tabCwd;
       if (dir) params.set("cwd", dir);
       if (force) params.set("force", "1");
+      if (withBranch) params.set("branch", "1");
       const r = await fetch(apiPath(`/api/git/worktrees?${params}`), { method: "DELETE" });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error ?? String(r.status));

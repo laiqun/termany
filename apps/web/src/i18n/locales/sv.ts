@@ -472,7 +472,8 @@ export default {
   "gitdiff.baseBranch": "Baserad på",
   "gitdiff.createWorktree": "Skapa",
   "gitdiff.removeWorktree": "Ta bort",
-  "gitdiff.removeWorktreeConfirm": "Ta bort worktree {name}? Katalogen raderas; grenen behålls.",
+  "gitdiff.removeWorktreeConfirm": "Ta bort worktree {name}? Katalogen raderas.",
+  "gitdiff.removeWorktreeBranch": "Ta även bort grenen {name}",
   "gitdiff.removeWorktreeDirty": "{files} icke committade filer i den försvinner.",
   "gitdiff.forceRemove": "Ta bort ändå",
 

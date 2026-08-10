@@ -473,7 +473,8 @@ export default {
   "gitdiff.baseBranch": "Založeno na",
   "gitdiff.createWorktree": "Vytvořit",
   "gitdiff.removeWorktree": "Odebrat",
-  "gitdiff.removeWorktreeConfirm": "Odebrat worktree {name}? Jeho adresář bude smazán; větev zůstane zachována.",
+  "gitdiff.removeWorktreeConfirm": "Odebrat worktree {name}? Jeho adresář bude smazán.",
+  "gitdiff.removeWorktreeBranch": "Také smazat větev {name}",
   "gitdiff.removeWorktreeDirty": "{files} necommitnutých souborů v něm bude ztraceno.",
   "gitdiff.forceRemove": "Přesto smazat",
 

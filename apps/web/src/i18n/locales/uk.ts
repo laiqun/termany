@@ -473,7 +473,8 @@ export default {
   "gitdiff.baseBranch": "На основі",
   "gitdiff.createWorktree": "Створити",
   "gitdiff.removeWorktree": "Видалити",
-  "gitdiff.removeWorktreeConfirm": "Видалити worktree {name}? Його каталог буде стерто; гілка залишиться.",
+  "gitdiff.removeWorktreeConfirm": "Видалити worktree {name}? Його каталог буде стерто.",
+  "gitdiff.removeWorktreeBranch": "Також видалити гілку {name}",
   "gitdiff.removeWorktreeDirty": "{files} незафіксованих файлів у ньому буде втрачено.",
   "gitdiff.forceRemove": "Все одно видалити",
 

@@ -472,7 +472,8 @@ export default {
   "gitdiff.baseBranch": "Temel",
   "gitdiff.createWorktree": "Oluştur",
   "gitdiff.removeWorktree": "Kaldır",
-  "gitdiff.removeWorktreeConfirm": "{name} worktree'i kaldırılsın mı? Dizini silinir; dal korunur.",
+  "gitdiff.removeWorktreeConfirm": "{name} worktree'i kaldırılsın mı? Dizini silinir.",
+  "gitdiff.removeWorktreeBranch": "{name} dalını da sil",
   "gitdiff.removeWorktreeDirty": "İçindeki {files} commit edilmemiş dosya kaybolacak.",
   "gitdiff.forceRemove": "Yine de sil",
 

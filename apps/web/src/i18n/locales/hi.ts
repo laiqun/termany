@@ -473,7 +473,8 @@ export default {
   "gitdiff.baseBranch": "आधार",
   "gitdiff.createWorktree": "बनाएँ",
   "gitdiff.removeWorktree": "हटाएँ",
-  "gitdiff.removeWorktreeConfirm": "Worktree {name} हटाएँ? इसकी डायरेक्टरी मिटा दी जाएगी; ब्रांच बनी रहेगी।",
+  "gitdiff.removeWorktreeConfirm": "Worktree {name} हटाएँ? इसकी डायरेक्टरी मिटा दी जाएगी।",
+  "gitdiff.removeWorktreeBranch": "ब्रांच {name} भी हटाएँ",
   "gitdiff.removeWorktreeDirty": "इसमें मौजूद {files} अनकमिटेड फ़ाइलें खो जाएँगी।",
   "gitdiff.forceRemove": "फिर भी हटाएँ",
 

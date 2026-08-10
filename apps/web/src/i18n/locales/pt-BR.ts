@@ -472,7 +472,8 @@ export default {
   "gitdiff.baseBranch": "Baseado em",
   "gitdiff.createWorktree": "Criar",
   "gitdiff.removeWorktree": "Remover",
-  "gitdiff.removeWorktreeConfirm": "Remover o worktree {name}? O diretório será apagado; o branch é mantido.",
+  "gitdiff.removeWorktreeConfirm": "Remover o worktree {name}? O diretório será apagado.",
+  "gitdiff.removeWorktreeBranch": "Excluir também o branch {name}",
   "gitdiff.removeWorktreeDirty": "{files} arquivos não commitados serão perdidos.",
   "gitdiff.forceRemove": "Remover mesmo assim",
 

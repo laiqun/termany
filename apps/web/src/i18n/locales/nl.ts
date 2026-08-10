@@ -472,7 +472,8 @@ export default {
   "gitdiff.baseBranch": "Gebaseerd op",
   "gitdiff.createWorktree": "Aanmaken",
   "gitdiff.removeWorktree": "Verwijderen",
-  "gitdiff.removeWorktreeConfirm": "Worktree {name} verwijderen? De map wordt gewist; de branch blijft behouden.",
+  "gitdiff.removeWorktreeConfirm": "Worktree {name} verwijderen? De map wordt gewist.",
+  "gitdiff.removeWorktreeBranch": "Ook branch {name} verwijderen",
   "gitdiff.removeWorktreeDirty": "{files} niet-gecommitte bestanden gaan verloren.",
   "gitdiff.forceRemove": "Toch verwijderen",
 
