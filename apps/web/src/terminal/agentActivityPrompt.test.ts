@@ -8,6 +8,7 @@ import {
   agentConfirmationPromptVisible,
   agentInputPromptVisible,
   screenSignature,
+  shellLineCommandTokens,
   shellPromptVisible,
 } from "./agentActivityPrompt";
 
@@ -108,6 +109,20 @@ test("shells that do not end in $ or % still read as a prompt", () => {
   assert.equal(shellPromptVisible("$ "), true);
   assert.equal(shellPromptVisible("❯ "), true);
   assert.equal(shellPromptVisible("root@box:/srv# "), true);
+});
+
+test("command lines offer what follows each prompt glyph, best candidate first", () => {
+  // A history-recalled command only exists on the rendered line, so every
+  // prompt style must give up its command token.
+  assert.deepEqual(shellLineCommandTokens("PS E:\\web\\termany> kimi"), ["kimi"]);
+  assert.deepEqual(shellLineCommandTokens("❯ kimi --verbose"), ["kimi"]);
+  assert.deepEqual(shellLineCommandTokens("➜  ~/proj ❯ kimi"), ["~/proj", "kimi"]);
+  assert.deepEqual(shellLineCommandTokens("root@box:/srv# codex"), ["codex"]);
+  // The leftmost candidate wins, so a redirect target is never the command.
+  assert.deepEqual(shellLineCommandTokens("❯ kimi > log"), ["kimi", "log"]);
+  // Empty prompts and prompt-less text offer nothing.
+  assert.deepEqual(shellLineCommandTokens("user@host ~ $ "), []);
+  assert.deepEqual(shellLineCommandTokens("plain output line"), []);
 });
 
 /**

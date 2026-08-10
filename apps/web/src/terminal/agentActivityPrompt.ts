@@ -162,6 +162,25 @@ export function shellPromptVisible(visible: string): boolean {
 }
 
 /**
+ * Command tokens a shell command line could be launching, leftmost first.
+ *
+ * A history-recalled command never passes through the terminal's input
+ * stream — the shell expands it internally — so the rendered line is the only
+ * place it can be read from. Every prompt style ends in one of the tail
+ * glyphs; whatever follows such a glyph is a candidate command. Prompts with
+ * several glyphs (➜ ~ ❯) yield several candidates, and the caller accepts the
+ * first that names a known agent, which keeps lines like `❯ kimi > log` from
+ * ever reading "log" as the command.
+ */
+export function shellLineCommandTokens(line: string): string[] {
+  const tokens: string[] = [];
+  const re = /[$%#❯➜>](?:\s+|$)(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(line))) tokens.push(match[1]);
+  return tokens;
+}
+
+/**
  * Recognize a real interactive confirmation menu, not prose that happens to
  * say "yes or no". Plain shell [y/N] prompts count only on the cursor row.
  */

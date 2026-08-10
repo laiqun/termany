@@ -14,6 +14,7 @@ import {
   agentConfirmationPromptVisible,
   agentInputPromptVisible,
   screenSignature,
+  shellLineCommandTokens,
   shellPromptVisible,
 } from "./agentActivityPrompt";
 import {
@@ -818,16 +819,54 @@ function submittedAgentForTerminalInput(
   if (isDemo || !data.includes("\r")) return undefined;
   const visible = sessionVisibleText(id);
   if (
-    !agentInputPromptVisible(visible) &&
-    !agentConfirmationPromptVisible(visible, sessionCursorLine(id))
+    agentInputPromptVisible(visible) ||
+    agentConfirmationPromptVisible(visible, sessionCursorLine(id))
   ) {
-    return undefined;
+    return (
+      agentActivities.get(id)?.agent ??
+      agentSessionKinds.get(id) ??
+      detectAgent(visible)
+    );
   }
-  return (
-    agentActivities.get(id)?.agent ??
-    agentSessionKinds.get(id) ??
-    detectAgent(visible)
-  );
+  // A history-recalled (↑) or otherwise shell-expanded command never passes
+  // through the input stream, so the input-side tracker never sees its text —
+  // but the rendered command line shows what is about to run.
+  return agentLaunchingFromShellLine(id);
+}
+
+/** Agent ids keyed by their command's first token, from the agent configs. */
+function agentIdByCommandToken(): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const config of loadAgentConfigs()) {
+    const token = config.command.trim().split(/\s+/, 1)[0]?.toLowerCase();
+    if (token && !map.has(token)) map.set(token, config.id);
+  }
+  return map;
+}
+
+/**
+ * The agent a shell command line is about to launch, read off the rendered
+ * screen at the moment Enter is pressed (keydown fires before the shell
+ * consumes it, so the cursor still sits on the command line).
+ */
+function agentLaunchingFromShellLine(id: string): string | undefined {
+  // While an agent TUI owns this pane's input, whatever is under the cursor
+  // is the agent's screen, not a command line.
+  if (agentActiveSessions.has(activeSessionId(id))) return undefined;
+  const session = sessions.get(id);
+  if (!session) return undefined;
+  const buf = session.term.buffer.active;
+  // Full-screen apps (editors, pagers, REPL chrome) paint text that can mimic
+  // a prompt; command lines only exist on the normal screen.
+  if (buf.type === "alternate") return undefined;
+  const line = buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true) ?? "";
+  if (!line.trim()) return undefined;
+  const agents = agentIdByCommandToken();
+  for (const token of shellLineCommandTokens(line)) {
+    const agent = agents.get(token.toLowerCase());
+    if (agent) return agent;
+  }
+  return undefined;
 }
 
 function writeTerminalInput(id: string, session: Session, data: string) {
