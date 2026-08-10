@@ -3,7 +3,7 @@ import { isTauri } from "../env";
 import { isRectOccluded, subscribeOcclusionChanged } from "../nativeViewOcclusion";
 import { BackIcon, ExternalOpenIcon, ForwardIcon, RefreshIcon } from "./icons";
 
-const DEFAULT_URL = "https://github.com/thinkany-ai/termany";
+const DEFAULT_URL = "about:blank";
 const NATIVE_VIEW_INSET = {
   top: 1,
   right: 1,
@@ -14,7 +14,10 @@ const NATIVE_VIEW_INSET = {
 function normalizeUrl(value: string): string {
   const raw = value.trim();
   if (!raw) return DEFAULT_URL;
+  // scheme:// URLs pass through; scheme-only forms like about:blank do too
+  // (the DEFAULT_URL itself is one), without swallowing "host:port" input.
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return raw;
+  if (/^about:/i.test(raw)) return raw;
   if (/^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(raw)) return `http://${raw}`;
   return `https://${raw}`;
 }
