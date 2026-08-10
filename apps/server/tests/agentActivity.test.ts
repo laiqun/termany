@@ -255,6 +255,39 @@ test("malformed OSC cannot swallow a later activity signal", () => {
   assert.equal(tracker.snapshot()["pane-a"]?.status, "error");
 });
 
+test("focus reports around a typed command are not command text", () => {
+  // conpty arms focus reporting (?1004h) for every fresh Windows console, so
+  // every focus change lands in the input stream as \x1b[I / \x1b[O. Their
+  // printable tails must not pollute the line the user is typing.
+  const tracker = new AgentActivityTracker();
+  tracker.noteInput("pane-a", "\x1b[O\x1b[Ikimi\r");
+  assert.equal(tracker.snapshot()["pane-a"]?.status, "working");
+  assert.equal(tracker.snapshot()["pane-a"]?.agent, "kimi");
+});
+
+test("an escape sequence split across input chunks is still stripped", () => {
+  const tracker = new AgentActivityTracker();
+  tracker.noteInput("pane-a", "\x1b[");
+  tracker.noteInput("pane-a", "I");
+  tracker.noteInput("pane-a", "kimi\r");
+  assert.equal(tracker.snapshot()["pane-a"]?.agent, "kimi");
+});
+
+test("cursor keys and bracketed-paste markers leave no residue in the line", () => {
+  const tracker = new AgentActivityTracker();
+  tracker.noteInput("pane-a", "\x1b[A\x1b[B"); // history recall attempts
+  tracker.noteInput("pane-a", "\x03"); // user gives up and clears the line
+  tracker.noteInput("pane-a", "\x1b[200~codex\x1b[201~\r"); // then pastes
+  assert.equal(tracker.snapshot()["pane-a"]?.agent, "codex");
+});
+
+test("a lone ESC keypress does not eat the character after it", () => {
+  const tracker = new AgentActivityTracker();
+  tracker.noteInput("pane-a", "\x1b"); // Escape arrives in its own frame
+  tracker.noteInput("pane-a", "kimi\r");
+  assert.equal(tracker.snapshot()["pane-a"]?.agent, "kimi");
+});
+
 test("server wires the shared tracker through PTY input, output, and APIs", () => {
   const server = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
 

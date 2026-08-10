@@ -33,6 +33,8 @@ interface SessionStreamState {
   acknowledgedEpoch?: number;
   taskEpoch: number;
   input: string;
+  /** Incomplete escape sequence tail held across input chunks. */
+  pendingInputSequence: string;
   /** Bounded raw tail used only to recognize a real interactive agent banner. */
   outputTail: string;
   pendingOsc: string;
@@ -40,6 +42,8 @@ interface SessionStreamState {
 
 const MAX_INPUT_CHARS = 512;
 const MAX_INPUT_SCAN_CHARS = 8_192;
+/** Escape sequences are short; a longer pending tail is garbage, not a sequence. */
+const MAX_PENDING_INPUT_SEQUENCE_CHARS = 128;
 const MAX_OUTPUT_TAIL_CHARS = 4_096;
 const MAX_PENDING_OSC_CHARS = 2_048;
 const WORKING_TITLE_RE =
@@ -180,7 +184,13 @@ export class AgentActivityTracker {
     const normalizedAgent = cleanAgent(agent);
     if (normalizedAgent) stream.agent = normalizedAgent;
 
-    const scanned = data.slice(0, MAX_INPUT_SCAN_CHARS);
+    // Terminals speak to the shell in escape sequences as much as in text:
+    // focus reports (\x1b[I / \x1b[O — conpty arms mode 1004 for every fresh
+    // Windows console), cursor keys, bracketed-paste markers, mouse reports.
+    // None of it is typed command text, so strip sequences before buffering;
+    // otherwise their printable tail ("[I") pollutes the next submitted line.
+    const cleaned = this.stripInputSequences(stream, data);
+    const scanned = cleaned.slice(0, MAX_INPUT_SCAN_CHARS);
     for (let index = 0; index < scanned.length; index++) {
       const char = scanned[index];
       if (char === "\r") {
@@ -197,10 +207,110 @@ export class AgentActivityTracker {
     // A hostile or accidental giant paste must not make the event loop scan
     // megabytes character-by-character. Preserve the only transition that can
     // matter outside the bounded prefix: an Enter submitted to an active agent.
-    if (data.length > scanned.length && data.indexOf("\r", scanned.length) >= 0) {
+    if (
+      cleaned.length > scanned.length &&
+      cleaned.indexOf("\r", scanned.length) >= 0
+    ) {
       stream.input = "";
       if (stream.agentActive) this.submitInput(id, stream);
     }
+  }
+
+  /**
+   * Remove terminal escape sequences from client input, keeping the text.
+   *
+   * Sequences can straddle two WebSocket messages, so a trailing partial is
+   * held in `pendingInputSequence` and retried with the next chunk. A lone
+   * ESC followed by a plain character (an Alt/Meta keypress, or the Escape
+   * key arriving in its own frame) is not a sequence: the ESC is dropped and
+   * the character is kept, matching how the raw byte stream behaved before.
+   */
+  private stripInputSequences(
+    stream: SessionStreamState,
+    data: string,
+  ): string {
+    if (!stream.pendingInputSequence && !data.includes("\x1b")) return data;
+    const input = stream.pendingInputSequence + data;
+    stream.pendingInputSequence = "";
+    let plain = "";
+    let cursor = 0;
+
+    while (cursor < input.length) {
+      const start = input.indexOf("\x1b", cursor);
+      if (start < 0) {
+        plain += input.slice(cursor);
+        break;
+      }
+      plain += input.slice(cursor, start);
+      const introducer = input[start + 1];
+      if (introducer === undefined) {
+        stream.pendingInputSequence = "\x1b";
+        break;
+      }
+      if (introducer === "[") {
+        // CSI: parameter bytes 0x30–0x3F, intermediates 0x20–0x2F, final 0x40–0x7E.
+        let scan = start + 2;
+        while (scan < input.length) {
+          const code = input.charCodeAt(scan);
+          if (code >= 0x20 && code <= 0x3f) {
+            scan++;
+            continue;
+          }
+          break;
+        }
+        if (scan >= input.length) {
+          stream.pendingInputSequence = input.slice(start);
+          break;
+        }
+        const finalCode = input.charCodeAt(scan);
+        if (finalCode >= 0x40 && finalCode <= 0x7e) {
+          cursor = scan + 1;
+          continue;
+        }
+        // Malformed: drop only the ESC and rescan what follows.
+        cursor = start + 1;
+        continue;
+      }
+      if (introducer === "]") {
+        // OSC: runs to BEL or ST.
+        const bell = input.indexOf("\x07", start + 2);
+        const st = input.indexOf("\x1b\\", start + 2);
+        const end = bell < 0 ? st : st < 0 ? bell : Math.min(bell, st);
+        if (end < 0) {
+          if (
+            input.length - start <=
+            MAX_PENDING_INPUT_SEQUENCE_CHARS
+          ) {
+            stream.pendingInputSequence = input.slice(start);
+          }
+          break;
+        }
+        cursor = end + (input.startsWith("\x1b\\", end) ? 2 : 1);
+        continue;
+      }
+      if (
+        introducer === "O" ||
+        introducer === "(" ||
+        introducer === ")" ||
+        introducer === "*" ||
+        introducer === "+"
+      ) {
+        // SS3 / charset selects: ESC, introducer, one final byte.
+        if (start + 2 >= input.length) {
+          stream.pendingInputSequence = input.slice(start);
+          break;
+        }
+        cursor = start + 3;
+        continue;
+      }
+      // Lone ESC (Alt/Meta, or the Escape key): drop it, keep the next byte.
+      cursor = start + 1;
+    }
+
+    if (stream.pendingInputSequence.length > MAX_PENDING_INPUT_SEQUENCE_CHARS) {
+      stream.pendingInputSequence = "";
+    }
+    return plain;
   }
 
   noteOutput(id: string, data: string): void {
@@ -436,6 +546,7 @@ export class AgentActivityTracker {
         sawForegroundCommand: false,
         taskEpoch: 0,
         input: "",
+        pendingInputSequence: "",
         outputTail: "",
         pendingOsc: "",
       };
