@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const execAsync = promisify(exec);
 
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
@@ -402,17 +403,63 @@ export async function worktreeOverview(cwd: string): Promise<
   return { repo: true, root, branch, worktrees };
 }
 
+/** Longest setup-command failure the dialog is asked to show. */
+const WARNING_CAP = 500;
+
+/**
+ * Drop the task description into the new worktree as TODO.txt, and hide that
+ * name from git: `info/exclude` (shared by every worktree of the repo, unlike
+ * a committed .gitignore) is the local-only ignore list, so the note never
+ * shows up as an untracked file — neither in this worktree's diff nor in
+ * anyone else's.
+ */
+async function writeTodo(dir: string, root: string, todo: string) {
+  fs.writeFileSync(path.join(dir, "TODO.txt"), todo.trimEnd() + "\n");
+  const commonDir = path.resolve(root, (await git(["rev-parse", "--git-common-dir"], root)).trim());
+  const infoDir = path.join(commonDir, "info");
+  fs.mkdirSync(infoDir, { recursive: true });
+  const exclude = path.join(infoDir, "exclude");
+  const prev = fs.existsSync(exclude) ? fs.readFileSync(exclude, "utf8") : "";
+  if (!prev.split("\n").some((l) => l.trim() === "TODO.txt")) {
+    fs.appendFileSync(exclude, (prev && !prev.endsWith("\n") ? "\n" : "") + "TODO.txt\n");
+  }
+}
+
+/**
+ * Run the user's setup command in the new worktree (copying dev-only config
+ * files in is the typical use). It goes through the platform shell so one
+ * line like `cp ../.env.development .` works as typed. Failure must not fail
+ * the creation — the worktree exists and is usable — so it comes back as a
+ * warning string for the dialog to show.
+ */
+async function runSetupCommand(dir: string, command: string): Promise<string | undefined> {
+  try {
+    await execAsync(command, { cwd: dir, timeout: 120_000, windowsHide: true });
+    return undefined;
+  } catch (e) {
+    const err = e as { stderr?: string; message?: string };
+    const detail = err.stderr?.trim() || err.message || String(e);
+    return detail.length > WARNING_CAP ? `${detail.slice(0, WARNING_CAP)}…` : detail;
+  }
+}
+
 /**
  * Create a linked worktree on a NEW branch cut from `base` (the repo's HEAD
  * when omitted). The directory is a sibling of the main checkout named after
  * the branch, numbered when that name is taken — the client never picks a
  * path, so one can't be aimed outside the repo's neighborhood.
+ *
+ * With `todo` the description lands in the worktree as TODO.txt; with
+ * `command` a setup command runs in it after creation. Both are best-effort
+ * extras on an already-created worktree: their failures are collected into
+ * `warning` rather than thrown.
  */
 export async function addWorktree(
   cwd: string,
   branch: string,
   base: string | undefined,
-): Promise<{ path: string }> {
+  extras: { todo?: string; command?: string } = {},
+): Promise<{ path: string; warning?: string }> {
   const root = await repoRoot(cwd);
   if (!root) throw new Error("Not inside a git repository.");
   if (!validRef(branch)) throw new Error(`Invalid branch name: ${branch}`);
@@ -425,7 +472,20 @@ export async function addWorktree(
   for (let n = 2; fs.existsSync(dir); n++) dir = path.join(path.dirname(root), `${stem}-${n}`);
 
   await git(["worktree", "add", dir, "-b", branch, ...(base ? [base] : [])], root);
-  return { path: dir };
+
+  const warnings: string[] = [];
+  if (extras.todo?.trim()) {
+    try {
+      await writeTodo(dir, root, extras.todo);
+    } catch (e) {
+      warnings.push(`TODO.txt: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (extras.command?.trim()) {
+    const failure = await runSetupCommand(dir, extras.command.trim());
+    if (failure) warnings.push(failure);
+  }
+  return { path: dir, warning: warnings.length ? warnings.join("\n") : undefined };
 }
 
 /**

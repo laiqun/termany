@@ -1456,7 +1456,13 @@ const http = createServer((req, res) => {
           String(body?.session ?? ""),
         );
         try {
-          json(200, await addWorktree(cwd, branch, body?.base ? String(body.base) : undefined));
+          json(
+            200,
+            await addWorktree(cwd, branch, body?.base ? String(body.base) : undefined, {
+              todo: body?.todo ? String(body.todo) : undefined,
+              command: body?.command ? String(body.command) : undefined,
+            }),
+          );
         } catch (error) {
           json(400, { error: error instanceof Error ? error.message : String(error) });
         }

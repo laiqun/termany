@@ -6147,6 +6147,22 @@ button.gd-branch:hover svg {
   font-size: 12px;
   color: var(--fg-dim);
 }
+/* Multi-line task description in the new-worktree dialog — ws-dialog-input
+   is sized for single-line inputs, so the textarea overrides the height. */
+.ws-dialog-input.gd-todo {
+  height: auto;
+  min-height: 180px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+/* The new-worktree dialog carries more fields than the other ws-dialogs —
+   give its inputs room. */
+.ws-dialog.gd-wide {
+  width: 560px;
+}
+.ws-dialog-input.gd-command {
+  height: 42px;
+}
 .gd-dialog-warn {
   margin: 8px 0 0;
   font-size: 12.5px;

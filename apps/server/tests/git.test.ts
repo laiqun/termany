@@ -86,6 +86,39 @@ test("addWorktree refuses a branch name that already exists", async () => {
   }
 });
 
+test("addWorktree with a todo writes TODO.txt and hides it from git status", async () => {
+  const { dir, main } = makeRepo();
+  try {
+    const created = await addWorktree(main, "todo-topic", undefined, { todo: "Ship the thing\n" });
+    assert.equal(fs.readFileSync(path.join(created.path, "TODO.txt"), "utf8"), "Ship the thing\n");
+    // The exclude entry lives in the shared git dir, so the note is not an
+    // untracked file in ANY worktree of the repo.
+    const commonDir = git(["rev-parse", "--git-common-dir"], main).trim();
+    assert.ok(fs.readFileSync(path.join(main, commonDir, "info", "exclude"), "utf8").includes("TODO.txt"));
+    assert.equal(git(["status", "--porcelain"], created.path), "");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("addWorktree runs the setup command in the new worktree and only warns on failure", async () => {
+  const { dir, main } = makeRepo();
+  try {
+    const ok = await addWorktree(main, "cmd-ok", undefined, {
+      command: `${JSON.stringify(process.execPath)} -e "require('fs').writeFileSync('marker.txt','1')"`,
+    });
+    assert.equal(ok.warning, undefined);
+    assert.equal(fs.readFileSync(path.join(ok.path, "marker.txt"), "utf8"), "1");
+
+    // A failing command must not fail the creation — the worktree exists.
+    const bad = await addWorktree(main, "cmd-bad", undefined, { command: "exit 3" });
+    assert.ok(fs.existsSync(bad.path));
+    assert.ok(bad.warning, "a failing setup command should come back as a warning");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("removeWorktree refuses the main checkout", async () => {
   const { dir, main } = makeRepo();
   try {
