@@ -464,6 +464,7 @@ export default {
   "gitdiff.sameAs": "{base}과(와) 차이가 없습니다.",
   "gitdiff.summary": "{files}개 파일",
   "gitdiff.renamedFrom": "{path}에서 이름 변경됨",
+  "gitdiff.copyPath": "경로 복사",
   "gitdiff.overflow": "변경된 파일이 너무 많아 전부 나열할 수 없습니다.",
   "gitdiff.mainWorktree": "기본 체크아웃",
   "gitdiff.workingDir": "작업 디렉터리",

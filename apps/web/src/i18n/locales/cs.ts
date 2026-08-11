@@ -465,6 +465,7 @@ export default {
   "gitdiff.sameAs": "Oproti {base} není žádný rozdíl.",
   "gitdiff.summary": "soubory: {files}",
   "gitdiff.renamedFrom": "přejmenováno z {path}",
+  "gitdiff.copyPath": "Kopírovat cestu",
   "gitdiff.overflow": "Změněných souborů je příliš mnoho, než aby šly vypsat všechny.",
   "gitdiff.mainWorktree": "Hlavní kopie",
   "gitdiff.workingDir": "Pracovní adresář",

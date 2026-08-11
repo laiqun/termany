@@ -6238,16 +6238,51 @@ button.gd-branch:hover svg {
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  border: none;
+  gap: 4px;
+  padding: 4px 10px 4px 6px;
   border-radius: calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0 0;
   background: var(--bg-2);
   color: var(--fg);
   font-size: 12.5px;
+}
+/* The toggle takes the head's whole row minus the copy button, so clicking
+   anywhere on the path still expands the card. */
+.gd-card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
   text-align: left;
   cursor: pointer;
+}
+.gd-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.gd-copy:hover {
+  background: var(--bg-1);
+  color: var(--fg);
+}
+.gd-copy svg {
+  width: 13px;
+  height: 13px;
 }
 /* Collapsed, the header IS the card, so it takes the full rounding. */
 .gd-card:not(.open) .gd-card-head {

@@ -464,6 +464,7 @@ export default {
   "gitdiff.sameAs": "Tidak ada beda dengan {base}.",
   "gitdiff.summary": "{files} berkas",
   "gitdiff.renamedFrom": "diganti nama dari {path}",
+  "gitdiff.copyPath": "Salin jalur",
   "gitdiff.overflow": "Terlalu banyak berkas berubah untuk didaftar semua.",
   "gitdiff.mainWorktree": "Salinan utama",
   "gitdiff.workingDir": "Direktori kerja",

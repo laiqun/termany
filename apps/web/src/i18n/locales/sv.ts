@@ -464,6 +464,7 @@ export default {
   "gitdiff.sameAs": "Ingen skillnad mot {base}.",
   "gitdiff.summary": "{files} filer",
   "gitdiff.renamedFrom": "omdöpt från {path}",
+  "gitdiff.copyPath": "Kopiera sökväg",
   "gitdiff.overflow": "För många ändrade filer för att lista alla.",
   "gitdiff.mainWorktree": "Huvudkopian",
   "gitdiff.workingDir": "Arbetskatalog",

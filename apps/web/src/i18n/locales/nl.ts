@@ -464,6 +464,7 @@ export default {
   "gitdiff.sameAs": "Geen verschil met {base}.",
   "gitdiff.summary": "{files} bestanden",
   "gitdiff.renamedFrom": "hernoemd vanaf {path}",
+  "gitdiff.copyPath": "Pad kopiëren",
   "gitdiff.overflow": "Te veel gewijzigde bestanden om ze allemaal te tonen.",
   "gitdiff.mainWorktree": "Hoofdkopie",
   "gitdiff.workingDir": "Werkmap",

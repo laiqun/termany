@@ -464,6 +464,7 @@ export default {
   "gitdiff.sameAs": "Không khác gì so với {base}.",
   "gitdiff.summary": "{files} tệp",
   "gitdiff.renamedFrom": "đổi tên từ {path}",
+  "gitdiff.copyPath": "Sao chép đường dẫn",
   "gitdiff.overflow": "Quá nhiều tệp thay đổi nên không liệt kê hết được.",
   "gitdiff.mainWorktree": "Bản làm việc chính",
   "gitdiff.workingDir": "Thư mục làm việc",

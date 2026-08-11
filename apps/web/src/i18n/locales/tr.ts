@@ -464,6 +464,7 @@ export default {
   "gitdiff.sameAs": "{base} ile arasında fark yok.",
   "gitdiff.summary": "{files} dosya",
   "gitdiff.renamedFrom": "{path} yolundan yeniden adlandırıldı",
+  "gitdiff.copyPath": "Yolu kopyala",
   "gitdiff.overflow": "Değişen dosya sayısı hepsini listelemek için fazla.",
   "gitdiff.mainWorktree": "Ana kopya",
   "gitdiff.workingDir": "Çalışma dizini",

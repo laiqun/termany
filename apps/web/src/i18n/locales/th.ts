@@ -465,6 +465,7 @@ export default {
   "gitdiff.sameAs": "ไม่ต่างจาก {base}",
   "gitdiff.summary": "{files} ไฟล์",
   "gitdiff.renamedFrom": "เปลี่ยนชื่อมาจาก {path}",
+  "gitdiff.copyPath": "คัดลอกเส้นทาง",
   "gitdiff.overflow": "ไฟล์ที่เปลี่ยนมีมากเกินกว่าจะแสดงครบทุกไฟล์",
   "gitdiff.mainWorktree": "สำเนาหลัก",
   "gitdiff.workingDir": "ไดเรกทอรีการทำงาน",

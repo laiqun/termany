@@ -5,7 +5,7 @@ import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
 import { activeNode, useStore } from "../state/store";
 import { prewarmSession, queueWorktreeSetup } from "../terminal/manager";
-import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
+import { CheckIcon, ChevronIcon, CopyIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
 export type Section = "staged" | "unstaged" | "untracked" | "changed";
@@ -211,26 +211,50 @@ function FileCard({
   const lines = useMemo(() => (diff?.diff ? parseDiff(diff.diff) : []), [diff]);
   const dir = row.path.replace(/[^/]+$/, "");
   const name = row.path.split("/").pop();
+  const [copied, setCopied] = useState(false);
+
+  const copyPath = async () => {
+    try {
+      await navigator.clipboard.writeText(row.path);
+      setCopied(true);
+      // Flip the icon back so a second copy still reads as one.
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Clipboard denied (insecure origin / no permission) — leave the icon as is.
+    }
+  };
 
   return (
     <div className={`gd-card ${expanded ? "open" : ""}`}>
-      <button className="gd-card-head" onClick={onToggle} aria-expanded={expanded}>
-        <span className={`gd-chevron ${expanded ? "open" : ""}`}>
-          <ChevronIcon dir="right" />
-        </span>
-        <span className={`gd-status s-${row.status}`}>{row.status}</span>
-        <span className="gd-path">
-          <em>{dir}</em>
-          <b>{name}</b>
-        </span>
-        {row.oldPath && <span className="gd-renamed">{t("gitdiff.renamedFrom", { path: row.oldPath })}</span>}
-        {!row.binary && (row.additions > 0 || row.deletions > 0) && (
-          <span className="gd-counts">
-            <em className="add">+{row.additions}</em>
-            <em className="del">−{row.deletions}</em>
+      {/* The head is a div rather than one big button so the copy control can
+          sit beside the toggle — buttons can't nest. */}
+      <div className="gd-card-head">
+        <button
+          className="gd-copy"
+          title={t("gitdiff.copyPath")}
+          aria-label={t("gitdiff.copyPath")}
+          onClick={() => void copyPath()}
+        >
+          {copied ? <CheckIcon /> : <CopyIcon />}
+        </button>
+        <button className="gd-card-toggle" onClick={onToggle} aria-expanded={expanded}>
+          <span className={`gd-chevron ${expanded ? "open" : ""}`}>
+            <ChevronIcon dir="right" />
           </span>
-        )}
-      </button>
+          <span className={`gd-status s-${row.status}`}>{row.status}</span>
+          <span className="gd-path">
+            <em>{dir}</em>
+            <b>{name}</b>
+          </span>
+          {row.oldPath && <span className="gd-renamed">{t("gitdiff.renamedFrom", { path: row.oldPath })}</span>}
+          {!row.binary && (row.additions > 0 || row.deletions > 0) && (
+            <span className="gd-counts">
+              <em className="add">+{row.additions}</em>
+              <em className="del">−{row.deletions}</em>
+            </span>
+          )}
+        </button>
+      </div>
 
       {expanded && (
         <div className="gd-card-body">

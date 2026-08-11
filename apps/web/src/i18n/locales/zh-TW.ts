@@ -464,6 +464,7 @@ export default {
   "gitdiff.sameAs": "與 {base} 沒有差異。",
   "gitdiff.summary": "{files} 個檔案",
   "gitdiff.renamedFrom": "由 {path} 更名而來",
+  "gitdiff.copyPath": "複製路徑",
   "gitdiff.overflow": "變更的檔案太多，無法全部列出。",
   "gitdiff.mainWorktree": "主要工作目錄",
   "gitdiff.workingDir": "工作目錄",

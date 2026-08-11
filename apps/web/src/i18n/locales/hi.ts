@@ -465,6 +465,7 @@ export default {
   "gitdiff.sameAs": "{base} से कोई अंतर नहीं है।",
   "gitdiff.summary": "{files} फ़ाइलें",
   "gitdiff.renamedFrom": "{path} से नाम बदला गया",
+  "gitdiff.copyPath": "पथ कॉपी करें",
   "gitdiff.overflow": "बदली गई फ़ाइलें इतनी ज़्यादा हैं कि सब नहीं दिखाई जा सकतीं।",
   "gitdiff.mainWorktree": "मुख्य चेकआउट",
   "gitdiff.workingDir": "कार्यशील निर्देशिका",

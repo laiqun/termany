@@ -468,6 +468,7 @@ export default {
   "gitdiff.sameAs": "No difference from {base}.",
   "gitdiff.summary": "{files} files",
   "gitdiff.renamedFrom": "renamed from {path}",
+  "gitdiff.copyPath": "Copy path",
   "gitdiff.overflow": "Too many changed files to list them all.",
   "gitdiff.mainWorktree": "Main checkout",
   "gitdiff.workingDir": "Working directory",
