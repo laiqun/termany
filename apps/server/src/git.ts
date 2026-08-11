@@ -1,10 +1,9 @@
-import { exec, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const execAsync = promisify(exec);
 
 const GIT_TIMEOUT_MS = 10_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
@@ -403,44 +402,98 @@ export async function worktreeOverview(cwd: string): Promise<
   return { repo: true, root, branch, worktrees };
 }
 
-/** Longest setup-command failure the dialog is asked to show. */
-const WARNING_CAP = 500;
+/**
+ * Quote one argument for the interactive shell a terminal spawns —
+ * PowerShell on Windows, a POSIX shell elsewhere (both single-quote; only
+ * the escape for an embedded quote differs).
+ */
+function shellQuote(value: string): string {
+  if (process.platform === "win32") return `'${value.replace(/'/g, "''")}'`;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 /**
- * Drop the task description into the new worktree as TODO.txt, and hide that
- * name from git: `info/exclude` (shared by every worktree of the repo, unlike
- * a committed .gitignore) is the local-only ignore list, so the note never
- * shows up as an untracked file — neither in this worktree's diff nor in
- * anyone else's.
+ * The line that runs a script file when typed into the terminal, with the
+ * task description as its first argument. JS goes through the server's own
+ * Node (guaranteed present), Python through `python`; PowerShell and shell
+ * scripts get an explicit interpreter; a POSIX executable with no known
+ * extension runs itself (its shebang picks the interpreter). On Windows the
+ * shell is PowerShell, which needs `&` (or cmd, for batch files) to execute
+ * a path at all.
  */
-async function writeTodo(dir: string, root: string, todo: string) {
-  fs.writeFileSync(path.join(dir, "TODO.txt"), todo.trimEnd() + "\n");
-  const commonDir = path.resolve(root, (await git(["rev-parse", "--git-common-dir"], root)).trim());
-  const infoDir = path.join(commonDir, "info");
-  fs.mkdirSync(infoDir, { recursive: true });
-  const exclude = path.join(infoDir, "exclude");
-  const prev = fs.existsSync(exclude) ? fs.readFileSync(exclude, "utf8") : "";
-  if (!prev.split("\n").some((l) => l.trim() === "TODO.txt")) {
-    fs.appendFileSync(exclude, (prev && !prev.endsWith("\n") ? "\n" : "") + "TODO.txt\n");
+function scriptLine(file: string, description: string): string {
+  const q = `"${file}"`;
+  const arg = description ? ` ${shellQuote(description)}` : "";
+  const ext = path.extname(file).toLowerCase();
+  if (ext === ".js" || ext === ".mjs" || ext === ".cjs") return `${JSON.stringify(process.execPath)} ${q}${arg}`;
+  if (ext === ".py") return `python ${q}${arg}`;
+  if (ext === ".ps1") return `powershell -NoProfile -ExecutionPolicy Bypass -File ${q}${arg}`;
+  if (ext === ".sh") return `${process.platform === "win32" ? "bash" : "sh"} ${q}${arg}`;
+  if (process.platform === "win32") {
+    if (ext === ".bat" || ext === ".cmd") return `cmd /c ${q}${arg}`;
+    return `& ${q}${arg}`;
+  }
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return `${q}${arg}`;
+  } catch {
+    return `sh ${q}${arg}`;
   }
 }
 
 /**
- * Run the user's setup command in the new worktree (copying dev-only config
- * files in is the typical use). It goes through the platform shell so one
- * line like `cp ../.env.development .` works as typed. Failure must not fail
- * the creation — the worktree exists and is usable — so it comes back as a
- * warning string for the dialog to show.
+ * Repo-local bootstrap run before the dialog's setup step: the first
+ * existing file of this list, looked up in the new worktree (a committed
+ * setup script checks out there) and then in the main checkout (an
+ * uncommitted one only exists there). Typical content: copy
+ * .env.development, restore config/data.db, pnpm install — the per-machine
+ * environment fiddling a fresh worktree needs. Ordered per platform so a
+ * repo can carry both a .cmd and a .sh and each OS picks its own.
  */
-async function runSetupCommand(dir: string, command: string): Promise<string | undefined> {
-  try {
-    await execAsync(command, { cwd: dir, timeout: 120_000, windowsHide: true });
-    return undefined;
-  } catch (e) {
-    const err = e as { stderr?: string; message?: string };
-    const detail = err.stderr?.trim() || err.message || String(e);
-    return detail.length > WARNING_CAP ? `${detail.slice(0, WARNING_CAP)}…` : detail;
+const REPO_SETUP_SCRIPTS =
+  process.platform === "win32"
+    ? [".termany/setup.cmd", ".termany/setup.ps1", ".termany/setup.js", ".termany/setup.sh"]
+    : [".termany/setup.sh", ".termany/setup.js", ".termany/setup.py", ".termany/setup.ps1"];
+
+function repoSetupScript(dir: string, root: string): string | undefined {
+  for (const name of REPO_SETUP_SCRIPTS) {
+    for (const base of [dir, root]) {
+      try {
+        if (fs.statSync(path.join(base, name)).isFile()) return path.join(base, name);
+      } catch {
+        /* not here — keep looking */
+      }
+    }
   }
+  return undefined;
+}
+
+/**
+ * The main checkout of the repo holding `dir`. A worktree's own
+ * `--show-toplevel` is the worktree itself, so the main checkout — where an
+ * UNCOMMITTED setup script lives — is found through the shared git dir.
+ */
+async function mainCheckout(dir: string): Promise<string | undefined> {
+  const root = await repoRoot(dir);
+  if (!root) return undefined;
+  const common = (await git(["rev-parse", "--git-common-dir"], root)).trim();
+  return path.dirname(path.resolve(root, common));
+}
+
+/**
+ * The line typed into a freshly created worktree's terminal (see the
+ * terminal WebSocket's `worktreeSetup`/`desc` params): the repo's setup
+ * script, with the task description as its first argument. Looked up in the
+ * worktree first (a committed script checks out there), then in the main
+ * checkout (an uncommitted one only exists there). Undefined when the repo
+ * has no setup script — or when `dir` is not in a repo at all (a stray
+ * terminal must not pick up some unrelated checkout's setup).
+ */
+export async function worktreeStartupCommand(dir: string, description?: string): Promise<string | undefined> {
+  const main = await mainCheckout(dir);
+  if (!main) return undefined;
+  const bootstrap = repoSetupScript(dir, main);
+  return bootstrap ? scriptLine(bootstrap, description?.trim() ?? "") : undefined;
 }
 
 /**
@@ -449,17 +502,15 @@ async function runSetupCommand(dir: string, command: string): Promise<string | u
  * the branch, numbered when that name is taken — the client never picks a
  * path, so one can't be aimed outside the repo's neighborhood.
  *
- * With `todo` the description lands in the worktree as TODO.txt; with
- * `command` a setup command runs in it after creation. Both are best-effort
- * extras on an already-created worktree: their failures are collected into
- * `warning` rather than thrown.
+ * The setup script itself does NOT run here: creation stays instant, and
+ * the line is typed into the terminal of the tab the client opens for the
+ * worktree instead — see worktreeStartupCommand.
  */
 export async function addWorktree(
   cwd: string,
   branch: string,
   base: string | undefined,
-  extras: { todo?: string; command?: string } = {},
-): Promise<{ path: string; warning?: string }> {
+): Promise<{ path: string }> {
   const root = await repoRoot(cwd);
   if (!root) throw new Error("Not inside a git repository.");
   if (!validRef(branch)) throw new Error(`Invalid branch name: ${branch}`);
@@ -472,20 +523,7 @@ export async function addWorktree(
   for (let n = 2; fs.existsSync(dir); n++) dir = path.join(path.dirname(root), `${stem}-${n}`);
 
   await git(["worktree", "add", dir, "-b", branch, ...(base ? [base] : [])], root);
-
-  const warnings: string[] = [];
-  if (extras.todo?.trim()) {
-    try {
-      await writeTodo(dir, root, extras.todo);
-    } catch (e) {
-      warnings.push(`TODO.txt: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  if (extras.command?.trim()) {
-    const failure = await runSetupCommand(dir, extras.command.trim());
-    if (failure) warnings.push(failure);
-  }
-  return { path: dir, warning: warnings.length ? warnings.join("\n") : undefined };
+  return { path: dir };
 }
 
 /**

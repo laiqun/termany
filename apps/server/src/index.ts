@@ -52,6 +52,7 @@ import {
   gitDiffs,
   gitOverview,
   removeWorktree,
+  worktreeStartupCommand,
   worktreeOverview,
 } from "./git.js";
 import { pickFolder } from "./folderPicker.js";
@@ -1467,13 +1468,7 @@ const http = createServer((req, res) => {
           String(body?.session ?? ""),
         );
         try {
-          json(
-            200,
-            await addWorktree(cwd, branch, body?.base ? String(body.base) : undefined, {
-              todo: body?.todo ? String(body.todo) : undefined,
-              command: body?.command ? String(body.command) : undefined,
-            }),
-          );
+          json(200, await addWorktree(cwd, branch, body?.base ? String(body.base) : undefined));
         } catch (error) {
           json(400, { error: error instanceof Error ? error.message : String(error) });
         }
@@ -1877,6 +1872,10 @@ wss.on("connection", async (ws: WebSocket, req) => {
   const sessionId = url.searchParams.get("session");
   const sshTarget = url.searchParams.get("ssh");
   const agent = url.searchParams.get("agent") ?? undefined;
+  // A fresh worktree's terminal is marked with `worktreeSetup`: its repo's
+  // setup script gets typed into the shell with the task description as the
+  // first argument, once the shell is up.
+  const setupDesc = url.searchParams.get("desc") ?? undefined;
 
   // --- Reattach: the session's shell is still running (detached or stolen
   // from a stale connection) — resume it instead of spawning a fresh one.
@@ -2063,6 +2062,16 @@ wss.on("connection", async (ws: WebSocket, req) => {
   }
   if (sessionId) activityTracker.bindAgent(sessionId, agent);
   wireSession(sessionId ?? undefined, session);
+
+  // A freshly created worktree's terminal (the client marks the spawn with
+  // `worktreeSetup`): the repo's setup script is typed into the shell like
+  // user input, so progress (pnpm install & co.) is visible and the HTTP
+  // create call never blocks on it. Input typed before the first prompt
+  // simply queues in the pty.
+  if (!sshTarget && url.searchParams.has("worktreeSetup")) {
+    const startup = await worktreeStartupCommand(cwd, setupDesc).catch(() => undefined);
+    if (startup) pty.write(`${startup}\r`);
+  }
 
   pendingMessages.splice(0).forEach(applyClientMessage);
 });

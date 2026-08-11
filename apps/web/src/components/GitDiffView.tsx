@@ -4,6 +4,7 @@ import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
 import { activeNode, useStore } from "../state/store";
+import { queueWorktreeSetup } from "../terminal/manager";
 import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
@@ -284,29 +285,22 @@ function useEscapeToClose(
 
 /**
  * "New worktree…" from the worktree switcher. Fields: the new branch name and
- * the ref to cut it from, plus three optional extras — a task description
- * (saved by the server as TODO.txt in the new worktree), a setup command to
- * run there (e.g. copying dev-only config files in), and whether to open a
- * tab for the worktree once created. The directory is the server's choice (a
- * sibling of the main checkout). The setup command is remembered per repo.
+ * the ref to cut it from, plus two optional extras — a task description
+ * (passed to the repo's .termany/setup script as its first argument) and
+ * whether to open a tab for the worktree once created. The directory is the
+ * server's choice (a sibling of the main checkout). Creation itself runs
+ * nothing: the setup script is typed into the opened tab's terminal instead,
+ * so a slow bootstrap (pnpm install) never blocks this dialog.
  */
 function NewWorktreeDialog({
   refs,
   defaultBase,
-  commandKey,
   onCreate,
   onClose,
 }: {
   refs: string[];
   defaultBase: string;
-  /** Identifies the repo for remembering the setup command. */
-  commandKey: string;
-  /** Resolves with a warning (setup step failed) when the worktree itself was created. */
-  onCreate: (
-    branch: string,
-    base: string,
-    opts: { todo: string; command: string; openTab: boolean },
-  ) => Promise<string | undefined>;
+  onCreate: (branch: string, base: string, opts: { todo: string; openTab: boolean }) => Promise<void>;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -314,14 +308,6 @@ function NewWorktreeDialog({
   const [branch, setBranch] = useState("");
   const [base, setBase] = useState(defaultBase);
   const [todo, setTodo] = useState("");
-  const commandStorageKey = `termany.worktreeSetupCmd:${commandKey}`;
-  const [command, setCommand] = useState(() => {
-    try {
-      return localStorage.getItem(commandStorageKey) ?? "";
-    } catch {
-      return "";
-    }
-  });
   const [openTab, setOpenTab] = useState(() => {
     try {
       return localStorage.getItem("termany.worktreeOpenTab") !== "0";
@@ -330,7 +316,6 @@ function NewWorktreeDialog({
     }
   });
   const [error, setError] = useState("");
-  const [warning, setWarning] = useState("");
   const [busy, setBusy] = useState(false);
   const backdropRef = useNativeOccluder<HTMLDivElement>("gd-new-worktree");
   useEscapeToClose(backdropRef, onClose);
@@ -340,20 +325,8 @@ function NewWorktreeDialog({
     if (!name || busy) return;
     setBusy(true);
     try {
-      const setupWarning = await onCreate(name, base, { todo, command, openTab });
-      try {
-        localStorage.setItem(commandStorageKey, command);
-      } catch {
-        /* private mode — remembering the command is a nicety */
-      }
-      // A warning means the worktree exists but an extra step failed: stay
-      // open to show it, and let the user close explicitly.
-      if (setupWarning) {
-        setWarning(setupWarning);
-        setBusy(false);
-      } else {
-        onClose();
-      }
+      await onCreate(name, base, { todo, openTab });
+      onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
@@ -365,7 +338,7 @@ function NewWorktreeDialog({
     try {
       localStorage.setItem("termany.worktreeOpenTab", checked ? "1" : "0");
     } catch {
-      /* see above */
+      /* private mode — remembering the checkbox is a nicety */
     }
   };
 
@@ -380,7 +353,7 @@ function NewWorktreeDialog({
             autoFocus
             value={branch}
             spellCheck={false}
-            disabled={busy || !!warning}
+            disabled={busy}
             onChange={(e) => setBranch(e.target.value)}
             onKeyDown={(e) => {
               if (ime.handled(e)) return;
@@ -406,7 +379,7 @@ function NewWorktreeDialog({
             rows={5}
             value={todo}
             spellCheck={false}
-            disabled={busy || !!warning}
+            disabled={busy}
             placeholder={t("gitdiff.taskDescriptionHint")}
             onChange={(e) => setTodo(e.target.value)}
             onKeyDown={(e) => {
@@ -414,53 +387,27 @@ function NewWorktreeDialog({
             }}
           />
         </div>
-        <div className="gd-field">
-          <label>{t("gitdiff.setupCommand")}</label>
-          <input
-            {...ime.props}
-            className="ws-dialog-input gd-command"
-            value={command}
-            spellCheck={false}
-            disabled={busy || !!warning}
-            placeholder={t("gitdiff.setupCommandHint")}
-            onChange={(e) => setCommand(e.target.value)}
-            onKeyDown={(e) => {
-              if (ime.handled(e)) return;
-              if (e.key === "Enter") void submit();
-              else if (e.key === "Escape") onClose();
-            }}
-          />
-        </div>
         <label className="gd-dialog-check">
           <input
             type="checkbox"
             checked={openTab}
-            disabled={busy || !!warning}
+            disabled={busy}
             onChange={(e) => toggleOpenTab(e.target.checked)}
           />
           {t("gitdiff.openTabAfterCreate")}
         </label>
         {error && <p className="gd-dialog-error">{error}</p>}
-        {warning && <p className="gd-dialog-warn">{t("gitdiff.setupWarning", { warning })}</p>}
         <div className="ws-dialog-actions">
-          {warning ? (
-            <button className="ws-dialog-btn primary" onClick={onClose}>
-              {t("common.close")}
-            </button>
-          ) : (
-            <>
-              <button className="ws-dialog-btn" onClick={onClose}>
-                {t("common.cancel")}
-              </button>
-              <button
-                className="ws-dialog-btn primary"
-                disabled={!branch.trim() || busy}
-                onClick={() => void submit()}
-              >
-                {t("gitdiff.createWorktree")}
-              </button>
-            </>
-          )}
+          <button className="ws-dialog-btn" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button
+            className="ws-dialog-btn primary"
+            disabled={!branch.trim() || busy}
+            onClick={() => void submit()}
+          >
+            {t("gitdiff.createWorktree")}
+          </button>
         </div>
       </div>
     </div>
@@ -720,10 +667,11 @@ export function GitDiffView({
    * new tab there. The path goes through the fs endpoint first so it takes
    * the same normalized form a tab's cwd carries (the tab bar's inline editor
    * resolves paths the same way). Shared by the branch chip and the
-   * open-after-create flow of the new-worktree dialog.
+   * open-after-create flow of the new-worktree dialog — which also passes
+   * the task description for the new tab's terminal (see queueWorktreeSetup).
    */
   const openTabForDir = useCallback(
-    async (dir: string) => {
+    async (dir: string, setupDescription?: string) => {
       let target = dir;
       try {
         const r = await fetch(apiPath(`/api/fs/list?path=${encodeURIComponent(target)}`));
@@ -740,7 +688,15 @@ export function GitDiffView({
       // addHTab activates the tab it makes; claim it for the directory.
       addHTab();
       const created = activeNode(useStore.getState())?.activeHTab;
-      if (created) setHTabCwd(created, target);
+      if (created) {
+        setHTabCwd(created, target);
+        if (setupDescription !== undefined) {
+          const leaf = activeNode(useStore.getState())?.htabs.find((h) => h.id === created)?.focused;
+          // Queued before React mounts the pane's terminal, which consumes it
+          // when the shell first spawns.
+          if (leaf) queueWorktreeSetup(leaf, setupDescription);
+        }
+      }
     },
     [setActiveHTab, addHTab, setHTabCwd],
   );
@@ -905,19 +861,15 @@ export function GitDiffView({
   const [deletingBranch, setDeletingBranch] = useState<string | null>(null);
 
   /**
-   * Directory of the worktree the dialog just created and wants a tab opened
-   * for. The open happens when the dialog CLOSES, not mid-create: activating
-   * another tab can unmount this panel (and the dialog with it), which would
-   * swallow the setup-command warning the dialog might still need to show.
+   * What the dialog just created and wants a tab opened for: the worktree's
+   * directory plus the setup steps to run in that tab's terminal. The open
+   * happens when the dialog CLOSES, not mid-create: activating another tab
+   * can unmount this panel (and the dialog with it).
    */
-  const createdDirRef = useRef<string | null>(null);
+  const createdRef = useRef<{ dir: string; description: string } | null>(null);
 
   const createWorktree = useCallback(
-    async (
-      branch: string,
-      baseRef: string,
-      opts: { todo: string; command: string; openTab: boolean },
-    ): Promise<string | undefined> => {
+    async (branch: string, baseRef: string, opts: { todo: string; openTab: boolean }): Promise<void> => {
       const r = await fetch(apiPath("/api/git/worktrees"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -925,24 +877,23 @@ export function GitDiffView({
           cwd: cwd ?? tabCwd ?? undefined,
           branch,
           base: baseRef || undefined,
-          todo: opts.todo.trim() || undefined,
-          command: opts.command.trim() || undefined,
         }),
       });
-      const data = (await r.json().catch(() => ({}))) as { error?: string; path?: string; warning?: string };
+      const data = (await r.json().catch(() => ({}))) as { error?: string; path?: string };
       if (!r.ok) throw new Error(data.error ?? String(r.status));
-      if (opts.openTab && data.path) createdDirRef.current = data.path;
+      if (opts.openTab && data.path) {
+        createdRef.current = { dir: data.path, description: opts.todo.trim() };
+      }
       await load();
-      return data.warning;
     },
     [tabCwd, cwd, load],
   );
 
   const closeNewDialog = useCallback(() => {
     setNewOpen(false);
-    const dir = createdDirRef.current;
-    createdDirRef.current = null;
-    if (dir) void openTabForDir(dir);
+    const created = createdRef.current;
+    createdRef.current = null;
+    if (created) void openTabForDir(created.dir, created.description);
   }, [openTabForDir]);
 
   const removeWorktreeByPath = useCallback(
@@ -1126,7 +1077,6 @@ export function GitDiffView({
         <NewWorktreeDialog
           refs={overview.refs}
           defaultBase={worktreeList.find((w) => w.main)?.branch ?? overview.branch}
-          commandKey={overview.root}
           onCreate={createWorktree}
           onClose={closeNewDialog}
         />

@@ -1370,9 +1370,28 @@ export function applyFontSize(size: number) {
   for (const s of sessions.values()) s.term.options.fontSize = size;
 }
 
+/**
+ * Setup payloads parked for a session's first spawn, keyed by session id
+ * (= pane id for a local terminal). The new-worktree flow queues the task
+ * description here; the server types the repo's setup script into the fresh
+ * shell with the description as its first argument.
+ */
+const pendingWorktreeSetups = new Map<string, string | undefined>();
+
+/** Mark a terminal session as a fresh worktree's, with its task description. */
+export function queueWorktreeSetup(sessionId: string, description?: string) {
+  pendingWorktreeSetups.set(sessionId, description?.trim() || undefined);
+}
+
 function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
+
+  // A setup marker queued by the worktree-creation flow is consumed by the
+  // FIRST spawn of the session it was parked for.
+  const worktreeSetup = pendingWorktreeSetups.has(id);
+  const setupDescription = pendingWorktreeSetups.get(id);
+  pendingWorktreeSetups.delete(id);
 
   const el = document.createElement("div");
   el.className = "term-host";
@@ -1492,6 +1511,8 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
           session: id,
           cwd,
           ssh: sshTarget,
+          worktreeSetup: worktreeSetup ? "1" : undefined,
+          desc: setupDescription,
         });
 
   const initialBackend = spawnBackend();

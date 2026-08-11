@@ -74,6 +74,11 @@ An agent runs in one pane, and its diff opens in the pane next to it.
   repository. Sessions whose directory no longer exists appear under **Deleted worktrees**,
   and resume from the main checkout. Any session resumes in a new pane, already `cd`'d to
   its project.
+- **Setup scripts for new worktrees.** A `.termany/setup.*` script in the repo (`.cmd`,
+  `.ps1`, `.js`, or `.sh` on Windows; `.sh`, `.js`, `.py`, `.ps1` elsewhere) runs in the
+  terminal of the tab opened for a fresh worktree — the place for per-machine environment
+  setup like copying `.env.development`, restoring `config/data.db`, or `pnpm install`.
+  The dialog's task description is passed to it as the first argument.
 - **Activity monitor.** ⇧⌘M shows CPU, memory, swap, and memory pressure, plus the process
   list grouped by program. Type a port number in the search box to find the process that
   holds it, then terminate it from the same row.
