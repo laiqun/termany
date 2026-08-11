@@ -4,7 +4,7 @@ import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { useNativeOccluder } from "../nativeViewOcclusion";
 import { activeNode, useStore } from "../state/store";
-import { queueWorktreeSetup } from "../terminal/manager";
+import { prewarmSession, queueWorktreeSetup } from "../terminal/manager";
 import { ChevronIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
@@ -663,15 +663,18 @@ export function GitDiffView({
   const closeHTabsWhere = useStore((s) => s.closeHTabsWhere);
 
   /**
-   * Activate the tab already working in `dir` when there is one, else open a
-   * new tab there. The path goes through the fs endpoint first so it takes
-   * the same normalized form a tab's cwd carries (the tab bar's inline editor
-   * resolves paths the same way). Shared by the branch chip and the
-   * open-after-create flow of the new-worktree dialog — which also passes
-   * the task description for the new tab's terminal (see queueWorktreeSetup).
+   * Open a tab working in `dir` when there isn't one yet. The path goes through
+   * the fs endpoint first so it takes the same normalized form a tab's cwd
+   * carries (the tab bar's inline editor resolves paths the same way). Shared
+   * by the branch chip and the open-after-create flow of the new-worktree
+   * dialog — which also passes the task description for the new tab's terminal
+   * (see queueWorktreeSetup). `activate: false` creates/queues everything but
+   * leaves the user's current tab focused (the new-worktree dialog uses this:
+   * create the tab, don't jump to it).
    */
   const openTabForDir = useCallback(
-    async (dir: string, setupDescription?: string) => {
+    async (dir: string, setupDescription?: string, opts?: { activate?: boolean }) => {
+      const activate = opts?.activate !== false;
       let target = dir;
       try {
         const r = await fetch(apiPath(`/api/fs/list?path=${encodeURIComponent(target)}`));
@@ -682,10 +685,11 @@ export function GitDiffView({
       }
       const hit = activeNode(useStore.getState())?.htabs.find((h) => h.cwd && sameDir(h.cwd, target));
       if (hit) {
-        setActiveHTab(hit.id);
+        if (activate) setActiveHTab(hit.id);
         return;
       }
       // addHTab activates the tab it makes; claim it for the directory.
+      const previous = activate ? undefined : activeNode(useStore.getState())?.activeHTab;
       addHTab();
       const created = activeNode(useStore.getState())?.activeHTab;
       if (created) {
@@ -694,8 +698,15 @@ export function GitDiffView({
           const leaf = activeNode(useStore.getState())?.htabs.find((h) => h.id === created)?.focused;
           // Queued before React mounts the pane's terminal, which consumes it
           // when the shell first spawns.
-          if (leaf) queueWorktreeSetup(leaf, setupDescription);
+          if (leaf) {
+            queueWorktreeSetup(leaf, setupDescription);
+            // A background tab's terminal would otherwise only spawn on first
+            // visit; prewarm so the setup script runs right away.
+            if (!activate) prewarmSession(leaf, target);
+          }
         }
+        // Hand focus back so creating the tab didn't yank the user over to it.
+        if (!activate && previous && previous !== created) setActiveHTab(previous);
       }
     },
     [setActiveHTab, addHTab, setHTabCwd],
@@ -893,7 +904,8 @@ export function GitDiffView({
     setNewOpen(false);
     const created = createdRef.current;
     createdRef.current = null;
-    if (created) void openTabForDir(created.dir, created.description);
+    // Create the new worktree's tab (and queue its setup) without jumping to it.
+    if (created) void openTabForDir(created.dir, created.description, { activate: false });
   }, [openTabForDir]);
 
   const removeWorktreeByPath = useCallback(

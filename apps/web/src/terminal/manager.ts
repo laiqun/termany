@@ -1383,6 +1383,17 @@ export function queueWorktreeSetup(sessionId: string, description?: string) {
   pendingWorktreeSetups.set(sessionId, description?.trim() || undefined);
 }
 
+/**
+ * Spawn a session's backend without mounting its terminal: the shell starts
+ * server-side right away (consuming any queued worktree setup) and its output
+ * buffers into the xterm instance until the pane first attaches. The
+ * new-worktree flow uses this so the setup script runs immediately even
+ * though the fresh tab is created in the background, never activated.
+ */
+export function prewarmSession(id: string, cwd?: string) {
+  getSession(id, cwd);
+}
+
 function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): Session {
   const existing = sessions.get(id);
   if (existing) return existing;
