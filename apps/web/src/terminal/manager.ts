@@ -1357,6 +1357,32 @@ function refreshOnSymbolsFontLoad() {
     });
 }
 
+// While the window is hidden the webview stops painting and the OS may evict
+// the GPU textures xterm's WebGL renderer draws from. That is not a context
+// loss (onContextLoss never fires), so on return the canvas stays blank until
+// some output forces a redraw — even though the buffer is fully intact. Force
+// a repaint of every attached terminal when the window becomes visible again:
+// clearTextureAtlas re-rasterizes glyphs, refresh re-renders the rows. Only
+// attached panes are repainted — detached ones get their repaint from the
+// attach path (attachSession -> refreshSessionAfterLayout) when shown.
+let visibilityWatchInstalled = false;
+function repaintOnWindowVisible() {
+  if (visibilityWatchInstalled || typeof document === "undefined") return;
+  visibilityWatchInstalled = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    // Wait a frame so the compositor is back before redrawing — painting in
+    // the visibilitychange callback itself can still be discarded.
+    requestAnimationFrame(() => {
+      for (const s of sessions.values()) {
+        if (!s.opened || !s.el.isConnected) continue;
+        s.term.clearTextureAtlas();
+        s.term.refresh(0, s.term.rows - 1);
+      }
+    });
+  });
+}
+
 /** Push a font family change to every live terminal + future sessions. The
  *  symbols fallback rides along so Nerd Font icons survive any font choice. */
 export function applyFontFamily(family: string) {
@@ -1548,6 +1574,7 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
   };
   sessions.set(id, session);
   refreshOnSymbolsFontLoad();
+  repaintOnWindowVisible();
   if (sshTarget) notifyConnectionStatus();
 
   const wireBackend = (b: ITerminalBackend) => {
