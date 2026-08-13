@@ -1365,14 +1365,18 @@ function refreshOnSymbolsFontLoad() {
 // clearTextureAtlas re-rasterizes glyphs, refresh re-renders the rows. Only
 // attached panes are repainted — detached ones get their repaint from the
 // attach path (attachSession -> refreshSessionAfterLayout) when shown.
+//
+// On Windows/WebView2 merely being *covered* by other windows does not fire
+// visibilitychange (only minimize/restore does), so listen to window focus
+// too — switching back to the app always triggers it, and the repaint is
+// cheap and idempotent.
 let visibilityWatchInstalled = false;
 function repaintOnWindowVisible() {
   if (visibilityWatchInstalled || typeof document === "undefined") return;
   visibilityWatchInstalled = true;
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
+  const repaint = () => {
     // Wait a frame so the compositor is back before redrawing — painting in
-    // the visibilitychange callback itself can still be discarded.
+    // the visibilitychange/focus callback itself can still be discarded.
     requestAnimationFrame(() => {
       for (const s of sessions.values()) {
         if (!s.opened || !s.el.isConnected) continue;
@@ -1380,7 +1384,12 @@ function repaintOnWindowVisible() {
         s.term.refresh(0, s.term.rows - 1);
       }
     });
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    repaint();
   });
+  window.addEventListener("focus", repaint);
 }
 
 /** Push a font family change to every live terminal + future sessions. The
