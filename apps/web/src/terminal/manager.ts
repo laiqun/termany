@@ -359,8 +359,8 @@ function applyAgentActivityPayload(payload: any) {
   const nextActiveSessions = new Set<string>(
     Array.isArray(payload.activeSessions)
       ? payload.activeSessions.filter(
-          (id: unknown): id is string => typeof id === "string" && !!id,
-        )
+        (id: unknown): id is string => typeof id === "string" && !!id,
+      )
       : [],
   );
 
@@ -415,7 +415,7 @@ function ensureAgentActivitySync() {
     .then(async (response) => {
       if (response.ok) applyAgentActivityPayload(await readJsonResponse(response));
     })
-    .catch(() => {});
+    .catch(() => { });
   if (typeof EventSource === "undefined") return;
   const source = new EventSource(`${apiUrl()}/api/activity/events`);
   source.addEventListener("activity", (event) => {
@@ -427,7 +427,7 @@ function ensureAgentActivitySync() {
       /* the next event is another complete snapshot */
     }
   });
-  source.onerror = () => {};
+  source.onerror = () => { };
   agentActivitySource = source;
 }
 
@@ -881,7 +881,7 @@ function writeTerminalInput(id: string, session: Session, data: string) {
   // before Enter so a fast completion cannot be overwritten by a late start.
   if (agent) startLocalAgentActivity(id, agent);
   const run = (previous ?? Promise.resolve())
-    .catch(() => {})
+    .catch(() => { })
     .then(async () => {
       if (agent) {
         await registerRemoteAgentActivity(id, agent);
@@ -989,7 +989,7 @@ export function acknowledgeAgentActivities(ids: string[]) {
         applyAgentActivityPayload(await readJsonResponse(response));
       }
     })
-    .catch(() => {});
+    .catch(() => { });
 }
 
 export function agentActivityTitle(
@@ -998,7 +998,7 @@ export function agentActivityTitle(
   const language = getLanguage();
   const agent = activity.agent
     ? loadAgentConfigs().find((config) => config.id === activity.agent)?.name ??
-      activity.agent
+    activity.agent
     : translate(language, "activity.genericAgent");
   return translate(language, `activity.${activity.status}`, { agent });
 }
@@ -1296,7 +1296,7 @@ function traceImeEvents(term: Terminal) {
         const k = e as KeyboardEvent;
         imeLog(
           `${type} key=${fmt(k.key)} code=${k.code} keyCode=${k.keyCode} ` +
-            `composing=${k.isComposing} ta=${fmt(ta.value)}`
+          `composing=${k.isComposing} ta=${fmt(ta.value)}`
         );
       },
       true
@@ -1316,7 +1316,7 @@ function traceImeEvents(term: Terminal) {
         const i = e as InputEvent;
         imeLog(
           `${type} inputType=${i.inputType} data=${fmt(i.data)} ` +
-            `composing=${i.isComposing} ta=${fmt(ta.value)}`
+          `composing=${i.isComposing} ta=${fmt(ta.value)}`
         );
       },
       true
@@ -1370,6 +1370,12 @@ function refreshOnSymbolsFontLoad() {
 // visibilitychange (only minimize/restore does), so listen to window focus
 // too — switching back to the app always triggers it, and the repaint is
 // cheap and idempotent.
+//
+// DISABLED for a field test: with the near-zero-fit guard in fitSession() in
+// place, run a few days without this repaint to learn whether it earns its
+// keep. Commented out rather than deleted so the experiment is easy to end
+// either way (its call site in getSession() is commented out too).
+/*
 let visibilityWatchInstalled = false;
 function repaintOnWindowVisible() {
   if (visibilityWatchInstalled || typeof document === "undefined") return;
@@ -1391,6 +1397,7 @@ function repaintOnWindowVisible() {
   });
   window.addEventListener("focus", repaint);
 }
+*/
 
 /** Push a font family change to every live terminal + future sessions. The
  *  symbols fallback rides along so Nerd Font icons survive any font choice. */
@@ -1507,9 +1514,9 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
         const row = term.buffer.active.cursorY + 1; // where the replay ended
         term.write(
           "\x1b[r\x1b[?1000;1002;1003;1006l\x1b[?1004l\x1b[?2004l\x1b[?6l\x1b[?7h" +
-            "\x1b[?25h\x1b(B\x0f\x1b[0m" +
-            `\x1b[${row};1H\x1b7` + // re-park at the content end; overwrite stale saved-cursor
-            "\r\n", // no divider — history flows straight into the new shell
+          "\x1b[?25h\x1b(B\x0f\x1b[0m" +
+          `\x1b[${row};1H\x1b7` + // re-park at the content end; overwrite stale saved-cursor
+          "\r\n", // no divider — history flows straight into the new shell
           () => {
             replaying = false;
             for (const d of pendingOutput.splice(0)) term.write(d);
@@ -1554,12 +1561,12 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
     isDemo
       ? new DemoBackend(id)
       : new WebSocketBackend(WS_URL, {
-          session: id,
-          cwd,
-          ssh: sshTarget,
-          worktreeSetup: worktreeSetup ? "1" : undefined,
-          desc: setupDescription,
-        });
+        session: id,
+        cwd,
+        ssh: sshTarget,
+        worktreeSetup: worktreeSetup ? "1" : undefined,
+        desc: setupDescription,
+      });
 
   const initialBackend = spawnBackend();
   const session: Session = {
@@ -1583,7 +1590,7 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
   };
   sessions.set(id, session);
   refreshOnSymbolsFontLoad();
-  repaintOnWindowVisible();
+  //repaintOnWindowVisible();
   if (sshTarget) notifyConnectionStatus();
 
   const wireBackend = (b: ITerminalBackend) => {
@@ -1716,7 +1723,7 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
     const sel = term.getSelection();
     // Use trim only as an emptiness check. Copy the original selection so
     // meaningful indentation and line breaks are preserved.
-    if (sel.trim()) navigator.clipboard?.writeText(sel).catch(() => {});
+    if (sel.trim()) navigator.clipboard?.writeText(sel).catch(() => { });
   });
 
   // Paste image blobs as local file paths only when the active program looks
@@ -1999,6 +2006,12 @@ export function fitSession(id: string) {
   id = activeSessionId(id);
   const s = sessions.get(id);
   if (!s || !s.opened) return;
+  // A minimized/hidden window lays out as (near-)zero size. Fitting then
+  // clamps the terminal to FitAddon's 2x1 minimum, which reflows the live
+  // screen into scrollback (and mangles ConPTY's buffer) — the "current
+  // screen is blank after showing the window again" bug. Skip degenerate
+  // measurements; the ResizeObserver fires a real fit once the layout is back.
+  if (s.el.isConnected && (s.el.clientWidth < 5 || s.el.clientHeight < 5)) return;
   try {
     s.fit.fit();
     s.backend.resize(s.term.cols, s.term.rows);
@@ -2139,7 +2152,7 @@ export function onSearchResults(
 ): () => void {
   id = activeSessionId(id);
   const s = sessions.get(id);
-  if (!s) return () => {};
+  if (!s) return () => { };
   const sub = s.search.onDidChangeResults((r) => cb({ index: r.resultIndex, count: r.resultCount }));
   return () => sub.dispose();
 }
@@ -2186,7 +2199,7 @@ export function sendCommand(id: string, command: string): Promise<void> {
   id = activeSessionId(id);
   const previous = commandSendChains.get(id) ?? Promise.resolve();
   const run = previous
-    .catch(() => {})
+    .catch(() => { })
     .then(() => performSendCommand(id, command));
   commandSendChains.set(id, run);
   const cleanup = () => {
@@ -2294,7 +2307,7 @@ export function disposeSession(id: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: [id] }),
-  }).catch(() => {});
+  }).catch(() => { });
 }
 
 /** Close every cached local/SSH session owned by a pane. */
@@ -2333,5 +2346,5 @@ export function disposePaneSessions(paneId: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, paneIds: [paneId] }),
-  }).catch(() => {});
+  }).catch(() => { });
 }
