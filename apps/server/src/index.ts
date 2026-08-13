@@ -1446,18 +1446,23 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Cheap repo shape (root + branch + worktree list) for scoping UIs — the
-  // full overview below computes per-worktree diff badges, far too slow for this.
+  // Cheap repo shape (root + branch + refs + worktree list) for scoping UIs —
+  // the full overview below computes per-worktree diff badges, far too slow
+  // for this. `files=1` adds the changed-files count of the worktree
+  // containing the directory, for the tab-close confirmation's dirty warning.
   if (req.method === "GET" && reqUrl.pathname === "/api/git/worktrees") {
     (async () => {
-      const cwd = await sessionCwd(reqUrl.searchParams.get("session") ?? "");
-      json(200, await worktreeOverview(cwd));
+      const cwd = await gitPanelCwd(
+        reqUrl.searchParams.get("cwd"),
+        reqUrl.searchParams.get("session") ?? "",
+      );
+      json(200, await worktreeOverview(cwd, { files: reqUrl.searchParams.get("files") === "1" }));
     })().catch(fail);
     return;
   }
 
-  // Create a linked worktree on a new branch, from the diff panel's "New
-  // worktree…" action. The branch name and base are the user's; the directory
+  // Create a linked worktree on a new branch, from the new-tab dialog's
+  // worktree offer. The branch name and base are the user's; the directory
   // is derived server-side (a sibling of the main checkout).
   if (req.method === "POST" && reqUrl.pathname === "/api/git/worktrees") {
     readJson(req)
@@ -1478,11 +1483,11 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Remove a linked worktree, from the diff panel's per-worktree button.
-  // The guards (a registered linked worktree, never the main checkout) are
-  // in removeWorktree; a refusal comes back as a 400 the confirmation dialog
-  // can show. `branch=1` takes the worktree's branch with it (the dialog's
-  // "also delete branch" check).
+  // Remove a linked worktree, from the tab-close confirmation. The guards
+  // (a registered linked worktree, never the main checkout) are in
+  // removeWorktree; a refusal comes back as a 400 the confirmation dialog
+  // can show. `branch=1` takes the worktree's branch with it — the app's
+  // one-tab-per-worktree deal, which the dialog states up front.
   if (req.method === "DELETE" && reqUrl.pathname === "/api/git/worktrees") {
     (async () => {
       const worktree = reqUrl.searchParams.get("worktree") ?? "";
@@ -1501,11 +1506,12 @@ const http = createServer((req, res) => {
     return;
   }
 
-  // Delete a local branch, from the compare picker's per-branch button — the
-  // follow-up to removing a worktree, which keeps the branch. Git's own checks
-  // (a checked-out branch is refused, an unmerged one needs `force`) are the
-  // guard rails; the unmerged refusal is flagged so the dialog can offer the
-  // force retry rather than just echoing git's stderr.
+  // Delete a local branch. Worktree branches go with their worktree (the
+  // DELETE above with branch=1); this endpoint remains for a branch that
+  // outlived its worktree. Git's own checks (a checked-out branch is refused,
+  // an unmerged one needs `force`) are the guard rails; the unmerged refusal
+  // is flagged so a caller can offer the force retry rather than just echoing
+  // git's stderr.
   if (req.method === "DELETE" && reqUrl.pathname === "/api/git/branches") {
     (async () => {
       const branch = reqUrl.searchParams.get("branch") ?? "";

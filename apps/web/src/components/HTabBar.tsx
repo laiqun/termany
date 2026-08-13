@@ -16,6 +16,7 @@ import {
   type AgentActivityStatus,
 } from "../terminal/manager";
 import { ChevronIcon, CloseIcon, PanelIcon, PanelRightIcon, PlusIcon } from "./icons";
+import { useWorktreeTabClose } from "./CloseWorktreeTabDialog";
 
 /**
  * Top tab strip. Notion-style, the workspace controls sit at the very left,
@@ -37,7 +38,6 @@ export function HTabBar() {
   useStore((s) => s.homeDir);
   const setActiveHTab = useStore((s) => s.setActiveHTab);
   const openPathPrompt = useStore((s) => s.openPathPrompt);
-  const closeHTab = useStore((s) => s.closeHTab);
   const setHTabCwd = useStore((s) => s.setHTabCwd);
   const moveHTab = useStore((s) => s.moveHTab);
   const moveHTabToNewNode = useStore((s) => s.moveHTabToNewNode);
@@ -54,6 +54,10 @@ export function HTabBar() {
   const suppressClickRef = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const titleBar = useTitleBarGesture();
+  // Closing a tab that works in a linked worktree deletes the worktree (and
+  // its branch) — the hook asks for confirmation first; anything else closes
+  // straight through.
+  const { requestClose, dialog: closeDialog } = useWorktreeTabClose();
 
   // Keep the active tab on screen — a tab created past the right edge would
   // otherwise be active but invisible. `nearest` no-ops when it already is.
@@ -188,6 +192,7 @@ export function HTabBar() {
   // gesture covers the whole bar minus the tabs and buttons — the strip is
   // flex: 1, and it alone accounts for nearly all of that empty space.
   return (
+    <>
     <div className={cls} {...titleBar} {...titleBarBackground}>
       {controls}
       {/* Only the tabs scroll; the workspace controls and the panel toggle stay
@@ -267,7 +272,7 @@ export function HTabBar() {
                     title={withShortcut(t("common.close"), "closePane")}
                     onClick={(e) => {
                       e.stopPropagation();
-                      closeHTab(h.id);
+                      void requestClose(h);
                     }}
                   >
                     <CloseIcon />
@@ -297,5 +302,7 @@ export function HTabBar() {
         <PanelRightIcon />
       </button>
     </div>
+    {closeDialog}
+    </>
   );
 }

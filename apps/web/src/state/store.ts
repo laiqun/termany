@@ -690,13 +690,14 @@ function tabCwdSource(h: HTab): string {
 }
 
 /**
- * The working directory a new tab on this page inherits — the page's own cwd
- * when it has one, else its active tab's. Used to pre-fill the path prompt.
+ * The working directory a new tab on this page inherits — the page's own cwd,
+ * or none (the prompt's "~"). A page without a directory does NOT borrow its
+ * active tab's: a tab's cwd is its own worktree-like identity, and silently
+ * spawning more tabs into it couples their lifetimes (closing one worktree
+ * tab deletes the directory under the others).
  */
 function nodeTabCwd(n: TreeNode): string | undefined {
-  if (n.cwd) return n.cwd;
-  const h = n.htabs.find((t) => t.id === n.activeHTab) ?? n.htabs[0];
-  return h?.cwd;
+  return n.cwd;
 }
 
 function initialWorkspace(title: string): Workspace {

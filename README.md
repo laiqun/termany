@@ -53,8 +53,7 @@ Any pane can switch from a shell to another view. ⌘E cycles the views:
   ⌘S to save), or to read it. Markdown, HTML, images, video, audio, PDF, DOCX, XLSX, and
   PPTX preview inline.
 - **Git diff** — staged, unstaged, and untracked changes. Compare the working tree against
-  another base. Switch to another worktree of the same repository from the same panel, and
-  create or remove worktrees from that switcher.
+  another base, or switch to another worktree of the same repository from the same panel.
 - **Conversation** — a chat pane over ACP, with its own model picker.
 - **Browser** — a webview. When a pane starts to serve a port, Termany offers to open it.
 
@@ -74,6 +73,10 @@ An agent runs in one pane, and its diff opens in the pane next to it.
   repository. Sessions whose directory no longer exists appear under **Deleted worktrees**,
   and resume from the main checkout. Any session resumes in a new pane, already `cd`'d to
   its project.
+- **One tab per worktree.** Creating a tab inside a repository offers to make it a fresh
+  worktree on a new branch, cut from a base you pick. Closing that tab deletes the worktree
+  and its branch — after a confirmation that names what goes with them (uncommitted files,
+  other tabs pointed there).
 - **Setup scripts for new worktrees.** A `.termany/setup.*` script in the repo (`.cmd`,
   `.ps1`, `.js`, or `.sh` on Windows; `.sh`, `.js`, `.py`, `.ps1` elsewhere) runs in the
   terminal of the tab opened for a fresh worktree — the place for per-machine environment

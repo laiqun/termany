@@ -388,18 +388,46 @@ async function resolveScope(cwd: string, worktree?: string) {
 }
 
 /**
- * Just enough repo shape for scoping UIs (the session-history browser): root,
- * branch, and the worktree list. gitOverview computes diff rows plus a
+ * Just enough repo shape for scoping UIs (the session-history browser, the
+ * new-tab dialog's worktree offer, the tab-close worktree check): root,
+ * branch, refs, and the worktree list. gitOverview computes diff rows plus a
  * changed-files badge per worktree — seconds of git on a repo with many
  * worktrees — which a scope picker doesn't need.
+ *
+ * `opts.files` asks for the changed-files count of the worktree CONTAINING
+ * cwd (never the main checkout — nothing offers to delete that one), which
+ * the tab-close confirmation shows as its "uncommitted work will be lost"
+ * warning. One worktree's count is cheap; every worktree's is not.
  */
-export async function worktreeOverview(cwd: string): Promise<
-  { repo: false } | { repo: true; root: string; branch: string; worktrees: Omit<GitWorktree, "files">[] }
+export async function worktreeOverview(
+  cwd: string,
+  opts: { files?: boolean } = {},
+): Promise<
+  | { repo: false }
+  | {
+      repo: true;
+      root: string;
+      branch: string;
+      refs: string[];
+      worktrees: Omit<GitWorktree, "files">[];
+      files?: number;
+    }
 > {
   const root = await repoRoot(cwd);
   if (!root) return { repo: false };
-  const [branch, worktrees] = await Promise.all([currentBranch(root), listWorktrees(root)]);
-  return { repo: true, root, branch, worktrees };
+  const [branch, worktrees, refs] = await Promise.all([
+    currentBranch(root),
+    listWorktrees(root),
+    listRefs(root),
+  ]);
+  let files: number | undefined;
+  if (opts.files) {
+    const here = worktrees.find((w) => w.path === root);
+    if (here && !here.main) {
+      files = await changedCount(root, defaultBase(here, refs, worktrees[0]?.branch ?? ""));
+    }
+  }
+  return { repo: true, root, branch, refs, worktrees, ...(files !== undefined ? { files } : {}) };
 }
 
 /**
@@ -570,7 +598,7 @@ export async function removeWorktree(cwd: string, worktree: string, withBranch =
   // Best-effort: the branch is only deleted when it is really a local
   // branch (a detached worktree's short sha is no ref), and a failure here
   // must not dress up an already-removed worktree as an error — the branch
-  // can still be deleted from the compare picker.
+  // can still be deleted through /api/git/branches.
   try {
     await git(["show-ref", "--verify", `refs/heads/${target.branch}`], root);
     await git(["branch", "-D", target.branch], root);
@@ -587,12 +615,12 @@ export async function removeWorktree(cwd: string, worktree: string, withBranch =
 export class BranchNotMergedError extends Error {}
 
 /**
- * Delete a local branch, from the compare picker's per-branch button — the
- * counterpart to removeWorktree, which deliberately leaves the branch behind.
- * The name must come from the repo's own refs and be a LOCAL branch (the refs
- * list also carries remote-tracking entries, which stay out of reach); beyond
- * that git's own checks are the guard rails — a branch checked out in any
- * worktree is refused, and an unmerged one needs `force` (`-d` vs `-D`).
+ * Delete a local branch — the counterpart to removeWorktree's branch=1, for
+ * a branch whose worktree is already gone. The name must come from the
+ * repo's own refs and be a LOCAL branch (the refs list also carries
+ * remote-tracking entries, which stay out of reach); beyond that git's own
+ * checks are the guard rails — a branch checked out in any worktree is
+ * refused, and an unmerged one needs `force` (`-d` vs `-D`).
  */
 export async function deleteBranch(cwd: string, branch: string, force: boolean): Promise<void> {
   const root = await repoRoot(cwd);

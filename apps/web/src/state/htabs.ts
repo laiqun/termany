@@ -1,6 +1,23 @@
 import type { HTab, TreeNode } from "./store";
 
 /**
+ * How many tabs across `nodes` work in a directory satisfying `match` — the
+ * tab-close confirmation uses this to warn when other tabs point into the
+ * worktree about to be deleted with the one being closed.
+ */
+export function countMatchingHTabs(nodes: TreeNode[], match: (cwd: string) => boolean): number {
+  let count = 0;
+  const walk = (list: TreeNode[]) => {
+    for (const n of list) {
+      count += n.htabs.filter((h) => h.cwd && match(h.cwd)).length;
+      walk(n.children);
+    }
+  };
+  walk(nodes);
+  return count;
+}
+
+/**
  * Remove every tab whose cwd satisfies `match`, from every page in the tree.
  * Pure: returns the new tree plus the removed tabs — disposing their sessions
  * is the caller's job. A page left with no tabs gets `refill()`, keeping the

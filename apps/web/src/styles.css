@@ -1403,6 +1403,21 @@ html.tauri #root {
 .path-prompt-foot.invalid {
   color: var(--danger, #dc5b5b);
 }
+/* The new-tab prompt's worktree offer reuses the gd-dialog form rows; the
+   prompt is narrower than the ws-dialog shell they came from, so the task
+   textarea shrinks to fit. */
+.path-prompt .gd-field {
+  margin: 10px 0 0;
+}
+.path-prompt .gd-dialog-check {
+  margin-top: 10px;
+}
+.path-prompt .gd-dialog-error {
+  margin: 8px 0 0;
+}
+.path-prompt .ws-dialog-input.gd-todo {
+  min-height: 64px;
+}
 .tree-count {
   font-size: 10px;
   background: var(--bg-3);
@@ -6184,8 +6199,9 @@ button.gd-branch:hover svg {
   background: var(--bg-3);
   color: var(--fg);
 }
-/* The worktree dialogs (new / remove) share the ws-dialog shell; these are
-   their form rows and messages. */
+/* Form rows and messages shared by the worktree dialogs — the new-tab
+   prompt's worktree offer (inside .path-prompt) and the tab-close
+   confirmation (a ws-dialog). */
 .gd-field {
   display: flex;
   flex-direction: column;
@@ -6196,18 +6212,13 @@ button.gd-branch:hover svg {
   font-size: 12px;
   color: var(--fg-dim);
 }
-/* Multi-line task description in the new-worktree dialog — ws-dialog-input
+/* Multi-line task description in the new-tab prompt — ws-dialog-input
    is sized for single-line inputs, so the textarea overrides the height. */
 .ws-dialog-input.gd-todo {
   height: auto;
   min-height: 180px;
   padding: 8px 10px;
   resize: vertical;
-}
-/* The new-worktree dialog carries more fields than the other ws-dialogs —
-   give its inputs room. */
-.ws-dialog.gd-wide {
-  width: 560px;
 }
 .ws-dialog-input.gd-command {
   height: 42px;

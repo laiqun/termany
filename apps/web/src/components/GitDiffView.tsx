@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { apiPath } from "../api";
+import { sameDir } from "../fs";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
-import { useNativeOccluder } from "../nativeViewOcclusion";
 import { activeNode, useStore } from "../state/store";
-import { prewarmSession, queueWorktreeSetup } from "../terminal/manager";
 import { CheckIcon, ChevronIcon, CopyIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
 import { UsageSelect } from "./Select";
 
@@ -127,27 +126,6 @@ export function parseDiff(diff: string): DiffLine[] {
 }
 
 const rowKey = (r: GitRow) => `${r.section}:${r.path}`;
-
-/**
- * Directory spelling never carries meaning: `\` vs `/`, a trailing slash, and
- * — when a drive letter says Windows — case.
- */
-function normDir(p: string): string {
-  const n = p.replace(/\\/g, "/").replace(/\/+$/, "");
-  return /^[A-Za-z]:\//.test(n) ? n.toLowerCase() : n;
-}
-
-/** Directory comparison for matching a worktree's root against a tab's cwd. */
-function sameDir(a: string, b: string): boolean {
-  return normDir(a) === normDir(b);
-}
-
-/** True when `dir` is `root` itself or somewhere beneath it. */
-function inDir(root: string, dir: string): boolean {
-  const r = normDir(root);
-  const d = normDir(dir);
-  return d === r || d.startsWith(r + "/");
-}
 
 interface CachedView {
   base: string | Auto;
@@ -286,295 +264,6 @@ function FileCard({
 }
 
 /**
- * Close on Escape, the way the app's other small dialogs do. Capture phase +
- * stopPropagation so the ⌘⌥G modal's own Escape handler (bubble) doesn't
- * close the whole panel along with the dialog; an open select menu inside the
- * dialog gets the key first instead.
- */
-function useEscapeToClose(
-  ref: RefObject<HTMLDivElement | null>,
-  onClose: () => void,
-) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (ref.current?.querySelector(".usage-select-menu")) return;
-      e.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [ref, onClose]);
-}
-
-/**
- * "New worktree…" from the worktree switcher. Fields: the new branch name and
- * the ref to cut it from, plus two optional extras — a task description
- * (passed to the repo's .termany/setup script as its first argument) and
- * whether to open a tab for the worktree once created. The directory is the
- * server's choice (a sibling of the main checkout). Creation itself runs
- * nothing: the setup script is typed into the opened tab's terminal instead,
- * so a slow bootstrap (pnpm install) never blocks this dialog.
- */
-function NewWorktreeDialog({
-  refs,
-  defaultBase,
-  onCreate,
-  onClose,
-}: {
-  refs: string[];
-  defaultBase: string;
-  onCreate: (branch: string, base: string, opts: { todo: string; openTab: boolean }) => Promise<void>;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const ime = useImeGuard();
-  const [branch, setBranch] = useState("");
-  const [base, setBase] = useState(defaultBase);
-  const [todo, setTodo] = useState("");
-  const [openTab, setOpenTab] = useState(() => {
-    try {
-      return localStorage.getItem("termany.worktreeOpenTab") !== "0";
-    } catch {
-      return true;
-    }
-  });
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const backdropRef = useNativeOccluder<HTMLDivElement>("gd-new-worktree");
-  useEscapeToClose(backdropRef, onClose);
-
-  const submit = async () => {
-    const name = branch.trim();
-    if (!name || busy) return;
-    setBusy(true);
-    try {
-      await onCreate(name, base, { todo, openTab });
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
-  const toggleOpenTab = (checked: boolean) => {
-    setOpenTab(checked);
-    try {
-      localStorage.setItem("termany.worktreeOpenTab", checked ? "1" : "0");
-    } catch {
-      /* private mode — remembering the checkbox is a nicety */
-    }
-  };
-
-  return (
-    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
-      <div className="ws-dialog gd-wide" onClick={(e) => e.stopPropagation()}>
-        <div className="gd-field">
-          <label>{t("gitdiff.branchName")}</label>
-          <input
-            {...ime.props}
-            className="ws-dialog-input"
-            autoFocus
-            value={branch}
-            spellCheck={false}
-            disabled={busy}
-            onChange={(e) => setBranch(e.target.value)}
-            onKeyDown={(e) => {
-              if (ime.handled(e)) return;
-              if (e.key === "Enter") void submit();
-              else if (e.key === "Escape") onClose();
-            }}
-          />
-        </div>
-        <div className="gd-field">
-          <label>{t("gitdiff.baseBranch")}</label>
-          <UsageSelect
-            value={base}
-            options={refs.map((r) => ({ value: r, label: r }))}
-            onChange={setBase}
-            width={260}
-          />
-        </div>
-        <div className="gd-field">
-          <label>{t("gitdiff.taskDescription")}</label>
-          <textarea
-            {...ime.props}
-            className="ws-dialog-input gd-todo"
-            rows={5}
-            value={todo}
-            spellCheck={false}
-            disabled={busy}
-            placeholder={t("gitdiff.taskDescriptionHint")}
-            onChange={(e) => setTodo(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-            }}
-          />
-        </div>
-        <label className="gd-dialog-check">
-          <input
-            type="checkbox"
-            checked={openTab}
-            disabled={busy}
-            onChange={(e) => toggleOpenTab(e.target.checked)}
-          />
-          {t("gitdiff.openTabAfterCreate")}
-        </label>
-        {error && <p className="gd-dialog-error">{error}</p>}
-        <div className="ws-dialog-actions">
-          <button className="ws-dialog-btn" onClick={onClose}>
-            {t("common.cancel")}
-          </button>
-          <button
-            className="ws-dialog-btn primary"
-            disabled={!branch.trim() || busy}
-            onClick={() => void submit()}
-          >
-            {t("gitdiff.createWorktree")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Confirms removing a linked worktree. A dirty worktree (its changed-files
- * badge is shown right in the switcher) gets a warning line, since removal
- * discards those changes along with the directory. The "also delete branch"
- * check (pre-checked: these worktrees are throwaway) takes the branch with
- * the directory; a detached worktree has no branch, so the check is hidden
- * there.
- */
-function RemoveWorktreeDialog({
-  worktree,
-  onRemove,
-  onClose,
-}: {
-  worktree: GitWorktree;
-  onRemove: (worktree: GitWorktree, withBranch: boolean) => Promise<void>;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const [withBranch, setWithBranch] = useState(true);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const backdropRef = useNativeOccluder<HTMLDivElement>("gd-remove-worktree");
-  useEscapeToClose(backdropRef, onClose);
-  const dirty = worktree.files > 0;
-
-  const submit = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await onRemove(worktree, withBranch && !worktree.detached);
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
-      <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
-        <p className="quit-confirm-text">{t("gitdiff.removeWorktreeConfirm", { name: worktree.name })}</p>
-        {dirty && <p className="gd-dialog-warn">{t("gitdiff.removeWorktreeDirty", { files: worktree.files })}</p>}
-        {!worktree.detached && (
-          <label className="gd-dialog-check">
-            <input type="checkbox" checked={withBranch} onChange={(e) => setWithBranch(e.target.checked)} />
-            {t("gitdiff.removeWorktreeBranch", { name: worktree.branch })}
-          </label>
-        )}
-        {error && <p className="gd-dialog-error">{error}</p>}
-        <div className="ws-dialog-actions">
-          <button className="ws-dialog-btn" onClick={onClose}>
-            {t("common.cancel")}
-          </button>
-          <button className="ws-dialog-btn danger" disabled={busy} onClick={() => void submit()}>
-            {t("gitdiff.removeWorktree")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Confirms deleting a branch from the compare picker. The safe delete
- * (`git branch -d`) refuses a branch that isn't fully merged; that refusal
- * comes back flagged, and only then is the "delete anyway" check shown — it
- * maps to `-D`, so a stray click can't take unmerged commits with it.
- */
-function DeleteBranchDialog({
-  branch,
-  onDelete,
-  onClose,
-}: {
-  branch: string;
-  onDelete: (branch: string, force: boolean) => Promise<void>;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const [force, setForce] = useState(false);
-  const [unmerged, setUnmerged] = useState(false);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const backdropRef = useNativeOccluder<HTMLDivElement>("gd-delete-branch");
-  useEscapeToClose(backdropRef, onClose);
-
-  const submit = async () => {
-    if (busy || (unmerged && !force)) return;
-    setBusy(true);
-    try {
-      await onDelete(branch, force);
-      onClose();
-    } catch (e) {
-      // The not-merged refusal swaps the raw git error for a localized warning
-      // plus the force check; anything else (checked out somewhere, say) is
-      // shown as it came.
-      if ((e as { notMerged?: boolean }).notMerged) {
-        setUnmerged(true);
-        setError("");
-      } else {
-        setError(e instanceof Error ? e.message : String(e));
-      }
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="ws-dialog-backdrop" ref={backdropRef} onClick={onClose}>
-      <div className="ws-dialog" onClick={(e) => e.stopPropagation()}>
-        <p className="quit-confirm-text">{t("gitdiff.deleteBranchConfirm", { name: branch })}</p>
-        {unmerged && (
-          <>
-            <p className="gd-dialog-warn">{t("gitdiff.deleteBranchUnmerged")}</p>
-            <label className="gd-dialog-check">
-              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
-              {t("gitdiff.forceRemove")}
-            </label>
-          </>
-        )}
-        {error && <p className="gd-dialog-error">{error}</p>}
-        <div className="ws-dialog-actions">
-          <button className="ws-dialog-btn" onClick={onClose}>
-            {t("common.cancel")}
-          </button>
-          <button
-            className="ws-dialog-btn danger"
-            disabled={busy || (unmerged && !force)}
-            onClick={() => void submit()}
-          >
-            {t("gitdiff.deleteBranch")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
  * Git diff viewer for the repo containing the tab's working directory
  * (`tabCwd`; unset resolves server-side to home). The toolbar's address bar
  * shows where the panel landed and accepts a typed path to override it
@@ -683,22 +372,15 @@ export function GitDiffView({
 
   const setActiveHTab = useStore((s) => s.setActiveHTab);
   const addHTab = useStore((s) => s.addHTab);
-  const setHTabCwd = useStore((s) => s.setHTabCwd);
-  const closeHTabsWhere = useStore((s) => s.closeHTabsWhere);
 
   /**
    * Open a tab working in `dir` when there isn't one yet. The path goes through
    * the fs endpoint first so it takes the same normalized form a tab's cwd
-   * carries (the tab bar's inline editor resolves paths the same way). Shared
-   * by the branch chip and the open-after-create flow of the new-worktree
-   * dialog — which also passes the task description for the new tab's terminal
-   * (see queueWorktreeSetup). `activate: false` creates/queues everything but
-   * leaves the user's current tab focused (the new-worktree dialog uses this:
-   * create the tab, don't jump to it).
+   * carries (the tab bar's inline editor resolves paths the same way). Used by
+   * the branch chip, which doubles as a "go to this worktree" button.
    */
   const openTabForDir = useCallback(
-    async (dir: string, setupDescription?: string, opts?: { activate?: boolean }) => {
-      const activate = opts?.activate !== false;
+    async (dir: string) => {
       let target = dir;
       try {
         const r = await fetch(apiPath(`/api/fs/list?path=${encodeURIComponent(target)}`));
@@ -708,32 +390,11 @@ export function GitDiffView({
         /* keep git's spelling of the path */
       }
       const hit = activeNode(useStore.getState())?.htabs.find((h) => h.cwd && sameDir(h.cwd, target));
-      if (hit) {
-        if (activate) setActiveHTab(hit.id);
-        return;
-      }
-      // addHTab activates the tab it makes; claim it for the directory.
-      const previous = activate ? undefined : activeNode(useStore.getState())?.activeHTab;
-      addHTab();
-      const created = activeNode(useStore.getState())?.activeHTab;
-      if (created) {
-        setHTabCwd(created, target);
-        if (setupDescription !== undefined) {
-          const leaf = activeNode(useStore.getState())?.htabs.find((h) => h.id === created)?.focused;
-          // Queued before React mounts the pane's terminal, which consumes it
-          // when the shell first spawns.
-          if (leaf) {
-            queueWorktreeSetup(leaf, setupDescription);
-            // A background tab's terminal would otherwise only spawn on first
-            // visit; prewarm so the setup script runs right away.
-            if (!activate) prewarmSession(leaf, target);
-          }
-        }
-        // Hand focus back so creating the tab didn't yank the user over to it.
-        if (!activate && previous && previous !== created) setActiveHTab(previous);
-      }
+      // addHTab activates the tab it makes, so the else branch lands on it.
+      if (hit) setActiveHTab(hit.id);
+      else addHTab(target);
     },
-    [setActiveHTab, addHTab, setHTabCwd],
+    [setActiveHTab, addHTab],
   );
 
   /** The branch chip doubles as a "go to this worktree" button. */
@@ -859,123 +520,22 @@ export function GitDiffView({
 
   const refOptions = useMemo(() => {
     const refs = overview && overview.repo ? overview.refs : [];
-    return [
-      { value: WORKING_TREE, label: t("gitdiff.workingTree") },
-      // Every branch is offered as deletable; the server refuses the ones git
-      // won't let go (checked out, remote-tracking) with a reason the dialog
-      // shows.
-      ...refs.map((r) => ({ value: r, label: r, removable: true })),
-    ];
+    return [{ value: WORKING_TREE, label: t("gitdiff.workingTree") }, ...refs.map((r) => ({ value: r, label: r }))];
   }, [overview, t]);
 
   // The directory name is the identity here, not the branch: an agent's
   // worktree is announced by its directory ("wobbly-shimmying-rose"), and the
   // toolbar already names the selected one's branch. The count marks where an
   // agent has actually been working. The server omits the list for a plain
-  // single-checkout repo, so that case synthesizes the lone main entry — the
-  // switcher stays visible for its "New worktree…" action.
-  const worktreeList = useMemo<GitWorktree[]>(() => {
-    if (overview?.repo !== true) return [];
-    return (
-      overview.worktrees ?? [{ path: overview.root, name: "", branch: overview.branch, main: true, files: 0 }]
-    );
-  }, [overview]);
-
+  // single-checkout repo — no switcher is shown then, there is nothing to
+  // switch between.
   const worktreeOptions = useMemo(
     () =>
-      worktreeList.map((w) => ({
+      (overview?.repo === true ? (overview.worktrees ?? []) : []).map((w) => ({
         value: w.path,
         label: (w.main ? t("gitdiff.mainWorktree") : w.name) + (w.files > 0 ? ` · ${w.files}` : ""),
-        removable: !w.main,
       })),
-    [worktreeList, t],
-  );
-
-  const [newOpen, setNewOpen] = useState(false);
-  const [removing, setRemoving] = useState<GitWorktree | null>(null);
-  const [deletingBranch, setDeletingBranch] = useState<string | null>(null);
-
-  /**
-   * What the dialog just created and wants a tab opened for: the worktree's
-   * directory plus the setup steps to run in that tab's terminal. The open
-   * happens when the dialog CLOSES, not mid-create: activating another tab
-   * can unmount this panel (and the dialog with it).
-   */
-  const createdRef = useRef<{ dir: string; description: string } | null>(null);
-
-  const createWorktree = useCallback(
-    async (branch: string, baseRef: string, opts: { todo: string; openTab: boolean }): Promise<void> => {
-      const r = await fetch(apiPath("/api/git/worktrees"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cwd: cwd ?? tabCwd ?? undefined,
-          branch,
-          base: baseRef || undefined,
-        }),
-      });
-      const data = (await r.json().catch(() => ({}))) as { error?: string; path?: string };
-      if (!r.ok) throw new Error(data.error ?? String(r.status));
-      if (opts.openTab && data.path) {
-        createdRef.current = { dir: data.path, description: opts.todo.trim() };
-      }
-      await load();
-    },
-    [tabCwd, cwd, load],
-  );
-
-  const closeNewDialog = useCallback(() => {
-    setNewOpen(false);
-    const created = createdRef.current;
-    createdRef.current = null;
-    // Create the new worktree's tab (and queue its setup) without jumping to it.
-    if (created) void openTabForDir(created.dir, created.description, { activate: false });
-  }, [openTabForDir]);
-
-  const removeWorktreeByPath = useCallback(
-    async (wt: GitWorktree, withBranch: boolean) => {
-      // Tabs pointed at the doomed directory (or anywhere under it) close
-      // first: their shells would hold the directory open — Windows refuses
-      // the move-aside while one does — and they'd be left on a path that
-      // no longer exists.
-      closeHTabsWhere((tabDir) => inDir(wt.path, tabDir));
-      const params = new URLSearchParams({ worktree: wt.path });
-      const dir = cwd ?? tabCwd;
-      if (dir) params.set("cwd", dir);
-      if (withBranch) params.set("branch", "1");
-      const r = await fetch(apiPath(`/api/git/worktrees?${params}`), { method: "DELETE" });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error ?? String(r.status));
-      // Removing the worktree the panel is pointed at sends it back to the
-      // main checkout; removing another one just refreshes the list.
-      if (overview?.repo === true && overview.root === wt.path) {
-        const main = worktreeList.find((w) => w.main);
-        if (main) selectWorktree(main.path);
-      }
-      await load();
-    },
-    [tabCwd, cwd, overview, worktreeList, selectWorktree, load, closeHTabsWhere],
-  );
-
-  const deleteBranchByName = useCallback(
-    async (name: string, force: boolean) => {
-      const params = new URLSearchParams({ branch: name });
-      const dir = cwd ?? tabCwd;
-      if (dir) params.set("cwd", dir);
-      if (force) params.set("force", "1");
-      const r = await fetch(apiPath(`/api/git/branches?${params}`), { method: "DELETE" });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        const error = new Error(data.error ?? String(r.status)) as Error & { notMerged?: boolean };
-        error.notMerged = data.notMerged === true;
-        throw error;
-      }
-      // Deleting the branch the compare is measured against hands the pick
-      // back to the server's choice; anything else just refreshes the list.
-      if (name === shownBase) setBase(null);
-      await load();
-    },
-    [tabCwd, cwd, shownBase, load],
+    [overview, t],
   );
 
   return (
@@ -1035,11 +595,6 @@ export function GitDiffView({
                 options={worktreeOptions}
                 onChange={selectWorktree}
                 width={170}
-                actions={[{ label: t("gitdiff.newWorktree"), onSelect: () => setNewOpen(true) }]}
-                onRemove={(path) => {
-                  const wt = worktreeList.find((w) => w.path === path);
-                  if (wt) setRemoving(wt);
-                }}
               />
             )}
             {/* A fixed marker rather than a per-option "Compare with X" prefix:
@@ -1048,13 +603,7 @@ export function GitDiffView({
             <span className="gd-vs" title={t("gitdiff.compareWith")}>
               <GitCompareIcon />
             </span>
-            <UsageSelect
-              value={shownBase}
-              options={refOptions}
-              onChange={setBase}
-              width={180}
-              onRemove={setDeletingBranch}
-            />
+            <UsageSelect value={shownBase} options={refOptions} onChange={setBase} width={180} />
             {rows.length > 0 && (
               <span className="gd-summary">
                 {t("gitdiff.summary", { files: rows.length })}
@@ -1107,29 +656,6 @@ export function GitDiffView({
           ))}
           {overview.overflow && <div className="gd-note">{t("gitdiff.overflow")}</div>}
         </div>
-      )}
-
-      {newOpen && overview?.repo === true && (
-        <NewWorktreeDialog
-          refs={overview.refs}
-          defaultBase={worktreeList.find((w) => w.main)?.branch ?? overview.branch}
-          onCreate={createWorktree}
-          onClose={closeNewDialog}
-        />
-      )}
-      {removing && (
-        <RemoveWorktreeDialog
-          worktree={removing}
-          onRemove={removeWorktreeByPath}
-          onClose={() => setRemoving(null)}
-        />
-      )}
-      {deletingBranch && (
-        <DeleteBranchDialog
-          branch={deletingBranch}
-          onDelete={deleteBranchByName}
-          onClose={() => setDeletingBranch(null)}
-        />
       )}
     </div>
   );
