@@ -1357,6 +1357,52 @@ html.tauri #root {
   font: inherit;
   outline: none;
 }
+.tree-rename.invalid {
+  border-color: var(--danger, #dc5b5b);
+}
+/* "Pick a working directory" dialog shown before a page/tab is created. The
+   backdrop is the shared .search-backdrop. */
+.path-prompt {
+  align-self: flex-start;
+  margin-top: 24vh;
+  width: min(440px, 88vw);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+}
+.path-prompt-title {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 8px;
+}
+.path-prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.path-prompt-input:focus {
+  border-color: var(--accent);
+}
+.path-prompt-input.invalid {
+  border-color: var(--danger, #dc5b5b);
+}
+.path-prompt-foot {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.path-prompt-foot.invalid {
+  color: var(--danger, #dc5b5b);
+}
 .tree-count {
   font-size: 10px;
   background: var(--bg-3);

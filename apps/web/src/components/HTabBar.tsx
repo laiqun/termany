@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { apiPath } from "../api";
 import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
 import { isTauri } from "../env";
+import { resolveDirCwd } from "../fs";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { withShortcut } from "../keybindings";
@@ -33,8 +33,10 @@ export function HTabBar() {
   const { t } = useI18n();
   const ime = useImeGuard();
   const node = useStore(activeNode);
+  // Labels derive from paths, and home's resolution renames every unset one.
+  useStore((s) => s.homeDir);
   const setActiveHTab = useStore((s) => s.setActiveHTab);
-  const addHTab = useStore((s) => s.addHTab);
+  const openPathPrompt = useStore((s) => s.openPathPrompt);
   const closeHTab = useStore((s) => s.closeHTab);
   const setHTabCwd = useStore((s) => s.setHTabCwd);
   const moveHTab = useStore((s) => s.moveHTab);
@@ -90,26 +92,14 @@ export function HTabBar() {
   );
 
   // Double-click edits the tab's working directory inline. The typed path is
-  // validated via the file-tree listing endpoint, which also expands a
-  // leading "~" and returns the normalized absolute path; an invalid path
-  // flags the input red (Enter keeps it open) and is dropped on blur. An
-  // empty input resets the tab to the home directory.
+  // validated via the file-tree listing endpoint (see resolveDirCwd); an
+  // invalid path flags the input red (Enter keeps it open) and is dropped on
+  // blur. An empty input resets the tab to the home directory.
   const commitTabCwd = async (tabId: string, raw: string): Promise<boolean> => {
-    const value = raw.trim();
-    if (!value) {
-      setHTabCwd(tabId, undefined);
-      return true;
-    }
-    try {
-      const res = await fetch(apiPath(`/api/fs/list?path=${encodeURIComponent(value)}`));
-      if (!res.ok) return false;
-      const data = (await res.json()) as { path?: string };
-      if (!data.path) return false;
-      setHTabCwd(tabId, data.path);
-      return true;
-    } catch {
-      return false;
-    }
+    const cwd = await resolveDirCwd(raw);
+    if (cwd === null) return false;
+    setHTabCwd(tabId, cwd);
+    return true;
   };
 
   const stopEditing = () => {
@@ -289,7 +279,7 @@ export function HTabBar() {
         })()
       ))}
       {node && (
-        <button className="htab-add" title={withShortcut(t("action.newTab"), "newTab")} onClick={addHTab}>
+        <button className="htab-add" title={withShortcut(t("action.newTab"), "newTab")} onClick={() => openPathPrompt("tab")}>
           <PlusIcon />
         </button>
       )}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FindBar } from "./components/FindBar";
 import { GitDiff } from "./components/GitDiff";
 import { HTabBar } from "./components/HTabBar";
+import { PathDialog } from "./components/PathDialog";
 import { QuitConfirm } from "./components/QuitConfirm";
 import { ResizeHandles } from "./components/ResizeHandles";
 import { SearchPalette } from "./components/SearchPalette";
@@ -11,6 +12,7 @@ import { SplitView } from "./components/SplitView";
 import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
+import { resolveHomeDir } from "./fs";
 import { ACTIONS, matchChord } from "./keybindings";
 import { activeHtab, activeNode, leafIds, useStore } from "./state/store";
 import { openNewWindow } from "./state/windows";
@@ -104,6 +106,10 @@ export function App() {
   // searching a terminal the user is no longer looking at — close it instead.
   useEffect(() => setFindOpen(false), [focusedPane]);
 
+  // Resolve home once so tabs/pages without a cwd of their own are labelled
+  // with the home folder's name rather than "~" (see homeLabel).
+  useEffect(() => void resolveHomeDir(), []);
+
   // Panes live far below this state, so their "manage models / agents" menu
   // footers ask for a section over an event rather than a threaded-down prop.
   useEffect(() => {
@@ -141,7 +147,7 @@ export function App() {
   // same actions so they're discoverable without knowing the chord.
   const handlers = useMemo(() => {
     const map: Record<string, (s: ReturnType<typeof useStore.getState>) => void> = {
-      newTab: (s) => s.addHTab(),
+      newTab: (s) => s.openPathPrompt("tab"),
       closePane: (s) => s.closeFocusedPane(),
       splitRight: (s) => s.splitFocused("row"),
       splitDown: (s) => s.splitFocused("col"),
@@ -180,10 +186,10 @@ export function App() {
       nextPage: (s) => s.selectNextTreeNode(),
       enterPage: (s) => s.expandOrEnterTreeNode(),
       exitPage: (s) => s.collapseOrExitTreeNode(),
-      newPage: (s) => s.addRootNode(),
+      newPage: (s) => s.openPathPrompt("page"),
       newChildPage: (s) => {
         const current = activeNode(s);
-        if (current) s.addChildNode(current.id);
+        if (current) s.openPathPrompt("childPage", current.id);
       },
       newWorkspace: (s) => s.addWorkspace(),
       newWindow: () => void openNewWindow(),
@@ -392,6 +398,7 @@ export function App() {
       {searchOpen && (
         <SearchPalette onClose={() => setSearchOpen(false)} onRunAction={runAction} />
       )}
+      <PathDialog />
       {gitDiffOpen && <GitDiff tabCwd={gitTabCwd} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>

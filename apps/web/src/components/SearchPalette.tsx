@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { ACTIONS, formatChord } from "../keybindings";
-import { useStore, htabLabel, type Pane, type TreeNode, type Workspace } from "../state/store";
+import { useStore, htabLabel, nodeLabel, type Pane, type TreeNode, type Workspace } from "../state/store";
 import { CommandIcon, PageIcon, SearchIcon, TerminalIcon } from "./icons";
 
 function leavesOf(pane: Pane): Array<{ id: string; title: string }> {
@@ -58,7 +58,9 @@ interface PageNode {
 function buildPages(ws: Workspace, nodes: TreeNode[], q: string): PageNode[] {
   const out: PageNode[] = [];
   for (const n of nodes) {
-    const ownScore = titleScore(n.title, q);
+    // Pages have no custom names either — their label is the cwd basename.
+    const label = nodeLabel(n);
+    const ownScore = titleScore(label, q);
     const children = buildPages(ws, n.children, q);
 
     const tabs: TabNode[] = [];
@@ -87,7 +89,7 @@ function buildPages(ws: Workspace, nodes: TreeNode[], q: string): PageNode[] {
     );
     if (best >= 0) {
       children.sort((a, b) => b.best - a.best);
-      out.push({ workspaceId: ws.id, nodeId: n.id, title: n.title, matched: ownScore >= 0, tabs, children, best });
+      out.push({ workspaceId: ws.id, nodeId: n.id, title: label, matched: ownScore >= 0, tabs, children, best });
     }
   }
   return out.sort((a, b) => b.best - a.best);
@@ -198,6 +200,8 @@ export function SearchPalette({
 }) {
   const { t } = useI18n();
   const workspaces = useStore((s) => s.workspaces);
+  // Page/tab labels derive from paths; home's resolution renames unset ones.
+  useStore((s) => s.homeDir);
   const jumpToResult = useStore((s) => s.jumpToResult);
   const keybindings = useStore((s) => s.keybindings);
   const [query, setQuery] = useState("");

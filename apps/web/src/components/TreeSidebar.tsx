@@ -1,9 +1,10 @@
 import { PointerEvent as ReactPointerEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { beginDragCursor, createDragGhost, endDragCursor, type DragGhost } from "../dragGhost";
+import { resolveDirCwd } from "../fs";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
 import { withShortcut } from "../keybindings";
-import { activePageId, activeWorkspace, HTAB_DRAG_MIME, useStore, type TreeNode } from "../state/store";
+import { activePageId, activeWorkspace, HTAB_DRAG_MIME, nodeLabel, useStore, type TreeNode } from "../state/store";
 import {
   acknowledgeAgentActivities,
   agentActivitySummary,
@@ -57,7 +58,7 @@ function collectActiveEntries(nodes: TreeNode[], trail: string[] = [], out: Acti
     const leafIds = ownLeafIds(node);
     const activity = agentActivitySummary(leafIds);
     if (hasActiveAgentSession(leafIds)) out.push({ node, trail, activity });
-    collectActiveEntries(node.children, [...trail, node.title], out);
+    collectActiveEntries(node.children, [...trail, nodeLabel(node)], out);
   }
   return out;
 }
@@ -98,14 +99,17 @@ function ActiveItem({ entry }: { entry: ActiveEntry }) {
   const { node, trail, activity } = entry;
   const activeId = useStore(activePageId);
   const setActiveNode = useStore((s) => s.setActiveNode);
+  // Labels derive from paths, and home's resolution renames every unset one.
+  useStore((s) => s.homeDir);
   const viewedLeafIds = node.htabs
     .filter((tab) => tab.id === node.activeHTab)
     .flatMap((tab) => paneLeafIds(tab.layout));
+  const label = nodeLabel(node);
 
   return (
     <div
       className={`tree-row active-item ${node.id === activeId ? "active" : ""}`}
-      title={[...trail, node.title].join(" / ")}
+      title={[...trail, label].join(" / ")}
       onClick={() => {
         setActiveNode(node.id);
         acknowledgeAgentActivities(viewedLeafIds);
@@ -114,7 +118,7 @@ function ActiveItem({ entry }: { entry: ActiveEntry }) {
       <span className="tree-twisty leaf">
         <PageIcon />
       </span>
-      <span className="tree-title">{node.title}</span>
+      <span className="tree-title">{label}</span>
       {trail.length > 0 && <span className="tree-crumb">{trail[trail.length - 1]}</span>}
       <ActivityCounts activity={activity} />
     </div>
@@ -140,14 +144,17 @@ function TreeItem({
   // Open in another window: still clickable — selecting it raises that window —
   // but it can't be deleted from here, and it doesn't become this window's page.
   const elsewhere = useStore((s) => s.takenPages.has(node.id));
+  // Labels derive from paths, and home's resolution renames every unset one.
+  useStore((s) => s.homeDir);
   const setActiveNode = useStore((s) => s.setActiveNode);
   const toggleExpand = useStore((s) => s.toggleExpand);
-  const addChildNode = useStore((s) => s.addChildNode);
+  const openPathPrompt = useStore((s) => s.openPathPrompt);
   const deleteNode = useStore((s) => s.deleteNode);
-  const renameNode = useStore((s) => s.renameNode);
+  const setNodeCwd = useStore((s) => s.setNodeCwd);
   const moveNode = useStore((s) => s.moveNode);
   const moveHTab = useStore((s) => s.moveHTab);
   const [editing, setEditing] = useState(false);
+  const [cwdInvalid, setCwdInvalid] = useState(false);
   const ime = useImeGuard();
   // Where a drag over this row would land: nest into it, or reorder as a
   // sibling before/after it (top/bottom quarter of the row).
@@ -246,31 +253,52 @@ function TreeItem({
         </button>
 
         {editing ? (
+          // Double-click edits the page's working directory inline — same
+          // rules as a tab: validated via the file-tree listing endpoint, an
+          // invalid path flags red and is dropped on blur, empty means home.
           <input
             {...ime.props}
-            className="tree-rename"
+            className={`tree-rename${cwdInvalid ? " invalid" : ""}`}
             autoFocus
-            defaultValue={node.title}
+            defaultValue={node.cwd ?? ""}
+            placeholder="~"
+            spellCheck={false}
             onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
             onBlur={(e) => {
-              renameNode(node.id, e.target.value.trim() || node.title);
+              // Blur commits a valid path, cancels an invalid one.
+              void resolveDirCwd(e.target.value).then((cwd) => {
+                if (cwd !== null) setNodeCwd(node.id, cwd);
+              });
               setEditing(false);
+              setCwdInvalid(false);
             }}
             onKeyDown={(e) => {
               if (ime.handled(e)) return; // the IME is still using this key
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              else if (e.key === "Escape") setEditing(false);
+              if (e.key === "Enter") {
+                void resolveDirCwd((e.target as HTMLInputElement).value).then((cwd) => {
+                  if (cwd !== null) {
+                    setNodeCwd(node.id, cwd);
+                    setEditing(false);
+                    setCwdInvalid(false);
+                  } else setCwdInvalid(true);
+                });
+              } else if (e.key === "Escape") {
+                setEditing(false);
+                setCwdInvalid(false);
+              }
             }}
           />
         ) : (
           <span
             className="tree-title"
+            title={node.cwd}
             onDoubleClick={(e) => {
               e.stopPropagation();
               setEditing(true);
             }}
           >
-            {node.title}
+            {nodeLabel(node)}
           </span>
         )}
         <button
@@ -278,7 +306,7 @@ function TreeItem({
           title={t("sidebar.addNestedPage")}
           onClick={(e) => {
             e.stopPropagation();
-            addChildNode(node.id);
+            openPathPrompt("childPage", node.id);
           }}
         >
           <PlusIcon />
@@ -324,7 +352,7 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
   const { t } = useI18n();
   const ws = useStore(activeWorkspace);
   const activePage = useStore(activePageId);
-  const addRootNode = useStore((s) => s.addRootNode);
+  const openPathPrompt = useStore((s) => s.openPathPrompt);
   const collapseAll = useStore((s) => s.collapseAll);
   const moveNode = useStore((s) => s.moveNode);
   const [rootDrop, setRootDrop] = useState(false);
@@ -507,7 +535,7 @@ export function TreeSidebar({ onOpenSettings }: { onOpenSettings: () => void }) 
             title={withShortcut(t("sidebar.newPage"), "newPage")}
             onClick={(e) => {
               e.stopPropagation();
-              addRootNode();
+              openPathPrompt("page");
             }}
           >
             <PlusIcon />

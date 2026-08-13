@@ -132,6 +132,16 @@ export type DropEdge = "left" | "right" | "top" | "bottom";
  */
 export const HTAB_DRAG_MIME = "application/x-termany-htab";
 
+/** What the path prompt is creating: a root page, a nested child page, or a tab. */
+export interface PathPrompt {
+  kind: "page" | "childPage" | "tab";
+  /** Target page for kind "childPage". */
+  parentId?: string;
+  /** Pre-filled path: the directory the new page/tab would have inherited,
+   *  or "~" when there is none. */
+  initial: string;
+}
+
 export interface HTab {
   id: string;
   /** Legacy display name, no longer shown — the tab's label is derived from
@@ -167,11 +177,22 @@ export interface HTab {
 
 export interface TreeNode {
   id: string;
+  /** Legacy display name, no longer shown — the page's label is derived from
+   *  its cwd (see nodeLabel), like tabs. Kept because persisted layouts carry
+   *  it. */
   title: string;
   expanded: boolean;
   children: TreeNode[];
   htabs: HTab[];
   activeHTab: string;
+  /**
+   * The page's own working directory: its display label, and the default
+   * tabs on this page inherit when created. Tabs keep their own cwd — a tab
+   * is a worktree-like entity with a directory of its own. Undefined means
+   * "home", resolved server-side; old persisted layouts without it simply
+   * behave as home.
+   */
+  cwd?: string;
 }
 
 export interface Workspace {
@@ -228,6 +249,23 @@ interface State {
   updateVersion: string | null;
   setUpdateVersion: (v: string | null) => void;
 
+  /**
+   * The machine's home directory, resolved once at startup via the file-tree
+   * listing endpoint (which expands "~"). Drives the fallback label for tabs
+   * and pages without a cwd of their own — see homeLabel.
+   */
+  homeDir?: string;
+  setHomeDir: (path: string) => void;
+
+  /**
+   * Pending "pick a working directory" dialog for a page/tab about to be
+   * created. Null when no dialog is open. Creation only happens on confirm —
+   * Escape cancels the whole thing.
+   */
+  pathPrompt: PathPrompt | null;
+  openPathPrompt: (kind: PathPrompt["kind"], parentId?: string) => void;
+  closePathPrompt: () => void;
+
   /** Action id → key chord. Persisted to localStorage. */
   keybindings: Record<string, Chord>;
   /** Rebind one action. Pass null to restore that action's default. */
@@ -246,8 +284,8 @@ interface State {
   /** Delete a workspace and dispose every terminal session under it. No-op if it's the last workspace. */
   deleteWorkspace: (id: string) => void;
 
-  addRootNode: () => void;
-  addChildNode: (parentId: string) => void;
+  addRootNode: (cwd?: string) => void;
+  addChildNode: (parentId: string, cwd?: string) => void;
   toggleExpand: (id: string) => void;
   /** Collapse every node in the active workspace's tree. */
   collapseAll: () => void;
@@ -269,7 +307,13 @@ interface State {
     tabId?: string;
     paneId?: string;
   }) => void;
-  renameNode: (id: string, title: string) => void;
+  /**
+   * Set the page's own working directory (its label, and the default new
+   * tabs inherit). Existing tabs keep their own cwd — a tab is a
+   * worktree-like entity with a directory of its own. Undefined resets the
+   * page to home.
+   */
+  setNodeCwd: (id: string, cwd?: string) => void;
   deleteNode: (id: string) => void;
   /**
    * Move a node relative to `targetId`: "into" nests it as the last child
@@ -278,7 +322,7 @@ interface State {
    */
   moveNode: (dragId: string, targetId: string | null, pos?: "into" | "before" | "after") => void;
 
-  addHTab: () => void;
+  addHTab: (cwd?: string) => void;
   setActiveHTab: (id: string) => void;
   closeHTab: (id: string) => void;
   /**
@@ -632,7 +676,7 @@ function setSizesAt(pane: Pane, path: number[], sizes: number[]): Pane {
 
 function makeNode(title: string, cwd?: string): TreeNode {
   const h = makeHTab(1, cwd);
-  return { id: id(), title, expanded: true, children: [], htabs: [h], activeHTab: h.id };
+  return { id: id(), title, expanded: true, children: [], htabs: [h], activeHTab: h.id, cwd };
 }
 
 /**
@@ -646,10 +690,11 @@ function tabCwdSource(h: HTab): string {
 }
 
 /**
- * The working directory new tabs on a page inherit: the page's active tab's
- * cwd. A tab's cwd is fixed on the tab itself, so this is a plain read.
+ * The working directory a new tab on this page inherits — the page's own cwd
+ * when it has one, else its active tab's. Used to pre-fill the path prompt.
  */
 function nodeTabCwd(n: TreeNode): string | undefined {
+  if (n.cwd) return n.cwd;
   const h = n.htabs.find((t) => t.id === n.activeHTab) ?? n.htabs[0];
   return h?.cwd;
 }
@@ -683,6 +728,17 @@ function setTabCwdInNodes(nodes: TreeNode[], tabId: string, cwd?: string): TreeN
     htabs: n.htabs.map((h) => (h.id === tabId ? { ...h, cwd } : h)),
     children: n.children.length ? setTabCwdInNodes(n.children, tabId, cwd) : n.children,
   }));
+}
+
+/** Return a new tree with the matching page's cwd set. Tabs are untouched —
+ *  a tab is a worktree-like entity with its own directory (see HTab.cwd);
+ *  the page's directory is only the default new tabs inherit. */
+function setNodeCwdInNodes(nodes: TreeNode[], nodeId: string, cwd?: string): TreeNode[] {
+  return nodes.map((n) =>
+    n.id === nodeId
+      ? { ...n, cwd }
+      : { ...n, children: n.children.length ? setNodeCwdInNodes(n.children, nodeId, cwd) : n.children },
+  );
 }
 
 function insertChild(nodes: TreeNode[], parentId: string, child: TreeNode): TreeNode[] {
@@ -1004,6 +1060,31 @@ export const useStore = create<State>((set, get) => ({
   updateVersion: null,
   setUpdateVersion: (v) => set({ updateVersion: v }),
 
+  homeDir: undefined,
+  setHomeDir: (path) => set({ homeDir: path }),
+
+  pathPrompt: null,
+  openPathPrompt: (kind, parentId) =>
+    set((s) => {
+      // Pre-fill with the directory the new page/tab would have inherited,
+      // so accepting the default is a single Enter.
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
+      let source: string | undefined;
+      if (kind === "tab") {
+        const node = ws && findNode(ws.roots, activeNodeId(s));
+        if (node) source = nodeTabCwd(node);
+      } else if (kind === "childPage") {
+        const parent = ws && parentId && findNode(ws.roots, parentId);
+        if (parent) source = nodeTabCwd(parent);
+      } else if (ws && ws.roots.length) {
+        // A root page lands after the last root, so that's the one it opens
+        // next to.
+        source = nodeTabCwd(ws.roots[ws.roots.length - 1]);
+      }
+      return { pathPrompt: { kind, parentId, initial: source ?? "~" } };
+    }),
+  closePathPrompt: () => set({ pathPrompt: null }),
+
   keybindings: loadKeybindings(),
   setKeybinding: (actionId, chord) =>
     set((s) => {
@@ -1102,26 +1183,22 @@ export const useStore = create<State>((set, get) => ({
     if (s.activeWorkspace === wsId) get().setActiveWorkspace(workspaces[0].id);
   },
 
-  addRootNode: () =>
+  addRootNode: (cwd) =>
     set((s) => {
       const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
       if (!ws) return s;
-      // Lands after the last root, so that's the page it opens next to.
-      const source = ws.roots.length ? nodeTabCwd(ws.roots[ws.roots.length - 1]) : undefined;
-      const node = makeNode(`page ${ws.roots.length + 1}`, source);
+      const node = makeNode(`page ${ws.roots.length + 1}`, cwd);
       return {
         workspaces: inActiveWs(s, (w) => ({ ...w, roots: [...w.roots, node] })),
         ...goToPage(s, node.id, { fresh: true }),
       };
     }),
 
-  addChildNode: (parentId) =>
+  addChildNode: (parentId, cwd) =>
     set((s) => {
       const ws = s.workspaces.find((w) => w.id === s.activeWorkspace);
       if (!ws) return s;
-      // A child page opens where its parent page is.
-      const parent = findNode(ws.roots, parentId);
-      const child = makeNode("untitled", parent && nodeTabCwd(parent));
+      const child = makeNode("untitled", cwd);
       return {
         workspaces: inActiveWs(s, (w) => ({
           ...w,
@@ -1222,12 +1299,11 @@ export const useStore = create<State>((set, get) => ({
     set((s) => goToPage(s, nodeId) ?? s);
   },
 
-  renameNode: (nodeId, title) =>
+  setNodeCwd: (nodeId, cwd) =>
     set((s) => ({
-      workspaces: inActiveWs(s, (ws) => ({
-        ...ws,
-        roots: updateNode(ws.roots, nodeId, (n) => ({ ...n, title })),
-      })),
+      // Global rather than active-page-scoped: the user may have switched
+      // pages (or workspaces) while editing the path inline.
+      workspaces: s.workspaces.map((ws) => ({ ...ws, roots: setNodeCwdInNodes(ws.roots, nodeId, cwd) })),
     })),
 
   deleteNode: (nodeId) =>
@@ -1267,14 +1343,12 @@ export const useStore = create<State>((set, get) => ({
       }),
     })),
 
-  addHTab: () =>
+  addHTab: (cwd) =>
     set((s) => ({
       workspaces: inActiveWs(s, (ws) => ({
         ...ws,
         roots: updateNode(ws.roots, activeNodeId(s), (n) => {
-          // Inherit the tab the user is coming from — which is also what the
-          // page's directory means, so the no-tabs case needs no separate path.
-          const h = makeHTab(n.htabs.length + 1, nodeTabCwd(n));
+          const h = makeHTab(n.htabs.length + 1, cwd);
           return { ...n, htabs: [...n.htabs, h], activeHTab: h.id };
         }),
       })),
@@ -1386,6 +1460,7 @@ export const useStore = create<State>((set, get) => ({
         children: [],
         htabs: [moving],
         activeHTab: moving.id,
+        cwd: moving.cwd,
       };
       return {
         workspaces: inActiveWs(s, (w) => ({ ...w, roots: [...roots, created] })),
@@ -1997,16 +2072,40 @@ export function tabCwdForLeaf(s: State, leafId: string): string | undefined {
   return findLeafHome(s.workspaces, leafId)?.htab.cwd;
 }
 
+/** Last path segment (both `/` and `\` separators, trailing ones ignored). */
+function baseName(path: string): string | undefined {
+  const segments = path.split(/[\\/]+/).filter(Boolean);
+  return segments[segments.length - 1];
+}
+
 /**
- * A tab's display label: the last path segment of its working directory
- * (both `/` and `\` separators, trailing ones ignored), or "~" when the tab
- * has no cwd of its own — home. Tabs are no longer renamed; the directory
- * is the name.
+ * The display label for "no cwd of its own" — home. Once the home directory
+ * has been resolved (see setHomeDir) that's its last folder name, which says
+ * more than "~"; until then, or when home has no segments ("/"), "~" stays.
+ */
+export function homeLabel(): string {
+  const home = useStore.getState().homeDir;
+  return (home && baseName(home)) || "~";
+}
+
+/**
+ * A tab's display label: the last path segment of its working directory, or
+ * the home folder's name when the tab has no cwd of its own. Tabs are no
+ * longer renamed; the directory is the name.
  */
 export function htabLabel(htab: HTab): string {
-  if (!htab.cwd) return "~";
-  const segments = htab.cwd.split(/[\\/]+/).filter(Boolean);
-  return segments[segments.length - 1] ?? htab.cwd;
+  if (!htab.cwd) return homeLabel();
+  return baseName(htab.cwd) ?? htab.cwd;
+}
+
+/**
+ * A page's display label, same rule as tabs (see htabLabel). Pages are no
+ * longer renamed; the directory is the name. Persisted pages without a cwd
+ * fall back to home.
+ */
+export function nodeLabel(node: TreeNode): string {
+  if (!node.cwd) return homeLabel();
+  return baseName(node.cwd) ?? node.cwd;
 }
 
 export function activeHtab(s: State): HTab | undefined {
