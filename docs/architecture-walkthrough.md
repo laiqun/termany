@@ -399,3 +399,145 @@ server 打成单文件 `server.cjs`，下载对应平台的 Node 运行时和 no
 - 前端会话注册表在 React 外；UI 状态是单一 Zustand store，整体 JSON 落 SQLite。
 - 桌面端 = Tauri 壳 + 打包的 Node server 子进程 + 同一份 web UI。
 - 想改"shell 跑在哪"：只动 `ITerminalBackend` 的实现，别碰 UI。
+
+---
+
+## 9. Q&A（读码过程中实际问过的问题）
+
+**Q：`ITerminalBackend` 是前后端契约吗？**
+不是，它是 UI 一侧的抽象（consumer-owned port），服务端从不 import 它。
+真正的前后端契约是同文件里的线上协议：`ClientMessage` 帧格式 + 关闭码 4000。（见第 2 节）
+
+**Q：`PtySession` 的 `{pty, ring, ws, detachedAt}` 是什么？**
+服务端会话注册表的 value（`index.ts:391-398`）：PTY 句柄、512KB 滚动缓冲、
+当前连着的 WS（断开为 null）、断开时间（用于 7 天 TTL 回收），另有 `sshTarget`
+区分本地 shell 还是 SSH 远端。
+
+**Q："落盘"是什么意思？**
+内存里的 scrollRing 每 10 秒批量写进 SQLite（`session_scroll` 表），
+server 重启后滚屏历史还在。触发时机：定时、detach 时、页面关闭前 sendBeacon。
+
+**Q：前端 `attachSession` 是 WS 和 PTY 建立关系吗？**
+不是，是 DOM 挂载：把 xterm 实例自己持有的元素 `s.el` appendChild 进 pane 的 div。
+WS↔PTY 的关系在 WS 连接建立那一刻就由服务端 `wireSession()` 接好了。
+类比：会话是一直运行的主机，React 组件只是显示器——拔掉（卸载）主机照跑。（见第 4 节）
+
+**Q：文件树、git diff 等其他视图也走 WebSocket 吗？**
+不走，全是 HTTP。终端 I/O 是唯一走 WS 的；另有 SSE（布局/活动推送）和
+NDJSON（agent 聊天流式输出）两条 HTTP 上的流式通道。（见第 5 节末尾的通道对照表）
+
+**Q：NDJSON 是什么？**
+Newline Delimited JSON，每行一个独立 JSON 对象。边生成边发，前端 fetch 后逐行读
+`response.body`，来一行解析一行——agent 聊天的打字机效果就是这么来的。
+
+**Q：HTTP 和 WS 怎么在同一个端口共存？HTTP/2？**
+HTTP/1.1 Upgrade，与 HTTP/2 无关。连接先以 HTTP/1.1 开场，带 `Upgrade: websocket`
+头的请求触发 `upgrade` 事件，`ws` 库回 101 后把整条 TCP 连接拿走改跑 WS 帧；
+普通请求走 `createServer` 的请求回调。共存 = 按请求头分流，不是一条连接上两种协议并行。
+
+**Q：终端 pane 切成其他视图，WS 要"降级"回 HTTP / 关闭吗？**
+都不用。HTTP 和 WS 是各自独立的连接，不存在降级机制；切视图只是 `detachSession`
+挪走 DOM，WS 连接随会话注册表保留，shell 输出持续写进 xterm 缓冲区。
+WS 只在用户关闭 pane/tab 时销毁（`disposeSession`，`manager.ts:2258`）；
+就算意外断开，服务端 PTY 也活着，带 session id 重连即可恢复。
+
+**Q：WS 占用了那条 TCP，HTTP 请求要另开 TCP，这是项目代码做的吗？**
+不是，一行代码都没有。`new WebSocket()` 和 `fetch()` 只是声明意图；
+TCP 建连、连接池、keep-alive、Upgrade 握手全是 runtime（webview / `node:http`）的内建行为。
+
+**Q：窗口退后台再切回，终端一片空白？**
+渲染层问题，会话没丢：OS 回收了 GPU 纹理但不算 context loss，xterm 没有触发重绘。
+已修复：`visibilitychange` 回来时对已挂载会话强制重绘。（见第 4 节"现象解读"）
+
+**Q：滚到历史中间敲回车，新提示符一闪而过、视口不跳到底？**
+故意的：manual-scroll output deferral。你往上滚 = 钉住视口，输出照写但视口拉回原地；
+滚回底部才恢复跟随。（见第 4 节"现象解读"）
+
+**这个 http 和 ws 共存是哪种实现，http1.1 升级，还是 http2**
+是经典的 HTTP/1.1 Upgrade，跟 HTTP/2 无关。证据：
+
+• index.ts:10：import { createServer } from "node:http" —— node:http 只讲 HTTP/1.1（HTTP/2 得用 node:http2，代码里没有）
+• index.ts:1650：new WebSocketServer({ server: http }) —— ws 库挂到同一个 HTTP server 上
+
+共存原理是 HTTP/1.1 的协议升级机制：
+
+1. 同一个 TCP 端口（5174）上，所有连接一开始都是普通 HTTP/1.1。
+2. 普通请求（GET /api/...）→ 走 createServer 的请求回调（index.ts:608），手工路由到 REST 端点，一问一答，结束。
+3. WS 客户端发来的请求带特殊头：
+    ```
+      GET /?session=xxx HTTP/1.1
+      Upgrade: websocket
+      Connection: Upgrade
+      Sec-WebSocket-Key: ...
+    ```
+    Node 发现 Upgrade 头后不走请求回调，而是发 upgrade 事件。
+4. WebSocketServer({ server: http }) 在构造时就注册了这个事件的监听：它校验握手、回 101 Switching Protocols，然后把这条 TCP 连接从 HTTP 手里拿走。
+5. 从此这条连接上跑的不再是 HTTP，而是 WebSocket 帧——直到关闭。
+
+所以"共存"不是两种协议同时跑在一条连接上，而是一条连接先以 HTTP/1.1 开场，握手后整条连接换轨。端口复用靠的就是请求头里的 Upgrade 字段分流。
+
+顺带说：HTTP/2 也能承载 WebSocket（RFC 8441 Extended CONNECT），但需要 node:http2 + TLS，且 ws 库默认不走这条路。这里用 HTTP/1.1 Upgrade 是最简单通用的做法——localhost 场景没有多路复用的需求，HTTP/2 没有收益。
+
+**有个问题啊， ws只在terminal pane时才用吧，切换成其他pane 需要降为HTTP吗？ 这个ws连接要关闭吗？**
+不需要"降级"，WS 也不关。拆开说：
+
+1. 没有"降级"这个概念
+
+HTTP 和 WS 是各自独立的连接，不是一条连接在两种协议间来回切。终端 pane 的 WS 建立后就一直在；文件树/git 视图发 REST 请求时，浏览器另开 HTTP 连接（或复用 keep-alive 连接）去访问同一个端口。两者并行不悖——升
+级是单向的（HTTP→WS），不存在用完再降回来的机制，也不需要。
+
+2. 切视图时 WS 保持连接
+
+回想之前的"主机与显示器"模型：切视图只是 detachSession 把 DOM 挪走（拔显示器），会话注册表里的 Session——xterm 实例 + WS 连接——原样保留（主机照跑）。这样：
+
+• shell 继续在跑，agent 的输出继续通过 WS 到达、写进 xterm 缓冲区
+• 切回终端视图时 attachSession 把 DOM 插回来，看到的是实时最新的画面，不是重连+重放
+
+3. WS 真正关闭的时机
+
+代码里只有两个销毁入口（manager.ts:2258、:2292），注释写得很明确：
+
+│ Permanently destroy a session — only when the user closes the pane/tab.
+
+即：用户关闭 pane/tab → backend.dispose() 关 WS + 销毁 xterm + 顺带 POST /api/forget 让服务端把持久化的滚屏数据也删掉。再有就是页面卸载时浏览器自动收连接。
+
+4. 就算 WS 意外断了，PTY 也不死
+
+这是服务端那层的设计（之前讲过的寿命关系：PTY > WS > React 组件）：WS 断开只是 detach，服务端 PTY 保留（默认 7 天 TTL），下次带同一个 session id 连上，重放历史接着用。
+
+所以整个设计里，WS 连接的生命周期绑的是终端会话（pane 存活期），而不是终端视图是否正在显示。
+
+**浏览器另开 HTTP 连接（或复用 keep-alive 连接）去访问同一个端口。这个行为要写代码吗？**
+它升级成了ws，那么另外开新的tcp，这个是这个项目要操作的事情，还是底层runtime？
+完全是底层 runtime 的事，这个项目一行相关代码都没有。
+
+项目代码只到这一层：
+
+```ts
+  new WebSocket("ws://localhost:5174/?session=...")   // 声明：我要一条 WS
+  fetch("http://localhost:5174/api/git/diffs")         // 声明：我要发个 HTTP 请求
+```
+
+这两行都是声明意图，底下的一切由 webview 的网络栈完成：
+
+• new WebSocket() → 网络栈建 TCP 连接 → 发 Upgrade 握手 → 握手成功后这条 TCP 被标记为 WS 专用，从 HTTP 连接池里移除
+• fetch() → 网络栈看连接池：没有可用的（原来那条已经变成 WS 了）→ 静默新建一条 TCP → 发请求
+
+"原来那条 TCP 升级没了，要不要再开一条"这个决策，代码里不存在——连接池发现自己空了就会开新的，这是浏览器网络栈的常规行为，和" pool 里连接被 6 个并发请求占满后再开新的"是同一条代码路径。
+
+服务端同理，甚至更被动：node:http 只在端口上 accept，来的连接是普通请求就触发 request 回调，带 Upgrade 头就触发 upgrade 事件交给 ws 库——服务端从来不"开"连接，只是接收，然后按请求头分流。
+
+所以分工是：
+```
+  ┌──────────────────────────────┬──────────────────────────────────────────────────────┐
+  │ 层                           │ 负责什么                                             │
+  ├──────────────────────────────┼──────────────────────────────────────────────────────┤
+  │ 项目代码                     │ 声明意图：new WebSocket()、fetch()                   │
+  ├──────────────────────────────┼──────────────────────────────────────────────────────┤
+  │ runtime（webview/node:http） │ TCP 建连、连接池、keep-alive、Upgrade 握手、按头分流 │
+  ├──────────────────────────────┼──────────────────────────────────────────────────────┤
+  │ 操作系统                     │ 真正的 socket、端口、包                              │
+  └──────────────────────────────┴──────────────────────────────────────────────────────┘
+```
+
+这也是这个项目协议设计干净的原因之一：应用层只关心"终端数据走 WS、其他走 HTTP"这个语义分工，传输层的连接管理零代码。
