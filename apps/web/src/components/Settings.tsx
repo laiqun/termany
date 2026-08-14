@@ -1,4 +1,4 @@
-import { Bot, Brain, Info, Keyboard, Palette, SendHorizontal } from "lucide-react";
+import { Bot, Brain, Info, Keyboard, Languages, Palette, SendHorizontal } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { apiPath } from "../api";
 import { isTauri } from "../env";
@@ -49,6 +49,7 @@ import {
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
 import { QuickPromptSettings } from "./QuickPromptSettings";
+import { TranslateSettings } from "./TranslateSettings";
 import { UsageSelect } from "./Select";
 
 /** Where users get more custom themes (the folder below is populated from it). */
@@ -64,7 +65,7 @@ const ABOUT_LINKS = [
   { key: "feedback", url: `${REPO}/issues` },
 ] as const;
 
-export type SettingsSection = "general" | "appearance" | "models" | "agents" | "prompts" | "keyboard" | "about";
+export type SettingsSection = "general" | "appearance" | "models" | "agents" | "prompts" | "translate" | "keyboard" | "about";
 
 /** Left-nav entries, in display order. Labels come from i18n (settings.<id>). */
 const NAV_SECTIONS: { id: SettingsSection; icon: ReactNode }[] = [
@@ -73,6 +74,7 @@ const NAV_SECTIONS: { id: SettingsSection; icon: ReactNode }[] = [
   { id: "models", icon: <Brain size={16} /> },
   { id: "agents", icon: <Bot size={16} /> },
   { id: "prompts", icon: <SendHorizontal size={16} /> },
+  { id: "translate", icon: <Languages size={16} /> },
   { id: "keyboard", icon: <Keyboard size={16} /> },
   { id: "about", icon: <Info size={16} /> },
 ];
@@ -330,6 +332,7 @@ export function Settings({
           {section === "models" && <ModelSettings />}
           {section === "agents" && <AgentSettings />}
           {section === "prompts" && <QuickPromptSettings />}
+          {section === "translate" && <TranslateSettings />}
           {section === "keyboard" && <KeyboardSettings />}
           {section === "general" && (
             <>

@@ -195,6 +195,14 @@ const scrollListeners = new Map<string, Set<(state: TerminalScrollState) => void
 const connectionStatusListeners = new Set<() => void>();
 const SSH_EXIT_EVENT = "termany:ssh-session-exited";
 const SHELL_EXIT_EVENT = "termany:shell-session-exited";
+/** Alt+drag selection asks for a translation bubble instead of a clipboard copy. */
+export const TRANSLATE_SELECTION_EVENT = "termany:translate-selection";
+export interface TranslateSelectionDetail {
+  text: string;
+  /** Viewport coords of the mouseup point, used to anchor the bubble. */
+  x: number;
+  y: number;
+}
 
 function notifyConnectionStatus() {
   for (const listener of connectionStatusListeners) listener();
@@ -1693,6 +1701,7 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
     y: number;
     dragged: boolean;
     clickCount: number;
+    alt: boolean;
   } | null = null;
   el.addEventListener("mousedown", (event) => {
     if (event.button !== 0) {
@@ -1704,6 +1713,7 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
       y: event.clientY,
       dragged: false,
       clickCount: event.detail,
+      alt: event.altKey,
     };
   });
   el.addEventListener("mousemove", (event) => {
@@ -1723,7 +1733,18 @@ function getSession(id: string, cwd?: string, sshTarget?: string, paneId = id): 
     const sel = term.getSelection();
     // Use trim only as an emptiness check. Copy the original selection so
     // meaningful indentation and line breaks are preserved.
-    if (sel.trim()) navigator.clipboard?.writeText(sel).catch(() => { });
+    if (!sel.trim()) return;
+    // Alt held at mousedown turns the gesture into a dictionary lookup: show
+    // the translation bubble at the release point and leave the clipboard alone.
+    if (gesture.alt) {
+      window.dispatchEvent(
+        new CustomEvent<TranslateSelectionDetail>(TRANSLATE_SELECTION_EVENT, {
+          detail: { text: sel, x: event.clientX, y: event.clientY },
+        })
+      );
+      return;
+    }
+    navigator.clipboard?.writeText(sel).catch(() => { });
   });
 
   // Paste image blobs as local file paths only when the active program looks

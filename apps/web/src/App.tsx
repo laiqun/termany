@@ -9,6 +9,7 @@ import { SearchPalette } from "./components/SearchPalette";
 import { Settings, type SettingsSection } from "./components/Settings";
 import { SideRail } from "./components/SideRail";
 import { SplitView } from "./components/SplitView";
+import { TranslateBubble } from "./components/TranslateBubble";
 import { TreeSidebar } from "./components/TreeSidebar";
 import { WindowControls } from "./components/WindowControls";
 import { isTauri } from "./env";
@@ -403,6 +404,7 @@ export function App() {
         <SearchPalette onClose={() => setSearchOpen(false)} onRunAction={runAction} />
       )}
       <PathDialog />
+      <TranslateBubble />
       {gitDiffOpen && <GitDiff tabCwd={gitTabCwd} onClose={() => setGitDiffOpen(false)} />}
       {isTauri && <QuitConfirm />}
     </div>

@@ -15,6 +15,8 @@ import { AgentActivityTracker } from "./agentActivity.js";
 import { sampleOnceOutputSettles } from "./foregroundJob.js";
 import { DEFAULT_SESSION_PAGE_SIZE, listAgentSessions, listAgentUsage } from "./agentSessions.js";
 import { streamAgentChat } from "./agentChat.js";
+import { translateText } from "./translate.js";
+import { listTranslateConfig, loadTranslateConfig, saveTranslateConfig } from "./translateConfig.js";
 import { listAgentConfigs, saveAgentConfigs } from "./agentConfig.js";
 import {
   acpRuntimeConfig,
@@ -943,6 +945,29 @@ const http = createServer((req, res) => {
           const message = err instanceof Error ? err.message : String(err);
           res.end(`${JSON.stringify({ type: "error", error: message })}\n`);
         }
+      })
+      .catch(fail);
+    return;
+  }
+
+  // Selection translation for the Alt+drag lookup bubble in terminal panes.
+  if (req.method === "POST" && reqUrl.pathname === "/api/translate") {
+    readJson(req)
+      .then(async (body) => json(200, await translateText(body?.text, loadTranslateConfig())))
+      .catch(fail);
+    return;
+  }
+
+  // Translate engine selection + caiyun token (token masked on read).
+  if (req.method === "GET" && reqUrl.pathname === "/api/translate/config") {
+    json(200, listTranslateConfig());
+    return;
+  }
+  if (req.method === "PUT" && reqUrl.pathname === "/api/translate/config") {
+    readJson(req)
+      .then((body) => {
+        saveTranslateConfig({ enabled: body?.enabled, caiyunToken: body?.caiyunToken });
+        json(200, listTranslateConfig());
       })
       .catch(fail);
     return;

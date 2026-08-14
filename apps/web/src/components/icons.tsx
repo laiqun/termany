@@ -47,6 +47,7 @@ import {
   Square,
   SquareTerminal,
   Trash2,
+  Volume2,
   X,
 } from "lucide-react";
 
@@ -205,6 +206,11 @@ export function FlaskIcon() {
 /** Spinning loader for in-flight actions. */
 export function SpinnerIcon() {
   return <Loader2 {...base} className="spin" />;
+}
+
+/** Speaker — play a pronunciation in the translation bubble. */
+export function SpeakerIcon() {
+  return <Volume2 {...base} />;
 }
 
 /** Branch glyph — the git diff viewer. */
