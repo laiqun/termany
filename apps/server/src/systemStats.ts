@@ -462,14 +462,45 @@ async function windowsProcessInstances(): Promise<NamedProcessInstance[]> {
   return instances;
 }
 
+/**
+ * os.loadavg() returns [0, 0, 0] on Windows — the kernel keeps no runnable-queue
+ * average to report. Synthesize it instead: the instantaneous "load" is CPU
+ * utilization times core count (every core busy reads as `cores`, the same
+ * scale the Unix number uses), smoothed with the same 1/5/15-minute exponential
+ * decay the Unix averages use. Decay is computed from the real gap between
+ * polls, so an irregular poll interval doesn't skew the averages.
+ */
+let winLoad: { t: number; avg: [number, number, number] } | null = null;
+
+function loadAverage(cpuUsagePct: number, cores: number): [number, number, number] {
+  if (process.platform !== "win32") {
+    const [l1, l5, l15] = os.loadavg();
+    return [l1, l5, l15];
+  }
+  const now = Date.now();
+  const instant = (Math.min(100, Math.max(0, cpuUsagePct)) / 100) * cores;
+  if (!winLoad) {
+    winLoad = { t: now, avg: [instant, instant, instant] };
+    return winLoad.avg;
+  }
+  const dtSec = Math.max(0, (now - winLoad.t) / 1000);
+  const taus = [60, 300, 900] as const;
+  const avg = taus.map((tau, i) => {
+    const k = Math.exp(-dtSec / tau);
+    return winLoad!.avg[i] * k + instant * (1 - k);
+  }) as [number, number, number];
+  winLoad = { t: now, avg };
+  return avg;
+}
+
 export async function readSystemStats(): Promise<SystemStats> {
   const total = os.totalmem();
+  const cores = os.cpus().length;
   const [cpu, memory, processes] = await Promise.all([
     cpuUsage(),
     memoryStats(total),
     processGroups(),
   ]);
-  const [l1, l5, l15] = os.loadavg();
 
   const now = Date.now();
   history.push({ t: now, cpu: cpu.usage, memUsed: memory.used });
@@ -477,7 +508,7 @@ export async function readSystemStats(): Promise<SystemStats> {
   while (history.length && (history[0].t < cutoff || history.length > HISTORY_CAP)) history.shift();
 
   return {
-    cpu: { ...cpu, cores: os.cpus().length, loadavg: [l1, l5, l15] },
+    cpu: { ...cpu, cores, loadavg: loadAverage(cpu.usage, cores) },
     memory,
     processes,
     history: [...history],
