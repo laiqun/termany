@@ -2015,6 +2015,31 @@ html.tauri #root {
 .side-rail-settings {
   margin-top: auto;
 }
+
+/* Quick-prompt dropdown — same panel as .agent-menu, but each row is a
+   two-line stack (preset name over a one-line text preview). */
+.prompt-menu {
+  width: 240px;
+}
+.prompt-menu-item {
+  height: auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 7px 10px;
+}
+.prompt-menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-menu-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
 /* Split layout */
 .split {
   display: flex;
@@ -4270,7 +4295,8 @@ html.tauri #root {
   font-size: 12px;
 }
 .agent-field input,
-.agent-field select {
+.agent-field select,
+.agent-field textarea {
   width: 100%;
   min-width: 0;
   padding: 8px 10px;
@@ -4283,8 +4309,13 @@ html.tauri #root {
   font-family: var(--mono);
   font-size: 13px;
 }
+.agent-field textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
 .agent-field input:focus,
-.agent-field select:focus {
+.agent-field select:focus,
+.agent-field textarea:focus {
   border-color: var(--accent);
 }
 .agent-runtime-toggle input {

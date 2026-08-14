@@ -6,9 +6,12 @@ import {
   RAIL_ITEM_IDS,
 } from "./rail-config";
 
-test("rail icons default to visible", () => {
+test("rail icons default to visible, except the redundant settings gear", () => {
   assert.deepEqual(normalizeRailVisibility(null), DEFAULT_RAIL_VISIBILITY);
-  assert.equal(RAIL_ITEM_IDS.every((id) => DEFAULT_RAIL_VISIBILITY[id]), true);
+  assert.equal(
+    RAIL_ITEM_IDS.every((id) => DEFAULT_RAIL_VISIBILITY[id] === (id !== "settings")),
+    true,
+  );
 });
 
 test("rail visibility keeps known booleans and ignores invalid values", () => {
@@ -25,9 +28,12 @@ test("rail visibility keeps known booleans and ignores invalid values", () => {
   assert.equal(Object.hasOwn(visibility, "unknown"), false);
 });
 
-test("new or missing rail entries remain visible", () => {
-  const visibility = normalizeRailVisibility({ terminal: false });
+test("new or missing rail entries take the shipped default", () => {
+  const visibility = normalizeRailVisibility({ terminal: false, settings: true });
   assert.equal(visibility.terminal, false);
   assert.equal(visibility.agents, true);
   assert.equal(visibility.usage, true);
+  assert.equal(visibility.settings, true);
+  // Persisted lists from before the gear became toggleable lack the key.
+  assert.equal(normalizeRailVisibility({}).settings, false);
 });

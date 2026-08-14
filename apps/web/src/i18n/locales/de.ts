@@ -6,6 +6,7 @@ export default {
   "settings.appearance": "Darstellung",
   "settings.models": "Modelle",
   "settings.agents": "Agenten",
+  "settings.prompts": "Schnellprompts",
   "settings.keyboard": "Tastatur",
   "settings.about": "Über",
   "settings.language.title": "SPRACHE",
@@ -13,7 +14,7 @@ export default {
   "settings.rail.title": "RECHTE LEISTE",
   "settings.rail.description": "Lege fest, welche Verknüpfungen rechts und in den Bereichsmenüs erscheinen.",
   "settings.rail.agents": "Agenten-Starter",
-  "settings.rail.note": "Die Schaltfläche „Einstellungen“ bleibt immer sichtbar.",
+  "settings.rail.prompts": "Prompt-Eingabe",
 
   "common.cancel": "Abbrechen",
   "common.close": "Schließen",
@@ -51,6 +52,7 @@ export default {
   // noun of any gender/number, and compounding it produces "Unterhaltung-Bereich".
   "rail.newPane": "Neuer Bereich: {view}",
   "rail.runAgent": "Agent starten",
+  "rail.prompts": "Schnelleingabe",
   "ssh.open": "Neue SSH-Verbindung",
   "ssh.destination": "SSH-Ziel",
   "ssh.local": "Lokales Terminal",
@@ -124,6 +126,18 @@ export default {
   "agents.runtimeModelsAgent": "Vom Agenten verwaltet",
   "agents.runtimeModelsTermany": "Termany-Modelle verwenden (bald verfügbar)",
   "agents.openTerminal": "Im Terminal öffnen",
+
+  "prompts.settings": "Schnellprompt-Einstellungen…",
+  "prompts.title": "SCHNELLPROMPTS",
+  "prompts.add": "Prompt hinzufügen",
+  "prompts.noEnabled": "Keine aktivierten Prompts",
+  "prompts.enabled": "Aktiviert",
+  "prompts.disabled": "Deaktiviert",
+  "prompts.name": "Name",
+  "prompts.text": "Prompt-Text",
+  "prompts.textMissing": "Kein Text festgelegt",
+  "prompts.help": "Erscheint im Schnelleingabe-Menü der Leiste; bei Auswahl wird der Text in das fokussierte Terminal eingefügt und Enter gedrückt.",
+  "prompts.remove": "Entfernen",
 
   "activity.genericAgent": "KI-Assistent",
   "activity.error": "{agent} braucht deine Aufmerksamkeit",

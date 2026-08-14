@@ -7,8 +7,10 @@ export const RAIL_ITEM_IDS = [
   "web",
   "monitor",
   "agents",
+  "prompts",
   "history",
   "usage",
+  "settings",
 ] as const;
 
 export type RailItemId = (typeof RAIL_ITEM_IDS)[number];
@@ -24,15 +26,23 @@ export const DEFAULT_RAIL_VISIBILITY: RailVisibility = {
   web: true,
   monitor: true,
   agents: true,
+  prompts: true,
   history: true,
   usage: true,
+  // The rail's settings gear duplicates the openSettings keybinding and the
+  // sidebar entry point, so it ships hidden; the Settings rail grid can
+  // bring it back.
+  settings: false,
 };
 
-/** Keep only known boolean values; missing/new entries remain visible. */
+/** Keep only known boolean values; missing/new entries take the shipped default. */
 export function normalizeRailVisibility(value: unknown): RailVisibility {
   const saved = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   return Object.fromEntries(
-    RAIL_ITEM_IDS.map((id) => [id, typeof saved[id] === "boolean" ? saved[id] : true]),
+    RAIL_ITEM_IDS.map((id) => [
+      id,
+      typeof saved[id] === "boolean" ? saved[id] : DEFAULT_RAIL_VISIBILITY[id],
+    ]),
   ) as RailVisibility;
 }
 

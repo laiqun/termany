@@ -384,6 +384,10 @@ export function App() {
             lastSettingsSection.current = "agents";
             setSettingsSection("agents");
           }}
+          onOpenPromptsSettings={() => {
+            lastSettingsSection.current = "prompts";
+            setSettingsSection("prompts");
+          }}
         />
       )}
       {settingsOpen && (

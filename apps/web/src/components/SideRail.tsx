@@ -1,10 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { agentCommand, type AgentConfig, useAgentConfigs } from "../agents";
 import { useI18n } from "../i18n";
 import { withShortcut } from "../keybindings";
 import { registerOccluder, unregisterOccluder } from "../nativeViewOcclusion";
+import { useQuickPrompts, type QuickPrompt } from "../quickPrompts";
 import { activeHtab, useStore, type PaneView } from "../state/store";
-import { queueCommand } from "../terminal/manager";
+import { queueCommand, submitPrompt } from "../terminal/manager";
 import {
   ActivityIcon,
   AgentIcon,
@@ -14,11 +15,13 @@ import {
   GearIcon,
   GitBranchIcon,
   HistoryIcon,
+  SendIcon,
   TerminalIcon,
   WebIcon,
 } from "./icons";
 
 const AGENT_MENU_OCCLUDER_ID = "side-rail-agent-menu";
+const PROMPT_MENU_OCCLUDER_ID = "side-rail-prompt-menu";
 
 /** One entry per pane kind this rail can quick-create. */
 const RAIL_ITEMS: Array<{ view: PaneView; icon: () => JSX.Element }> = [
@@ -44,18 +47,21 @@ const DASHBOARD_RAIL_ITEMS: Array<{ view: PaneView; icon: () => JSX.Element }> =
  * that view, instead of switching an existing pane's view in place (that's
  * still the per-pane header button, toggled via togglePaneView). The settings
  * button is pinned to the bottom (margin-top: auto) so it stays reachable
- * regardless of how many quick-create buttons sit above it.
+ * regardless of how many quick-create buttons sit above it; it ships hidden
+ * (see DEFAULT_RAIL_VISIBILITY) since the openSettings keybinding covers it.
  */
 export function SideRail({
   agentsOpen,
   onAgentsOpenChange,
   onOpenSettings,
   onOpenAgentsSettings,
+  onOpenPromptsSettings,
 }: {
   agentsOpen: boolean;
   onAgentsOpenChange: (open: boolean) => void;
   onOpenSettings: () => void;
   onOpenAgentsSettings: () => void;
+  onOpenPromptsSettings: () => void;
 }) {
   const addPane = useStore((s) => s.addPane);
   const setPaneView = useStore((s) => s.setPaneView);
@@ -63,8 +69,12 @@ export function SideRail({
   const railVisibility = useStore((s) => s.railVisibility);
   const { t } = useI18n();
   const agents = useAgentConfigs().filter((agent) => agent.enabled);
+  const prompts = useQuickPrompts().filter((prompt) => prompt.enabled && prompt.text.trim());
+  const [promptsOpen, setPromptsOpen] = useState(false);
   const agentsRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const promptsRef = useRef<HTMLDivElement>(null);
+  const promptMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!agentsOpen) return;
@@ -76,8 +86,21 @@ export function SideRail({
   }, [agentsOpen, onAgentsOpenChange]);
 
   useEffect(() => {
+    if (!promptsOpen) return;
+    const onClick = (event: MouseEvent) => {
+      if (!promptsRef.current?.contains(event.target as Node)) setPromptsOpen(false);
+    };
+    window.addEventListener("click", onClick);
+    return () => window.removeEventListener("click", onClick);
+  }, [promptsOpen]);
+
+  useEffect(() => {
     if (!railVisibility.agents && agentsOpen) onAgentsOpenChange(false);
   }, [agentsOpen, onAgentsOpenChange, railVisibility.agents]);
+
+  useEffect(() => {
+    if (!railVisibility.prompts && promptsOpen) setPromptsOpen(false);
+  }, [promptsOpen, railVisibility.prompts]);
 
   // Only blanks the web/office preview pane(s) this dropdown actually
   // overlaps, not every native webview in the workspace (see nativeViewOcclusion).
@@ -93,6 +116,19 @@ export function SideRail({
       unregisterOccluder(AGENT_MENU_OCCLUDER_ID);
     };
   }, [agentsOpen]);
+
+  useEffect(() => {
+    if (!promptsOpen) return;
+    const el = promptMenuRef.current;
+    if (!el) return;
+    const update = () => registerOccluder(PROMPT_MENU_OCCLUDER_ID, el.getBoundingClientRect());
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      unregisterOccluder(PROMPT_MENU_OCCLUDER_ID);
+    };
+  }, [promptsOpen]);
 
   const runAgent = (agent: AgentConfig) => {
     const paneId = addPane("terminal", agent.id);
@@ -114,6 +150,17 @@ export function SideRail({
   const openAgentSettings = () => {
     onAgentsOpenChange(false);
     onOpenAgentsSettings();
+  };
+
+  const insertPrompt = (prompt: QuickPrompt) => {
+    const paneId = activeHtab(useStore.getState())?.focused;
+    if (paneId) submitPrompt(paneId, prompt.text);
+    setPromptsOpen(false);
+  };
+
+  const openPromptSettings = () => {
+    setPromptsOpen(false);
+    onOpenPromptsSettings();
   };
 
   const openPane = (view: PaneView) => {
@@ -175,6 +222,37 @@ export function SideRail({
           )}
         </div>
       )}
+      {railVisibility.prompts && (
+        <div className="side-rail-agent" ref={promptsRef}>
+          <button
+            className={`side-rail-btn ${promptsOpen ? "active" : ""}`}
+            title={t("rail.prompts")}
+            onClick={() => setPromptsOpen(!promptsOpen)}
+          >
+            <SendIcon />
+          </button>
+          {promptsOpen && (
+            <div className="agent-menu prompt-menu" ref={promptMenuRef}>
+              {prompts.map((prompt) => (
+                <button
+                  key={prompt.id}
+                  className="agent-menu-item prompt-menu-item"
+                  onClick={() => insertPrompt(prompt)}
+                >
+                  <span className="prompt-menu-name">{prompt.name}</span>
+                  <span className="prompt-menu-text">{prompt.text}</span>
+                </button>
+              ))}
+              {prompts.length === 0 && <div className="agent-menu-empty">{t("prompts.noEnabled")}</div>}
+              <div className="agent-menu-separator" />
+              <button className="agent-menu-item agent-menu-settings" onClick={openPromptSettings}>
+                <GearIcon />
+                <span>{t("prompts.settings")}</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
       {DASHBOARD_RAIL_ITEMS.filter(({ view }) => railVisibility[view]).map(({ view, icon: Icon }) => (
         <button
           key={view}
@@ -185,13 +263,15 @@ export function SideRail({
           <Icon />
         </button>
       ))}
-      <button
-        className="side-rail-btn side-rail-settings"
-        title={withShortcut(t("workspace.settings"), "openSettings")}
-        onClick={onOpenSettings}
-      >
-        <GearIcon />
-      </button>
+      {railVisibility.settings && (
+        <button
+          className="side-rail-btn side-rail-settings"
+          title={withShortcut(t("workspace.settings"), "openSettings")}
+          onClick={onOpenSettings}
+        >
+          <GearIcon />
+        </button>
+      )}
     </div>
   );
 }

@@ -2226,6 +2226,22 @@ export function pasteIntoSession(id: string, text: string) {
   sessions.get(id)?.term.paste(text);
 }
 
+/**
+ * Insert a quick-prompt preset and submit it: the text goes through xterm's
+ * paste pipeline (one bracketed paste for claude/vim/modern shells, so
+ * multi-line prompts land in the input box without half-submitting), then a
+ * bare carriage return presses Enter, then focus returns to the terminal
+ * since clicking the rail button stole it.
+ */
+export function submitPrompt(id: string, text: string) {
+  id = activeSessionId(id);
+  const session = sessions.get(id);
+  if (!session) return;
+  session.term.paste(text);
+  session.backend.write("\r");
+  focusSession(id);
+}
+
 export function sessionUsesAlternateBuffer(id: string): boolean {
   id = activeSessionId(id);
   return sessions.get(id)?.term.buffer.active.type === "alternate";

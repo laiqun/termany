@@ -1,4 +1,4 @@
-import { Bot, Brain, Info, Keyboard, Palette } from "lucide-react";
+import { Bot, Brain, Info, Keyboard, Palette, SendHorizontal } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { apiPath } from "../api";
 import { isTauri } from "../env";
@@ -42,11 +42,13 @@ import {
   GitBranchIcon,
   HistoryIcon,
   RevealFolderIcon,
+  SendIcon,
   TerminalIcon,
   WebIcon,
 } from "./icons";
 import { KeyboardSettings } from "./KeyboardSettings";
 import { ModelSettings } from "./ModelSettings";
+import { QuickPromptSettings } from "./QuickPromptSettings";
 import { UsageSelect } from "./Select";
 
 /** Where users get more custom themes (the folder below is populated from it). */
@@ -62,7 +64,7 @@ const ABOUT_LINKS = [
   { key: "feedback", url: `${REPO}/issues` },
 ] as const;
 
-export type SettingsSection = "general" | "appearance" | "models" | "agents" | "keyboard" | "about";
+export type SettingsSection = "general" | "appearance" | "models" | "agents" | "prompts" | "keyboard" | "about";
 
 /** Left-nav entries, in display order. Labels come from i18n (settings.<id>). */
 const NAV_SECTIONS: { id: SettingsSection; icon: ReactNode }[] = [
@@ -70,6 +72,7 @@ const NAV_SECTIONS: { id: SettingsSection; icon: ReactNode }[] = [
   { id: "appearance", icon: <Palette size={16} /> },
   { id: "models", icon: <Brain size={16} /> },
   { id: "agents", icon: <Bot size={16} /> },
+  { id: "prompts", icon: <SendHorizontal size={16} /> },
   { id: "keyboard", icon: <Keyboard size={16} /> },
   { id: "about", icon: <Info size={16} /> },
 ];
@@ -82,8 +85,10 @@ const RAIL_SETTINGS: Array<{ id: RailItemId; labelKey: string; icon: ReactNode }
   { id: "web", labelKey: "pane.view.web", icon: <WebIcon /> },
   { id: "monitor", labelKey: "pane.view.monitor", icon: <ActivityIcon /> },
   { id: "agents", labelKey: "settings.rail.agents", icon: <AgentIcon /> },
+  { id: "prompts", labelKey: "settings.rail.prompts", icon: <SendIcon /> },
   { id: "history", labelKey: "pane.view.history", icon: <HistoryIcon /> },
   { id: "usage", labelKey: "pane.view.usage", icon: <ChartIcon /> },
+  { id: "settings", labelKey: "workspace.settings", icon: <GearIcon /> },
 ];
 
 const CUSTOM_FONT_FAMILY = "__custom__";
@@ -324,6 +329,7 @@ export function Settings({
         <div className="settings-body">
           {section === "models" && <ModelSettings />}
           {section === "agents" && <AgentSettings />}
+          {section === "prompts" && <QuickPromptSettings />}
           {section === "keyboard" && <KeyboardSettings />}
           {section === "general" && (
             <>
@@ -359,7 +365,6 @@ export function Settings({
                     </label>
                   ))}
                 </div>
-                <span className="rail-icons-note">{t("settings.rail.note")}</span>
               </div>
             </>
           )}
