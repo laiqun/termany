@@ -49,7 +49,9 @@ import {
   addWorktree,
   BranchNotMergedError,
   deleteBranch,
+  gitCommitDiff,
   gitDiffs,
+  gitLog,
   gitOverview,
   removeWorktree,
   worktreeStartupCommand,
@@ -1554,6 +1556,50 @@ const http = createServer((req, res) => {
         await gitOverview(cwd, {
           base: reqUrl.searchParams.get("base") ?? undefined,
           worktree: reqUrl.searchParams.get("worktree") ?? undefined,
+        }),
+      );
+    })().catch(fail);
+    return;
+  }
+
+  // A page of commit history for the repo containing the panel's directory —
+  // the same scoping as the overview above. `all=1` spans every ref instead of
+  // just the checked-out branch; `skip`/`count` page it (the client's "load
+  // more"). Returns { repo: false } rather than an error outside a repo.
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/log") {
+    (async () => {
+      const cwd = await gitPanelCwd(
+        reqUrl.searchParams.get("cwd"),
+        reqUrl.searchParams.get("session") ?? "",
+      );
+      json(
+        200,
+        await gitLog(cwd, {
+          worktree: reqUrl.searchParams.get("worktree") ?? undefined,
+          all: reqUrl.searchParams.get("all") === "1",
+          skip: Number(reqUrl.searchParams.get("skip")) || 0,
+          count: Number(reqUrl.searchParams.get("count")) || undefined,
+        }),
+      );
+    })().catch(fail);
+    return;
+  }
+
+  // One commit's changed files and their diffs, for the history view's
+  // selection. Everything the view needs in one round trip; the diff is
+  // against the first parent (the empty tree for a root commit).
+  if (req.method === "GET" && reqUrl.pathname === "/api/git/commit") {
+    (async () => {
+      const cwd = await gitPanelCwd(
+        reqUrl.searchParams.get("cwd"),
+        reqUrl.searchParams.get("session") ?? "",
+      );
+      json(
+        200,
+        await gitCommitDiff({
+          cwd,
+          worktree: reqUrl.searchParams.get("worktree") ?? undefined,
+          sha: reqUrl.searchParams.get("sha") ?? "",
         }),
       );
     })().catch(fail);

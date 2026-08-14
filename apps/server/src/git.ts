@@ -744,6 +744,122 @@ async function untrackedDiff(abs: string, relative: string): Promise<GitDiff> {
   return cap(header + body + tail);
 }
 
+/** A commit as the history list shows it. */
+export type GitCommit = {
+  sha: string;
+  short: string;
+  author: string;
+  /** Committer date, epoch seconds — the client renders relative time. */
+  date: number;
+  subject: string;
+  /** Ref decorations ("HEAD -> main, origin/main"), "" when undecorated. */
+  refs: string;
+};
+
+/** One page of history, newest first. */
+const LOG_PAGE = 50;
+/** Beyond this a repo's log paging is nobody's idea of browsing. */
+const MAX_LOG_SKIP = 10_000;
+
+/**
+ * A page of commits for the worktree's checked-out branch — or for every ref
+ * with `all` (the history equivalent of the compare picker's scope). %x00
+ * delimits fields because none of these can contain a NUL; %s is the first
+ * line only, so a newline inside a message can't break the row split either.
+ * A repo with no commits yet fails the log outright and reports an empty
+ * page rather than an error — that is what an initialized-but-unused repo is.
+ */
+export async function gitLog(
+  cwd: string,
+  scope: GitScope & { all?: boolean; skip?: number; count?: number } = {},
+): Promise<{ repo: false } | { repo: true; commits: GitCommit[]; hasMore: boolean }> {
+  const resolved = await resolveScope(cwd, scope.worktree);
+  if (!resolved) return { repo: false };
+  const count = Math.min(Math.max(scope.count ?? LOG_PAGE, 1), 200);
+  const skip = Math.min(Math.max(scope.skip ?? 0, 0), MAX_LOG_SKIP);
+  try {
+    // One extra row is the "there is more" probe — cheaper than a count query.
+    const out = await git(
+      [
+        "log",
+        `--format=%H%x00%h%x00%an%x00%at%x00%D%x00%s`,
+        `--skip=${skip}`,
+        `--max-count=${count + 1}`,
+        ...(scope.all ? ["--all"] : []),
+      ],
+      resolved.root,
+    );
+    const lines = out.split("\n").filter((l) => l.includes("\0"));
+    const commits: GitCommit[] = lines.slice(0, count).map((line) => {
+      const [sha, short, author, date, refs, subject] = line.split("\0");
+      return { sha, short, author, date: Number(date) || 0, refs, subject };
+    });
+    return { repo: true, commits, hasMore: lines.length > count };
+  } catch {
+    return { repo: true, commits: [], hasMore: false };
+  }
+}
+
+/** The empty tree — the left side of a root commit's diff, which has no parent. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** Reject anything that isn't a commit id before it reaches a command line. */
+function validSha(sha: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(sha);
+}
+
+/**
+ * Everything the history view shows for one commit: its file rows (the same
+ * shape the changes view lists, all under the "changed" section) and every
+ * file's diff, keyed the same way so the client renders both views with one
+ * code path. A merge diff is against its first parent — what the commit
+ * itself changed, not the combined result. Rows are capped like the overview
+ * for the same reason: a whole-tree reformat commit is reported, not listed.
+ */
+export async function gitCommitDiff(opts: GitScope & {
+  cwd: string;
+  sha: string;
+}): Promise<{ repo: false } | { repo: true; rows: GitRow[]; overflow?: boolean; diffs: Record<string, GitDiff> }> {
+  const resolved = await resolveScope(opts.cwd, opts.worktree);
+  if (!resolved || !validSha(opts.sha)) return { repo: false };
+  const { root } = resolved;
+
+  let parent: string;
+  try {
+    parent = (await git(["rev-parse", "--verify", `${opts.sha}^`], root)).trim();
+  } catch {
+    parent = EMPTY_TREE; // a root commit has no parent to diff against
+  }
+
+  const [rows, text, numstat] = await Promise.all([
+    diffRows(root, [parent, opts.sha], "changed"),
+    git(["diff", "--no-color", parent, opts.sha], root),
+    git(["diff", "--numstat", "-z", parent, opts.sha], root),
+  ]);
+
+  const diffs: Record<string, GitDiff> = {};
+  const order = [...parseNumstat(numstat).keys()];
+  const chunks = splitDiff(text);
+  // As in gitDiffs: a mismatch means the refs moved under us — report nothing
+  // rather than pair a diff with the wrong file.
+  if (order.length === chunks.length) {
+    order.forEach((filePath, i) => {
+      const chunk = chunks[i];
+      diffs[diffKey("changed", filePath)] = isBinaryDiff(chunk)
+        ? { diff: "", binary: true }
+        : cap(chunk);
+    });
+  }
+
+  const overflow = rows.length > MAX_ROWS;
+  return {
+    repo: true,
+    rows: overflow ? rows.slice(0, MAX_ROWS) : rows,
+    ...(overflow ? { overflow: true } : {}),
+    diffs,
+  };
+}
+
 /** Files requested together, capped so one pathspec can't grow unbounded. */
 const MAX_DIFF_FILES = 200;
 

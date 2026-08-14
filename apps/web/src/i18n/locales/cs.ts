@@ -490,6 +490,17 @@ export default {
   "gitdiff.mainWorktree": "Hlavní kopie",
   "gitdiff.workingDir": "Pracovní adresář",
   "gitdiff.openWorktreeTab": "Přejít na kartu pracující v {dir}, nebo otevřít novou",
+  "gitdiff.modeChanges": "Změny",
+  "gitdiff.modeHistory": "Historie",
+
+  "githistory.currentBranch": "Aktuální větev",
+  "githistory.allBranches": "Všechny větve",
+  "githistory.loading": "Načítání historie…",
+  "githistory.error": "Historii se nepodařilo načíst.",
+  "githistory.empty": "Zatím žádné commity.",
+  "githistory.loadMore": "Načíst další",
+  "githistory.pick": "Vyberte commit pro zobrazení jeho změn.",
+  "githistory.noFiles": "Tento commit nemění žádné soubory.",
 
   "worktree.createNew": "Vytvořit nový worktree na nové větvi",
   "worktree.branchName": "Název větve",

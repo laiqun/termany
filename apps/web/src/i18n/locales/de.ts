@@ -491,6 +491,17 @@ export default {
   "gitdiff.mainWorktree": "Haupt-Checkout",
   "gitdiff.workingDir": "Arbeitsverzeichnis",
   "gitdiff.openWorktreeTab": "Zum Tab wechseln, der in {dir} arbeitet, oder einen öffnen",
+  "gitdiff.modeChanges": "Änderungen",
+  "gitdiff.modeHistory": "Verlauf",
+
+  "githistory.currentBranch": "Aktueller Branch",
+  "githistory.allBranches": "Alle Branches",
+  "githistory.loading": "Verlauf wird gelesen…",
+  "githistory.error": "Verlauf konnte nicht gelesen werden.",
+  "githistory.empty": "Noch keine Commits.",
+  "githistory.loadMore": "Mehr laden",
+  "githistory.pick": "Wähle einen Commit, um seine Änderungen zu sehen.",
+  "githistory.noFiles": "Dieser Commit ändert keine Dateien.",
 
   "worktree.createNew": "Einen neuen Worktree auf einem neuen Branch erstellen",
   "worktree.branchName": "Branch-Name",

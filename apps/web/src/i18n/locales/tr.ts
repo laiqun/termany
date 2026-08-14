@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "Ana kopya",
   "gitdiff.workingDir": "Çalışma dizini",
   "gitdiff.openWorktreeTab": "{dir} içinde çalışan sekmeye git veya yeni bir sekme aç",
+  "gitdiff.modeChanges": "Değişiklikler",
+  "gitdiff.modeHistory": "Geçmiş",
+
+  "githistory.currentBranch": "Geçerli dal",
+  "githistory.allBranches": "Tüm dallar",
+  "githistory.loading": "Geçmiş okunuyor…",
+  "githistory.error": "Geçmiş okunamadı.",
+  "githistory.empty": "Henüz commit yok.",
+  "githistory.loadMore": "Daha fazla yükle",
+  "githistory.pick": "Değişikliklerini görmek için bir commit seçin.",
+  "githistory.noFiles": "Bu commit hiçbir dosyayı değiştirmiyor.",
 
   "worktree.createNew": "Yeni bir dalda yeni worktree oluştur",
   "worktree.branchName": "Dal adı",

@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "Salinan utama",
   "gitdiff.workingDir": "Direktori kerja",
   "gitdiff.openWorktreeTab": "Buka tab yang bekerja di {dir}, atau buat baru",
+  "gitdiff.modeChanges": "Perubahan",
+  "gitdiff.modeHistory": "Riwayat",
+
+  "githistory.currentBranch": "Branch saat ini",
+  "githistory.allBranches": "Semua branch",
+  "githistory.loading": "Membaca riwayat…",
+  "githistory.error": "Tidak dapat membaca riwayat.",
+  "githistory.empty": "Belum ada commit.",
+  "githistory.loadMore": "Muat lebih banyak",
+  "githistory.pick": "Pilih commit untuk melihat perubahannya.",
+  "githistory.noFiles": "Commit ini tidak mengubah file apa pun.",
 
   "worktree.createNew": "Buat worktree baru di branch baru",
   "worktree.branchName": "Nama branch",

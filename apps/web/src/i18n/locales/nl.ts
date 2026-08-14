@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "Hoofdkopie",
   "gitdiff.workingDir": "Werkmap",
   "gitdiff.openWorktreeTab": "Ga naar het tabblad dat in {dir} werkt, of open er een",
+  "gitdiff.modeChanges": "Wijzigingen",
+  "gitdiff.modeHistory": "Geschiedenis",
+
+  "githistory.currentBranch": "Huidige branch",
+  "githistory.allBranches": "Alle branches",
+  "githistory.loading": "Geschiedenis wordt gelezen…",
+  "githistory.error": "Geschiedenis kon niet worden gelezen.",
+  "githistory.empty": "Nog geen commits.",
+  "githistory.loadMore": "Meer laden",
+  "githistory.pick": "Kies een commit om de wijzigingen te zien.",
+  "githistory.noFiles": "Deze commit wijzigt geen bestanden.",
 
   "worktree.createNew": "Maak een nieuwe worktree op een nieuwe branch",
   "worktree.branchName": "Branch-naam",

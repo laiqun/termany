@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "主仓库",
   "gitdiff.workingDir": "工作目录",
   "gitdiff.openWorktreeTab": "跳转到工作在 {dir} 的标签页，没有则新建",
+  "gitdiff.modeChanges": "更改",
+  "gitdiff.modeHistory": "历史",
+
+  "githistory.currentBranch": "当前分支",
+  "githistory.allBranches": "所有分支",
+  "githistory.loading": "正在读取历史…",
+  "githistory.error": "无法读取历史。",
+  "githistory.empty": "还没有提交。",
+  "githistory.loadMore": "加载更多",
+  "githistory.pick": "选择一个提交以查看其更改。",
+  "githistory.noFiles": "此提交没有更改任何文件。",
 
   "worktree.createNew": "在新分支上创建新的 worktree",
   "worktree.branchName": "分支名称",

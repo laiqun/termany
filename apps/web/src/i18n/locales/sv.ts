@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "Huvudkopian",
   "gitdiff.workingDir": "Arbetskatalog",
   "gitdiff.openWorktreeTab": "Gå till fliken som arbetar i {dir}, eller öppna en",
+  "gitdiff.modeChanges": "Ändringar",
+  "gitdiff.modeHistory": "Historik",
+
+  "githistory.currentBranch": "Aktuell gren",
+  "githistory.allBranches": "Alla grenar",
+  "githistory.loading": "Läser historik…",
+  "githistory.error": "Kunde inte läsa historiken.",
+  "githistory.empty": "Inga commits ännu.",
+  "githistory.loadMore": "Ladda fler",
+  "githistory.pick": "Välj en commit för att se dess ändringar.",
+  "githistory.noFiles": "Denna commit ändrar inga filer.",
 
   "worktree.createNew": "Skapa en ny worktree på en ny gren",
   "worktree.branchName": "Grennamn",

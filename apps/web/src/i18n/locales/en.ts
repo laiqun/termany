@@ -493,6 +493,17 @@ export default {
   "gitdiff.mainWorktree": "Main checkout",
   "gitdiff.workingDir": "Working directory",
   "gitdiff.openWorktreeTab": "Go to the tab working in {dir}, or open one",
+  "gitdiff.modeChanges": "Changes",
+  "gitdiff.modeHistory": "History",
+
+  "githistory.currentBranch": "Current branch",
+  "githistory.allBranches": "All branches",
+  "githistory.loading": "Reading history…",
+  "githistory.error": "Could not read history.",
+  "githistory.empty": "No commits yet.",
+  "githistory.loadMore": "Load more",
+  "githistory.pick": "Pick a commit to see its changes.",
+  "githistory.noFiles": "This commit changes no files.",
 
   "worktree.createNew": "Create a new worktree on a new branch",
   "worktree.branchName": "Branch name",

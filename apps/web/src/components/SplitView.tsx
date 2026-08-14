@@ -313,6 +313,8 @@ function PaneHeader({
   const renamePane = useStore((s) => s.renamePane);
   const closePane = useStore((s) => s.closePane);
   const toggleMaximize = useStore((s) => s.toggleMaximize);
+  const setGitMode = useStore((s) => s.setGitMode);
+  const { t } = useI18n();
   const [editing, setEditing] = useState(false);
   const ime = useImeGuard();
   const renameWidth = `${Math.max(8, leaf.title.length + 1)}ch`;
@@ -377,6 +379,25 @@ function PaneHeader({
           </span>
         )}
       </span>
+      {/* A git pane's changes/history switch lives in the pane chrome rather
+          than the view's toolbar: it picks the pane's whole body, which is
+          what the rest of this row (view menu, maximize) is about too. */}
+      {leaf.view === "git" && (
+        <span className="git-mode">
+          <button
+            className={leaf.gitMode !== "history" ? "on" : ""}
+            onClick={() => setGitMode(leaf.id, "changes")}
+          >
+            {t("gitdiff.modeChanges")}
+          </button>
+          <button
+            className={leaf.gitMode === "history" ? "on" : ""}
+            onClick={() => setGitMode(leaf.id, "history")}
+          >
+            {t("gitdiff.modeHistory")}
+          </button>
+        </span>
+      )}
       <span className="pane-head-spacer" />
       <div className="pane-head-actions">
         {(leaf.view ?? "terminal") === "terminal" && <PaneServedUrls leaf={leaf} />}
@@ -478,7 +499,7 @@ function PaneSlot({
             explicitSelected={leaf.filesSelected}
           />
         ) : leaf.view === "git" ? (
-          <GitDiffView tabCwd={tabCwd} variant="pane" viewId={leaf.id} />
+          <GitDiffView tabCwd={tabCwd} variant="pane" viewId={leaf.id} gitMode={leaf.gitMode} />
         ) : leaf.view === "monitor" ? (
           <SystemMonitor />
         ) : leaf.view === "history" ? (

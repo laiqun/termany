@@ -490,6 +490,17 @@ export default {
   "gitdiff.mainWorktree": "สำเนาหลัก",
   "gitdiff.workingDir": "ไดเรกทอรีการทำงาน",
   "gitdiff.openWorktreeTab": "ไปที่แท็บที่ทำงานใน {dir} หรือเปิดแท็บใหม่",
+  "gitdiff.modeChanges": "การเปลี่ยนแปลง",
+  "gitdiff.modeHistory": "ประวัติ",
+
+  "githistory.currentBranch": "สาขาปัจจุบัน",
+  "githistory.allBranches": "ทุกสาขา",
+  "githistory.loading": "กำลังอ่านประวัติ…",
+  "githistory.error": "ไม่สามารถอ่านประวัติได้",
+  "githistory.empty": "ยังไม่มีคอมมิต",
+  "githistory.loadMore": "โหลดเพิ่ม",
+  "githistory.pick": "เลือกคอมมิตเพื่อดูการเปลี่ยนแปลง",
+  "githistory.noFiles": "คอมมิตนี้ไม่ได้เปลี่ยนแปลงไฟล์ใดๆ",
 
   "worktree.createNew": "สร้าง worktree ใหม่บน branch ใหม่",
   "worktree.branchName": "ชื่อ branch",

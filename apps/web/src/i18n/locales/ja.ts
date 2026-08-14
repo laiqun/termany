@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "メインのチェックアウト",
   "gitdiff.workingDir": "作業ディレクトリ",
   "gitdiff.openWorktreeTab": "{dir} で作業しているタブに移動、なければ新規作成",
+  "gitdiff.modeChanges": "変更",
+  "gitdiff.modeHistory": "履歴",
+
+  "githistory.currentBranch": "現在のブランチ",
+  "githistory.allBranches": "すべてのブランチ",
+  "githistory.loading": "履歴を読み込み中…",
+  "githistory.error": "履歴を読み取れませんでした。",
+  "githistory.empty": "コミットはまだありません。",
+  "githistory.loadMore": "さらに読み込む",
+  "githistory.pick": "コミットを選択すると変更が表示されます。",
+  "githistory.noFiles": "このコミットはファイルを変更していません。",
 
   "worktree.createNew": "新しいブランチに新しいワークツリーを作成",
   "worktree.branchName": "ブランチ名",

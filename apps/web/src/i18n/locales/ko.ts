@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "기본 체크아웃",
   "gitdiff.workingDir": "작업 디렉터리",
   "gitdiff.openWorktreeTab": "{dir}에서 작업 중인 탭으로 이동, 없으면 새로 열기",
+  "gitdiff.modeChanges": "변경 사항",
+  "gitdiff.modeHistory": "기록",
+
+  "githistory.currentBranch": "현재 브랜치",
+  "githistory.allBranches": "모든 브랜치",
+  "githistory.loading": "기록을 읽는 중…",
+  "githistory.error": "기록을 읽을 수 없습니다.",
+  "githistory.empty": "아직 커밋이 없습니다.",
+  "githistory.loadMore": "더 보기",
+  "githistory.pick": "커밋을 선택하면 변경 사항을 볼 수 있습니다.",
+  "githistory.noFiles": "이 커밋은 변경된 파일이 없습니다.",
 
   "worktree.createNew": "새 브랜치에 새 워크트리 만들기",
   "worktree.branchName": "브랜치 이름",

@@ -489,6 +489,17 @@ export default {
   "gitdiff.mainWorktree": "Bản làm việc chính",
   "gitdiff.workingDir": "Thư mục làm việc",
   "gitdiff.openWorktreeTab": "Chuyển đến thẻ đang làm việc trong {dir}, hoặc mở thẻ mới",
+  "gitdiff.modeChanges": "Thay đổi",
+  "gitdiff.modeHistory": "Lịch sử",
+
+  "githistory.currentBranch": "Nhánh hiện tại",
+  "githistory.allBranches": "Tất cả các nhánh",
+  "githistory.loading": "Đang đọc lịch sử…",
+  "githistory.error": "Không thể đọc lịch sử.",
+  "githistory.empty": "Chưa có commit nào.",
+  "githistory.loadMore": "Tải thêm",
+  "githistory.pick": "Chọn một commit để xem các thay đổi.",
+  "githistory.noFiles": "Commit này không thay đổi tệp nào.",
 
   "worktree.createNew": "Tạo worktree mới trên một nhánh mới",
   "worktree.branchName": "Tên nhánh",

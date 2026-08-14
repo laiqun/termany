@@ -490,6 +490,17 @@ export default {
   "gitdiff.mainWorktree": "मुख्य चेकआउट",
   "gitdiff.workingDir": "कार्यशील निर्देशिका",
   "gitdiff.openWorktreeTab": "{dir} में काम कर रहे टैब पर जाएँ, या नया खोलें",
+  "gitdiff.modeChanges": "बदलाव",
+  "gitdiff.modeHistory": "इतिहास",
+
+  "githistory.currentBranch": "वर्तमान ब्रांच",
+  "githistory.allBranches": "सभी ब्रांच",
+  "githistory.loading": "इतिहास पढ़ा जा रहा है…",
+  "githistory.error": "इतिहास नहीं पढ़ा जा सका।",
+  "githistory.empty": "अभी कोई कमिट नहीं।",
+  "githistory.loadMore": "और लोड करें",
+  "githistory.pick": "बदलाव देखने के लिए एक कमिट चुनें।",
+  "githistory.noFiles": "यह कमिट कोई फ़ाइल नहीं बदलता।",
 
   "worktree.createNew": "नई ब्रांच पर नया worktree बनाएँ",
   "worktree.branchName": "ब्रांच का नाम",

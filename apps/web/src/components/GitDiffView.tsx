@@ -3,22 +3,19 @@ import { apiPath } from "../api";
 import { sameDir } from "../fs";
 import { useI18n } from "../i18n";
 import { useImeGuard } from "../imeGuard";
-import { activeNode, useStore } from "../state/store";
-import { CheckIcon, ChevronIcon, CopyIcon, GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
+import { activeNode, useStore, type GitMode } from "../state/store";
+import { GitBranchIcon, GitCompareIcon, RefreshIcon } from "./icons";
+import {
+  AUTO_EXPAND_FILES,
+  AUTO_EXPAND_LINES,
+  FileCard,
+  rowKey,
+  type DiffPayload,
+  type GitRow,
+  type Section,
+} from "./GitFileCard";
+import { GitHistory } from "./GitHistory";
 import { UsageSelect } from "./Select";
-
-export type Section = "staged" | "unstaged" | "untracked" | "changed";
-
-interface GitRow {
-  path: string;
-  oldPath?: string;
-  section: Section;
-  status: string;
-  additions: number;
-  deletions: number;
-  binary?: boolean;
-  isDir?: boolean;
-}
 
 interface GitWorktree {
   path: string;
@@ -26,8 +23,21 @@ interface GitWorktree {
   branch: string;
   detached?: boolean;
   main: boolean;
-  files: number;
+  /** Changed-files badge. Absent when the list came from the cheap scope
+   *  endpoint (history mode), which doesn't pay for per-worktree badges. */
+  files?: number;
 }
+
+/** The cheap scope endpoint's payload (/api/git/worktrees) — no diff rows. */
+type WorktreeScope =
+  | { repo: false }
+  | {
+      repo: true;
+      root: string;
+      branch: string;
+      refs: string[];
+      worktrees: GitWorktree[];
+    };
 
 type Overview =
   | { repo: false; cwd: string }
@@ -43,12 +53,6 @@ type Overview =
       worktrees?: GitWorktree[];
     };
 
-interface DiffPayload {
-  diff: string;
-  binary?: boolean;
-  truncated?: boolean;
-}
-
 /** Sentinel for "no base ref" in the compare picker, which needs a string. */
 const WORKING_TREE = "";
 /**
@@ -60,73 +64,6 @@ const WORKING_TREE = "";
  */
 type Auto = null;
 
-/**
- * How much diff to open on arrival. Budgeting by LINES rather than by file
- * count is what keeps a compare of fifteen 4000-line files from laying down a
- * quarter-million DOM nodes before you have scrolled anywhere. The file cap
- * backs it up for untracked entries, whose size isn't known until fetched.
- */
-const AUTO_EXPAND_LINES = 3000;
-const AUTO_EXPAND_FILES = 50;
-
-type LineKind = "add" | "del" | "meta" | "hunk" | "ctx";
-
-interface DiffLine {
-  kind: LineKind;
-  text: string;
-  /** Line number on the old side, blank for additions. */
-  oldNo?: number;
-  /** Line number on the new side, blank for deletions. */
-  newNo?: number;
-}
-
-const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
-
-/**
- * Classify unified-diff lines and walk the two line counters, so each row can
- * show its old and new line numbers the way a review UI does. The `diff --git`
- * / `index` / `--- +++` preamble is dropped: the card header already names the
- * file, and repeating it costs four lines before every hunk.
- */
-export function parseDiff(diff: string): DiffLine[] {
-  const out: DiffLine[] = [];
-  let oldNo = 0;
-  let newNo = 0;
-  for (const line of diff.split("\n")) {
-    const hunk = HUNK_RE.exec(line);
-    if (hunk) {
-      oldNo = Number(hunk[1]);
-      newNo = Number(hunk[3]);
-      out.push({ kind: "hunk", text: line });
-      continue;
-    }
-    if (
-      line.startsWith("diff --git") ||
-      line.startsWith("index ") ||
-      line.startsWith("--- ") ||
-      line.startsWith("+++ ") ||
-      line.startsWith("new file mode") ||
-      line.startsWith("deleted file mode") ||
-      line.startsWith("old mode") ||
-      line.startsWith("new mode") ||
-      line.startsWith("similarity index") ||
-      line.startsWith("rename from") ||
-      line.startsWith("rename to")
-    ) {
-      continue;
-    }
-    if (line.startsWith("+")) out.push({ kind: "add", text: line, newNo: newNo++ });
-    else if (line.startsWith("-")) out.push({ kind: "del", text: line, oldNo: oldNo++ });
-    else if (line.startsWith("\\")) out.push({ kind: "meta", text: line });
-    else out.push({ kind: "ctx", text: line, oldNo: oldNo++, newNo: newNo++ });
-  }
-  // A diff ends with a newline, so the split leaves a trailing blank.
-  while (out.length && out[out.length - 1].kind === "ctx" && !out[out.length - 1].text) out.pop();
-  return out;
-}
-
-const rowKey = (r: GitRow) => `${r.section}:${r.path}`;
-
 interface CachedView {
   base: string | Auto;
   worktree: string | Auto;
@@ -134,6 +71,8 @@ interface CachedView {
   collapsed: Record<string, boolean>;
   diffs: Record<string, DiffPayload>;
   overview: Overview | null | undefined;
+  /** History mode's all-branches toggle. */
+  all: boolean;
   scrollTop: number;
 }
 
@@ -161,106 +100,11 @@ function remember(viewId: string, patch: Partial<CachedView>) {
     collapsed: {},
     diffs: {},
     overview: undefined,
+    all: false,
     scrollTop: 0,
     ...prev,
     ...patch,
   });
-}
-
-/**
- * One file's card. The diff is handed down rather than fetched here: the
- * parent asks for every expanded file in a single request, so a refresh
- * refreshes the bodies too (a per-card fetch keyed on the path would keep
- * showing the old diff after the file changed underneath it).
- */
-function FileCard({
-  row,
-  diff,
-  expanded,
-  onToggle,
-}: {
-  row: GitRow;
-  diff: DiffPayload | undefined;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const { t } = useI18n();
-  const skip = row.binary || row.isDir;
-  const lines = useMemo(() => (diff?.diff ? parseDiff(diff.diff) : []), [diff]);
-  const dir = row.path.replace(/[^/]+$/, "");
-  const name = row.path.split("/").pop();
-  const [copied, setCopied] = useState(false);
-
-  const copyPath = async () => {
-    try {
-      await navigator.clipboard.writeText(row.path);
-      setCopied(true);
-      // Flip the icon back so a second copy still reads as one.
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch {
-      // Clipboard denied (insecure origin / no permission) — leave the icon as is.
-    }
-  };
-
-  return (
-    <div className={`gd-card ${expanded ? "open" : ""}`}>
-      {/* The head is a div rather than one big button so the copy control can
-          sit beside the toggle — buttons can't nest. */}
-      <div className="gd-card-head">
-        <button
-          className="gd-copy"
-          title={t("gitdiff.copyPath")}
-          aria-label={t("gitdiff.copyPath")}
-          onClick={() => void copyPath()}
-        >
-          {copied ? <CheckIcon /> : <CopyIcon />}
-        </button>
-        <button className="gd-card-toggle" onClick={onToggle} aria-expanded={expanded}>
-          <span className={`gd-chevron ${expanded ? "open" : ""}`}>
-            <ChevronIcon dir="right" />
-          </span>
-          <span className={`gd-status s-${row.status}`}>{row.status}</span>
-          <span className="gd-path">
-            <em>{dir}</em>
-            <b>{name}</b>
-          </span>
-          {row.oldPath && <span className="gd-renamed">{t("gitdiff.renamedFrom", { path: row.oldPath })}</span>}
-          {!row.binary && (row.additions > 0 || row.deletions > 0) && (
-            <span className="gd-counts">
-              <em className="add">+{row.additions}</em>
-              <em className="del">−{row.deletions}</em>
-            </span>
-          )}
-        </button>
-      </div>
-
-      {expanded && (
-        <div className="gd-card-body">
-          {row.isDir && <div className="gd-note">{t("gitdiff.directory")}</div>}
-          {row.binary && <div className="gd-note">{t("gitdiff.binary")}</div>}
-          {!skip && !diff && <div className="gd-note">{t("gitdiff.loading")}</div>}
-          {!skip && diff?.binary && <div className="gd-note">{t("gitdiff.binary")}</div>}
-          {!skip && diff && !diff.binary && lines.length === 0 && (
-            <div className="gd-note">{t("gitdiff.empty")}</div>
-          )}
-          {!skip && diff && !diff.binary && lines.length > 0 && (
-            <>
-              <div className="gd-code">
-                {lines.map((line, i) => (
-                  <div key={i} className={`gd-line ${line.kind}`}>
-                    <span className="gd-ln">{line.oldNo ?? ""}</span>
-                    <span className="gd-ln">{line.newNo ?? ""}</span>
-                    <span className="gd-text">{line.text || " "}</span>
-                  </div>
-                ))}
-              </div>
-              {diff.truncated && <div className="gd-note">{t("gitdiff.truncated")}</div>}
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
 }
 
 /**
@@ -281,6 +125,7 @@ export function GitDiffView({
   tabCwd,
   variant,
   viewId,
+  gitMode,
 }: {
   /** The tab's fixed working directory — the explicit dir every request
    *  names, which the server gives priority over any session resolution. */
@@ -288,10 +133,14 @@ export function GitDiffView({
   variant: "pane" | "modal";
   /** Stable identity for the cached view state — the leaf id for a pane. */
   viewId: string;
+  /** The pane chrome's changes/history switch. The modal has no chrome, so
+   *  it always shows the changes body regardless of the pane's pick. */
+  gitMode?: GitMode;
 }) {
   const { t } = useI18n();
   const ime = useImeGuard();
   const cached = viewCache.get(viewId);
+  const history = variant === "pane" && gitMode === "history";
   const [overview, setOverview] = useState<Overview | null | undefined>(cached?.overview);
   const [base, setBase] = useState<string | Auto>(cached?.base ?? null);
   const [worktree, setWorktree] = useState<string | Auto>(cached?.worktree ?? null);
@@ -299,6 +148,8 @@ export function GitDiffView({
   const [cwd, setCwd] = useState<string | Auto>(cached?.cwd ?? null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(cached?.collapsed ?? {});
   const [diffs, setDiffs] = useState<Record<string, DiffPayload>>(cached?.diffs ?? {});
+  // History mode: span every ref instead of just the checked-out branch.
+  const [all, setAll] = useState(cached?.all ?? false);
   const filesRef = useRef<HTMLDivElement>(null);
   // Bumped on every reload so the diff bodies refetch even when the file list
   // came back identical — the whole point of a refresh is that the CONTENTS
@@ -312,14 +163,28 @@ export function GitDiffView({
       if (dir) params.set("cwd", dir);
       if (base !== null) params.set("base", base);
       if (worktree !== null) params.set("worktree", worktree);
-      const r = await fetch(apiPath(`/api/git/overview?${params}`));
-      if (!r.ok) throw new Error(String(r.status));
-      setOverview((await r.json()) as Overview);
+      // History mode needs only the repo's shape (branch, worktrees) for the
+      // toolbar and the scope for its own requests — the overview's diff rows
+      // and worktree badges are git spawns nobody is looking at.
+      if (history) {
+        const r = await fetch(apiPath(`/api/git/worktrees?${params}`));
+        if (!r.ok) throw new Error(String(r.status));
+        const data = (await r.json()) as WorktreeScope;
+        setOverview(
+          data.repo
+            ? { repo: true, cwd: dir ?? "", root: data.root, branch: data.branch, refs: data.refs, rows: [], worktrees: data.worktrees }
+            : { repo: false, cwd: dir ?? "" },
+        );
+      } else {
+        const r = await fetch(apiPath(`/api/git/overview?${params}`));
+        if (!r.ok) throw new Error(String(r.status));
+        setOverview((await r.json()) as Overview);
+      }
       setRevision((n) => n + 1);
     } catch {
       setOverview(null);
     }
-  }, [tabCwd, base, worktree, cwd]);
+  }, [tabCwd, base, worktree, cwd, history]);
 
   useEffect(() => {
     load();
@@ -333,8 +198,8 @@ export function GitDiffView({
   }, [load]);
 
   useEffect(() => {
-    remember(viewId, { overview, base, worktree, cwd, collapsed, diffs });
-  }, [viewId, overview, base, worktree, cwd, collapsed, diffs]);
+    remember(viewId, { overview, base, worktree, cwd, collapsed, diffs, all });
+  }, [viewId, overview, base, worktree, cwd, collapsed, diffs, all]);
 
   /**
    * The compare actually in force: the user's pick, else whatever the server
@@ -533,7 +398,7 @@ export function GitDiffView({
     () =>
       (overview?.repo === true ? (overview.worktrees ?? []) : []).map((w) => ({
         value: w.path,
-        label: (w.main ? t("gitdiff.mainWorktree") : w.name) + (w.files > 0 ? ` · ${w.files}` : ""),
+        label: (w.main ? t("gitdiff.mainWorktree") : w.name) + ((w.files ?? 0) > 0 ? ` · ${w.files}` : ""),
       })),
     [overview, t],
   );
@@ -600,11 +465,28 @@ export function GitDiffView({
             {/* A fixed marker rather than a per-option "Compare with X" prefix:
                 the target's name is the only thing that varies, so it is the
                 only thing the control shows. */}
-            <span className="gd-vs" title={t("gitdiff.compareWith")}>
-              <GitCompareIcon />
-            </span>
-            <UsageSelect value={shownBase} options={refOptions} onChange={setBase} width={180} />
-            {rows.length > 0 && (
+            {!history && (
+              <>
+                <span className="gd-vs" title={t("gitdiff.compareWith")}>
+                  <GitCompareIcon />
+                </span>
+                <UsageSelect value={shownBase} options={refOptions} onChange={setBase} width={180} />
+              </>
+            )}
+            {/* History mode's scope filter sits in the compare picker's slot:
+                one scope control per mode, the row's density never changes. */}
+            {history && (
+              <UsageSelect
+                value={all ? "all" : "branch"}
+                options={[
+                  { value: "branch", label: t("githistory.currentBranch") },
+                  { value: "all", label: t("githistory.allBranches") },
+                ]}
+                onChange={(v) => setAll(v === "all")}
+                width={150}
+              />
+            )}
+            {!history && rows.length > 0 && (
               <span className="gd-summary">
                 {t("gitdiff.summary", { files: rows.length })}
                 <em className="add">+{totals.add}</em>
@@ -621,13 +503,23 @@ export function GitDiffView({
       {overview === undefined && <div className="gd-empty">{t("gitdiff.loading")}</div>}
       {overview === null && <div className="gd-empty">{t("gitdiff.error")}</div>}
       {overview?.repo === false && <div className="gd-empty">{t("gitdiff.noRepo")}</div>}
-      {overview?.repo === true && rows.length === 0 && (
+      {!history && overview?.repo === true && rows.length === 0 && (
         <div className="gd-empty">
           {shownBase ? t("gitdiff.sameAs", { base: shownBase }) : t("gitdiff.clean")}
         </div>
       )}
 
-      {overview?.repo === true && rows.length > 0 && (
+      {history && overview?.repo === true && (
+        <GitHistory
+          cwd={cwd ?? tabCwd}
+          worktree={overview.root}
+          all={all}
+          revision={revision}
+          viewId={viewId}
+        />
+      )}
+
+      {!history && overview?.repo === true && rows.length > 0 && (
         <div
           className="gd-files"
           ref={filesRef}

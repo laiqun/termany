@@ -490,6 +490,17 @@ export default {
   "gitdiff.mainWorktree": "Основна робоча копія",
   "gitdiff.workingDir": "Робочий каталог",
   "gitdiff.openWorktreeTab": "Перейти до вкладки, що працює в {dir}, або відкрити нову",
+  "gitdiff.modeChanges": "Зміни",
+  "gitdiff.modeHistory": "Історія",
+
+  "githistory.currentBranch": "Поточна гілка",
+  "githistory.allBranches": "Усі гілки",
+  "githistory.loading": "Читання історії…",
+  "githistory.error": "Не вдалося прочитати історію.",
+  "githistory.empty": "Поки що немає комітів.",
+  "githistory.loadMore": "Завантажити ще",
+  "githistory.pick": "Виберіть коміт, щоб переглянути його зміни.",
+  "githistory.noFiles": "Цей коміт не змінює жодного файлу.",
 
   "worktree.createNew": "Створити новий worktree на новій гілці",
   "worktree.branchName": "Назва гілки",

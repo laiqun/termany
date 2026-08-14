@@ -49,6 +49,9 @@ export type PaneView =
   | "history"
   | "usage";
 
+/** What a git pane shows: the working tree's changes or the commit history. */
+export type GitMode = "changes" | "history";
+
 /** One slice of a reply, in arrival order: prose or a tool invocation.
  *  `status` is the ACP tool-call status: pending | in_progress | completed | failed.
  *  `input`/`output` are display-ready detail strings (command / result),
@@ -109,6 +112,9 @@ export type Pane =
        *  runtime); "" is an explicit Chat-mode choice (Termany's lightweight
        *  BYOK chat endpoint). */
       agentRuntime?: string;
+      /** Which body a git pane shows. Unset is the working-tree changes it
+       *  has always opened on. */
+      gitMode?: GitMode;
     }
   | {
       kind: "split";
@@ -360,6 +366,8 @@ interface State {
   nextPane: () => void;
   prevPane: () => void;
   renamePane: (leafId: string, title: string) => void;
+  /** Switch a git pane between its changes and history bodies. */
+  setGitMode: (leafId: string, mode: GitMode) => void;
   setPaneAgentSession: (leafId: string, info: { agent: string; sessionId: string }) => void;
   setAgentMessages: (leafId: string, messages: AgentMessage[]) => void;
   setAgentModel: (leafId: string, model: string) => void;
@@ -1587,6 +1595,26 @@ export const useStore = create<State>((set, get) => ({
                   : p
                 : { ...p, children: p.children.map(rename) };
             return { ...h, layout: rename(h.layout) };
+          }),
+        })),
+      })),
+    })),
+
+  setGitMode: (leafId, mode) =>
+    set((s) => ({
+      workspaces: inActiveWs(s, (ws) => ({
+        ...ws,
+        roots: updateNode(ws.roots, activeNodeId(s), (n) => ({
+          ...n,
+          htabs: n.htabs.map((h) => {
+            if (h.id !== n.activeHTab) return h;
+            const mark = (p: Pane): Pane =>
+              p.kind === "leaf"
+                ? p.id === leafId
+                  ? { ...p, gitMode: mode }
+                  : p
+                : { ...p, children: p.children.map(mark) };
+            return { ...h, layout: mark(h.layout) };
           }),
         })),
       })),
