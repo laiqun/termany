@@ -6840,9 +6840,21 @@ button.gd-branch:hover svg {
 }
 .gh-detail-head {
   display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.gh-list-toggle {
+  flex-shrink: 0;
+}
+.gh-detail-headtext {
+  display: flex;
   flex-direction: column;
   gap: 2px;
-  flex-shrink: 0;
+  min-width: 0;
+}
+.gh-root.list-collapsed .gh-list {
+  display: none;
 }
 .gh-detail-subject {
   font-size: 13px;

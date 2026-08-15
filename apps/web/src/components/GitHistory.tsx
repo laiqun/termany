@@ -9,6 +9,7 @@ import {
   type DiffPayload,
   type GitRow,
 } from "./GitFileCard";
+import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "./icons";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -108,6 +109,9 @@ export function GitHistory({
   const [selected, setSelected] = useState<string | null>(cached?.selected ?? null);
   const [detail, setDetail] = useState<CommitDetail | null>(cached?.detail ?? null);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(cached?.collapsed ?? {});
+  // Hides the commit list so the diff gets the full width — same idea as the
+  // file preview's tree toggle. Not cached: a remount brings the list back.
+  const [listCollapsed, setListCollapsed] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const detailRef = useRef<HTMLDivElement>(null);
 
@@ -222,7 +226,7 @@ export function GitHistory({
   const selectedCommit = commits.find((c) => c.sha === selected);
 
   return (
-    <div className="gh-root">
+    <div className={`gh-root ${listCollapsed ? "list-collapsed" : ""}`}>
       <div
         className="gh-list"
         ref={listRef}
@@ -270,10 +274,19 @@ export function GitHistory({
         ref={detailRef}
         onScroll={(e) => remember(viewId, { detailTop: e.currentTarget.scrollTop })}
       >
-        {!selected && <div className="gd-empty">{t("githistory.pick")}</div>}
-        {selected && (
-          <>
-            <div className="gh-detail-head">
+        {/* The head always renders so the list toggle stays reachable when the
+            list is collapsed — even with no commit selected. */}
+        <div className="gh-detail-head">
+          <button
+            className="pane-btn gh-list-toggle"
+            title={listCollapsed ? t("githistory.expandList") : t("githistory.collapseList")}
+            aria-label={listCollapsed ? t("githistory.expandList") : t("githistory.collapseList")}
+            onClick={() => setListCollapsed((v) => !v)}
+          >
+            {listCollapsed ? <PanelLeftOpenIcon /> : <PanelLeftCloseIcon />}
+          </button>
+          {selected && (
+            <div className="gh-detail-headtext">
               <span className="gh-detail-subject">{selectedCommit?.subject ?? selected.slice(0, 7)}</span>
               {selectedCommit && (
                 <span className="gh-detail-meta">
@@ -282,6 +295,11 @@ export function GitHistory({
                 </span>
               )}
             </div>
+          )}
+        </div>
+        {!selected && <div className="gd-empty">{t("githistory.pick")}</div>}
+        {selected && (
+          <>
             {!detail && <div className="gd-note">{t("gitdiff.loading")}</div>}
             {detail && rows.length === 0 && <div className="gd-empty">{t("githistory.noFiles")}</div>}
             {detail &&

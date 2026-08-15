@@ -507,6 +507,8 @@ export default {
   "githistory.loadMore": "加载更多",
   "githistory.pick": "选择一个提交以查看其更改。",
   "githistory.noFiles": "此提交没有更改任何文件。",
+  "githistory.collapseList": "折叠提交列表",
+  "githistory.expandList": "展开提交列表",
 
   "worktree.createNew": "在新分支上创建新的 worktree",
   "worktree.branchName": "分支名称",

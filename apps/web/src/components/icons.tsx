@@ -37,6 +37,7 @@ import {
   Minimize2,
   PanelLeft,
   PanelLeftClose,
+  PanelLeftOpen,
   PanelRight,
   Pencil,
   Plus,
@@ -61,6 +62,11 @@ export function PanelIcon() {
 /** Hide/show the file tree beside a preview. */
 export function PanelLeftCloseIcon() {
   return <PanelLeftClose {...base} />;
+}
+
+/** Show a list panel that was collapsed beside the detail view. */
+export function PanelLeftOpenIcon() {
+  return <PanelLeftOpen {...base} />;
 }
 
 /** Rendered preview mode. */

@@ -511,6 +511,8 @@ export default {
   "githistory.loadMore": "Load more",
   "githistory.pick": "Pick a commit to see its changes.",
   "githistory.noFiles": "This commit changes no files.",
+  "githistory.collapseList": "Collapse commit list",
+  "githistory.expandList": "Show commit list",
 
   "worktree.createNew": "Create a new worktree on a new branch",
   "worktree.branchName": "Branch name",
