@@ -159,6 +159,10 @@ function mediaTypeForPath(filePath: string): string | null {
 // `npm_lifecycle_event` is "dev" only when launched via the `dev` script.
 const DEFAULT_PORT = process.env.npm_lifecycle_event === "dev" ? 5175 : 5174;
 const PORT = Number(process.env.TERMANY_PORT ?? DEFAULT_PORT);
+// Loopback by default: the PTY server has no authentication, so it must not be
+// reachable from the network unless the operator explicitly opts in (e.g.
+// TERMANY_HOST=0.0.0.0, as scripts/start-release.mjs does).
+const HOST = process.env.TERMANY_HOST ?? "127.0.0.1";
 /**
  * Baked in at bundle time by scripts/bundle-server.mjs (esbuild --define) so a
  * packaged server can report which build it belongs to. The desktop app rejects
@@ -1704,8 +1708,8 @@ let listenAttempts = 0;
 
 function tryListen(): void {
   listenAttempts++;
-  http.listen(PORT, () => {
-    console.log(`[termany] PTY server listening on ws://localhost:${PORT}  (shell: ${SHELL})`);
+  http.listen(PORT, HOST, () => {
+    console.log(`[termany] PTY server listening on ws://${HOST}:${PORT}  (shell: ${SHELL})`);
   });
 }
 
