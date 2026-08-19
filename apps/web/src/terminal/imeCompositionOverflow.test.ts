@@ -7,6 +7,9 @@ function makeFakeTerm() {
     style: {} as Record<string, string>,
     textContent: "",
   };
+  const textarea = {
+    style: {} as Record<string, string>,
+  };
   const helper = {
     _compositionView: view,
     _isComposing: true,
@@ -23,6 +26,7 @@ function makeFakeTerm() {
       this.updateCompositionElementsCalls.push(dontRecurse);
     },
   };
+  const renderListeners = new Set<() => void>();
   const term = {
     _core: {
       _compositionHelper: helper,
@@ -40,8 +44,17 @@ function makeFakeTerm() {
         },
       },
     },
+    textarea,
+    element: { clientWidth: 100 } as HTMLElement,
+    onRender(cb: () => void) {
+      renderListeners.add(cb);
+      return { dispose: () => renderListeners.delete(cb) };
+    },
+    fireRender() {
+      for (const cb of renderListeners) cb();
+    },
   };
-  return { term, helper, view };
+  return { term, helper, view, textarea, fireRender: term.fireRender };
 }
 
 test("compositionupdate wraps pre-edit text in LTR marks", () => {
@@ -63,6 +76,24 @@ test("updateCompositionElements caps width to the remaining terminal space", () 
   assert.equal(view.style.maxWidth, "30px");
   assert.equal(view.style.overflow, "hidden");
   assert.equal(view.style.direction, "rtl");
+});
+
+test("render fallback clamps an oversized composition view and textarea", () => {
+  const { term, helper, view, textarea, fireRender } = makeFakeTerm();
+  fixImeCompositionOverflow(term as any);
+
+  // Simulate xterm positioning the view near the right edge.
+  view.style.left = "80px";
+  view.textContent = "abc";
+  textarea.style.width = "200px";
+  fireRender();
+
+  // host.clientWidth=100, view left=80 -> remaining width=20.
+  assert.equal(view.style.maxWidth, "20px");
+  assert.equal(view.style.direction, "rtl");
+  assert.equal(view.textContent, "\u200Eabc\u200E");
+  assert.equal(textarea.style.width, "20px");
+  assert.equal(textarea.style.maxWidth, "20px");
 });
 
 test("updateCompositionElements tolerates a missing composition view", () => {
