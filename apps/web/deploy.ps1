@@ -72,8 +72,8 @@ try {
 
     # Ensure Pages project exists
     Write-Host "Checking Cloudflare Pages project '$ProjectName'..." -ForegroundColor Cyan
-    $check = npx wrangler pages project list --format=json 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
-    $exists = $check | Where-Object { $_.name -eq $ProjectName }
+    $check = npx wrangler pages project list --json 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+    $exists = $check | Where-Object { $_.'Project Name' -eq $ProjectName }
     if (-not $exists) {
         Write-Host "Project not found, creating '$ProjectName'..." -ForegroundColor Yellow
         npx wrangler pages project create $ProjectName --production-branch=main
