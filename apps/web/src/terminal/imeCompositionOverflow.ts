@@ -1,7 +1,8 @@
 import type { Terminal } from "@xterm/xterm";
 
 /**
- * Back-port of xterm.js's IME composition overflow fix (upstream #5747).
+ * Back-port of xterm.js's IME composition overflow fix (upstream #5747) plus a
+ * vertical anchor patch.
  *
  * Problem: while a Chinese IME is composing, xterm renders the pre-edit string
  * in an absolutely positioned `.composition-view` overlay with no width limit.
@@ -9,15 +10,24 @@ import type { Terminal } from "@xterm/xterm";
  * boundary, stretching the pane horizontally and making the whole split layout
  * jump left/right as the pre-edit string changes length.
  *
+ * A second symptom with some IMEs (e.g. WeChat IME on the web) is that the
+ * hidden helper textarea's top is re-computed on every composition update. If
+ * the cursor row changes during composition — because the IME or the terminal
+ * moves the cursor — the IME caret / pre-edit popup jumps up and down along the
+ * Y axis. We freeze the vertical anchor at composition start so the overlay and
+ * the hidden textarea stay at one row until composition ends.
+ *
  * This monkey-patches the internal `CompositionHelper` to:
  *  - cap the composition view's width to the space between the cursor and the
  *    terminal's right edge;
  *  - clip overflow so the view can never widen the terminal;
  *  - anchor the visible end of the pre-edit at the cursor using `direction: rtl`
- *    while wrapping the text in LTR marks so characters stay in logical order.
+ *    while wrapping the text in LTR marks so characters stay in logical order;
+ *  - pin the composition view and textarea top to the row where composition
+ *    started, preventing vertical jumps while the IME is open.
  *
  * It also adds a render-time fallback so the clipping is re-applied even if
- * xterm's internal `updateCompositionElements` runs outside of our wrapper.
+ * xterm's internal `onRender` hook runs outside of our wrapper.
  *
  * The patch is safe to apply unconditionally: it only touches the composition
  * view, which is only visible during an active IME composition.
@@ -36,37 +46,88 @@ export function fixImeCompositionOverflow(term: Terminal): void {
   // eslint-disable-next-line no-console
   console.log("[ime] composition overflow fix attached");
 
+  const view = compositionView;
+  const ta = textarea;
+  const hostEl = host;
+
+  let anchorTop: number | null = null;
+
+  function cellHeight(): number {
+    return renderService?.dimensions?.css?.cell?.height ?? 0;
+  }
+
   function remainingWidth(): number {
-    const hostWidth = host.clientWidth;
-    const viewLeft = parseFloat(compositionView.style.left || "0");
+    const hostWidth = hostEl.clientWidth;
+    const viewLeft = parseFloat(view.style.left || "0");
     return Math.max(0, hostWidth - viewLeft);
   }
 
   function clampCompositionView(): void {
     if (!helper?.isComposing) return;
     const maxWidth = remainingWidth();
+    const height = cellHeight();
 
-    compositionView.style.maxWidth = `${maxWidth}px`;
-    compositionView.style.overflow = "hidden";
-    compositionView.style.direction = "rtl";
+    view.style.maxWidth = `${maxWidth}px`;
+    view.style.overflow = "hidden";
+    view.style.direction = "rtl";
 
     // The hidden textarea's caret position determines where the OS IME
     // candidate window appears. Keep its width clipped too so the caret never
     // drifts past the terminal's right edge.
-    const taWidth = parseFloat(textarea.style.width || "0");
+    const taWidth = parseFloat(ta.style.width || "0");
     if (taWidth > maxWidth) {
-      textarea.style.width = `${maxWidth}px`;
+      ta.style.width = `${maxWidth}px`;
     }
-    textarea.style.maxWidth = `${maxWidth}px`;
-    textarea.style.overflow = "hidden";
+    ta.style.maxWidth = `${maxWidth}px`;
+    ta.style.overflow = "hidden";
+
+    // Keep the composition layer exactly one cell tall. Some browsers expand
+    // the overlay when `direction: rtl` is combined with long text, which can
+    // push the hidden textarea and the IME caret down.
+    if (height > 0) {
+      view.style.height = `${height}px`;
+      view.style.maxHeight = `${height}px`;
+      ta.style.height = `${height}px`;
+      ta.style.maxHeight = `${height}px`;
+      view.style.lineHeight = `${height}px`;
+      ta.style.lineHeight = `${height}px`;
+    }
+
+    // Pin the vertical position once a composition has started so the IME
+    // caret does not ride the cursor row up and down.
+    if (anchorTop !== null) {
+      view.style.top = `${anchorTop}px`;
+      ta.style.top = `${anchorTop}px`;
+    }
 
     // Ensure the text itself is wrapped in LTR marks so `direction: rtl`
     // aligns the string's end to the cursor without reversing the characters.
-    const text = compositionView.textContent ?? "";
+    const text = view.textContent ?? "";
     if (text && !/^\u200E.*\u200E$/.test(text)) {
-      compositionView.textContent = `\u200E${text}\u200E`;
+      view.textContent = `\u200E${text}\u200E`;
     }
   }
+
+  function computeAnchorTop(): number | null {
+    const buf = bufferService?.buffer;
+    const rows = bufferService?.rows;
+    const height = cellHeight();
+    if (!buf || height <= 0) return null;
+    const y = Math.max(0, Math.min(buf.y, rows - 1));
+    return y * height;
+  }
+
+  const originalCompositionStart = helper.compositionstart?.bind(helper);
+  helper.compositionstart = () => {
+    anchorTop = computeAnchorTop();
+    originalCompositionStart?.();
+  };
+
+  const originalCompositionEnd = helper.compositionend?.bind(helper);
+  helper.compositionend = () => {
+    anchorTop = null;
+    originalCompositionEnd?.();
+  };
 
   const originalCompositionUpdate = helper.compositionupdate.bind(helper);
   helper.compositionupdate = (ev: Pick<CompositionEvent, "data">) => {
@@ -87,12 +148,28 @@ export function fixImeCompositionOverflow(term: Terminal): void {
       const cellWidth = renderService.dimensions.css.cell.width;
       const cursorLeft = cursorX * cellWidth;
       const maxWidth = Math.max(0, buf.cols * cellWidth - cursorLeft);
+      const height = cellHeight();
 
       compositionView.style.maxWidth = `${maxWidth}px`;
       compositionView.style.overflow = "hidden";
       compositionView.style.direction = "rtl";
+
+      if (height > 0) {
+        compositionView.style.height = `${height}px`;
+        compositionView.style.maxHeight = `${height}px`;
+        compositionView.style.lineHeight = `${height}px`;
+        ta.style.height = `${height}px`;
+        ta.style.maxHeight = `${height}px`;
+        ta.style.lineHeight = `${height}px`;
+      }
     }
     originalUpdate(dontRecurse);
+    // Re-apply the vertical anchor after xterm positions the elements, because
+    // xterm derives `top` from the current cursor row on every call.
+    if (anchorTop !== null) {
+      view.style.top = `${anchorTop}px`;
+      ta.style.top = `${anchorTop}px`;
+    }
   };
 
   // Fallback: re-apply clipping after every render in case xterm bypasses our

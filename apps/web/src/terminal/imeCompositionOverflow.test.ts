@@ -21,6 +21,14 @@ function makeFakeTerm() {
       this.compositionupdateCalls.push(ev);
       view.textContent = ev.data ?? "";
     },
+    compositionstartCalls: [] as void[],
+    compositionstart() {
+      this.compositionstartCalls.push();
+    },
+    compositionendCalls: [] as void[],
+    compositionend() {
+      this.compositionendCalls.push();
+    },
     updateCompositionElementsCalls: [] as Array<boolean | undefined>,
     updateCompositionElements(dontRecurse?: boolean) {
       this.updateCompositionElementsCalls.push(dontRecurse);
@@ -38,8 +46,10 @@ function makeFakeTerm() {
         },
       },
       _bufferService: {
+        rows: 5,
         buffer: {
           x: 7,
+          y: 2,
           cols: 10,
         },
       },
@@ -79,7 +89,7 @@ test("updateCompositionElements caps width to the remaining terminal space", () 
 });
 
 test("render fallback clamps an oversized composition view and textarea", () => {
-  const { term, helper, view, textarea, fireRender } = makeFakeTerm();
+  const { term, view, textarea, fireRender } = makeFakeTerm();
   fixImeCompositionOverflow(term as any);
 
   // Simulate xterm positioning the view near the right edge.
@@ -107,4 +117,56 @@ test("updateCompositionElements is a no-op when xterm internals are absent", () 
   const term = { _core: {} };
   // Should not throw.
   fixImeCompositionOverflow(term as any);
+});
+
+test("compositionstart pins the vertical anchor to the starting cursor row", () => {
+  const { term, helper, view, textarea } = makeFakeTerm();
+  fixImeCompositionOverflow(term as any);
+
+  // cursor starts at buffer.y = 2, cell height = 20 -> anchor top = 40px.
+  (helper as any).compositionstart();
+  (helper as any).updateCompositionElements(false);
+
+  assert.equal(view.style.top, "40px");
+  assert.equal(textarea.style.top, "40px");
+  assert.equal(view.style.height, "20px");
+  assert.equal(textarea.style.height, "20px");
+});
+
+test("vertical anchor is preserved when the cursor row changes during composition", () => {
+  const { term, helper, view, textarea } = makeFakeTerm();
+  fixImeCompositionOverflow(term as any);
+
+  (helper as any).compositionstart();
+  (helper as any).updateCompositionElements(false);
+  assert.equal(view.style.top, "40px");
+
+  // Simulate the cursor moving down a row while the IME is still composing.
+  term._core._bufferService.buffer.y = 4;
+  (helper as any).updateCompositionElements(false);
+
+  // The composition layer should stay at the original row.
+  assert.equal(view.style.top, "40px");
+  assert.equal(textarea.style.top, "40px");
+});
+
+test("vertical anchor is cleared after composition ends", () => {
+  const { term, helper, view, textarea } = makeFakeTerm();
+  fixImeCompositionOverflow(term as any);
+
+  (helper as any).compositionstart();
+  (helper as any).updateCompositionElements(false);
+  assert.equal(view.style.top, "40px");
+
+  (helper as any).compositionend();
+
+  // After ending, xterm's own update should not be overwritten by the stale
+  // anchor. Simulate xterm moving the overlay to the new cursor row.
+  term._core._bufferService.buffer.y = 4;
+  const newTop = `${term._core._bufferService.buffer.y * term._core._renderService.dimensions.css.cell.height}px`;
+  view.style.top = newTop;
+  textarea.style.top = newTop;
+  (helper as any).updateCompositionElements(false);
+  assert.equal(view.style.top, newTop);
+  assert.equal(textarea.style.top, newTop);
 });
