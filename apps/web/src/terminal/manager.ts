@@ -31,6 +31,7 @@ import {
 import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
 import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
+import { fixImeCompositionOverflow } from "./imeCompositionOverflow";
 import { createGlyphAtlasRepairer, onAtlasPagesMerged } from "./glyphAtlas";
 
 /**
@@ -1970,6 +1971,7 @@ export function attachSession(
     fixWebkitImeDirectInsert(s.term);
     fixAbandonedImeFinalize(s.term);
     fixWebkitGtkImeComposition(s.term, imeLog);
+    fixImeCompositionOverflow(s.term);
     traceImeEvents(s.term);
     s.term.onScroll(() => {
       const scrollState = readScrollState(s.term);

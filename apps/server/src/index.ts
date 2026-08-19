@@ -617,6 +617,10 @@ const http = createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Image-Type");
+  // Allow public HTTPS pages (e.g. Cloudflare Pages preview) to reach this
+  // local backend during development. Chrome's Private Network Access policy
+  // blocks the request unless this header is present on the preflight.
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204).end();
