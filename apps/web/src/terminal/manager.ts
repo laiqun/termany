@@ -32,6 +32,7 @@ import { forgetSessionUrls, noteSessionOutput } from "./servedUrls";
 import { registerWebLinks } from "./webLinks";
 import { fixWebkitGtkImeComposition } from "./webkitGtkIme";
 import { fixImeCompositionOverflow } from "./imeCompositionOverflow";
+import { attachImeHeuristic } from "../vendor/xterm-ime-anchor";
 import { createGlyphAtlasRepairer, onAtlasPagesMerged } from "./glyphAtlas";
 
 /**
@@ -1972,6 +1973,12 @@ export function attachSession(
     fixAbandonedImeFinalize(s.term);
     fixWebkitGtkImeComposition(s.term, imeLog);
     fixImeCompositionOverflow(s.term);
+    attachImeHeuristic(s.term, {
+      onAnchor: (a) => {
+        // eslint-disable-next-line no-console
+        console.log("[ime] xterm-ime-anchor:", a.source, a.col, a.row);
+      },
+    });
     traceImeEvents(s.term);
     s.term.onScroll(() => {
       const scrollState = readScrollState(s.term);
